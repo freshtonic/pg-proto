@@ -463,8 +463,9 @@ mod tests {
                 max_rows: 0,
             })
             .expect("valid Execute");
-        let (_awaiting_ready, sync) = bound.push_sync();
+        let (awaiting_ready, sync) = bound.push_sync();
         assert_eq!(sync.tag, b'S');
+        awaiting_ready.into_transport();
     }
 
     #[test]
@@ -476,14 +477,15 @@ mod tests {
                 parameters_changed: false,
             })
             .expect("ReadyForQuery is valid evidence");
-        assert!(matches!(
-            transition,
-            SimpleTransition::Ready(ReadyState::Dirty {
-                status: TransactionStatus::InTransaction,
-                parameters_changed: false,
-                ..
-            })
-        ));
+        let SimpleTransition::Ready(ReadyState::Dirty {
+            conn,
+            status: TransactionStatus::InTransaction,
+            parameters_changed: false,
+        }) = transition
+        else {
+            panic!("transaction should taint readiness")
+        };
+        conn.into_transport();
     }
 
     #[test]
@@ -495,13 +497,14 @@ mod tests {
                 parameters_changed: true,
             })
             .expect("ReadyForQuery is valid evidence");
-        assert!(matches!(
-            transition,
-            SimpleTransition::Ready(ReadyState::Dirty {
-                status: TransactionStatus::Idle,
-                parameters_changed: true,
-                ..
-            })
-        ));
+        let SimpleTransition::Ready(ReadyState::Dirty {
+            conn,
+            status: TransactionStatus::Idle,
+            parameters_changed: true,
+        }) = transition
+        else {
+            panic!("parameter change should taint readiness")
+        };
+        conn.into_transport();
     }
 }

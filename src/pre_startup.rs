@@ -419,16 +419,18 @@ mod tests {
 
     #[test]
     fn encodes_special_requests_in_network_byte_order() {
-        let (_, ssl) = Conn::new(()).ssl_request();
+        let (pending, ssl) = Conn::new(()).ssl_request();
         assert_eq!(ssl, [0, 0, 0, 8, 4, 210, 22, 47]);
+        pending.into_transport();
 
-        let (_, cancel) = Conn::new(())
+        let (terminated, cancel) = Conn::new(())
             .cancel_request(0x0102_0304, &[5, 6, 7, 8])
             .expect("valid protocol 3.0 cancellation key");
         assert_eq!(
             &cancel[..],
             [0, 0, 0, 16, 4, 210, 22, 46, 1, 2, 3, 4, 5, 6, 7, 8]
         );
+        terminated.into_transport();
     }
 
     #[test]
@@ -446,7 +448,8 @@ mod tests {
             version: crate::startup::ProtocolVersion::V3_0,
             parameters: std::collections::BTreeMap::new(),
         };
-        let (_startup, _) = upgraded.startup(&message).expect("valid startup message");
+        let (startup, _) = upgraded.startup(&message).expect("valid startup message");
+        let _transport = startup.into_transport();
     }
 
     #[test]

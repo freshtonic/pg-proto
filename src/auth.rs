@@ -228,8 +228,9 @@ mod tests {
     fn sasl_continue_is_a_self_loop() {
         let conn: Conn<Tls, Sasl> = Conn::new(Tls(vec![1])).transition();
         let (conn, first) = conn.continue_with(Bytes::from_static(b"one"));
-        let (_conn, second) = conn.continue_with(Bytes::from_static(b"two"));
+        let (conn, second) = conn.continue_with(Bytes::from_static(b"two"));
         assert_eq!(first.body, Bytes::from_static(b"one"));
         assert_eq!(second.body, Bytes::from_static(b"two"));
+        let _transport = conn.into_transport();
     }
 }

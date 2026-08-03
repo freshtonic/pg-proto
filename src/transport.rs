@@ -510,9 +510,11 @@ mod tests {
             .await
             .expect("decodable StartupMessage");
         assert_eq!(message, startup);
-        assert!(matches!(
-            conn.offer_pre_startup(message),
-            crate::pre_startup::PreStartupOffer::Startup { .. }
-        ));
+        let crate::pre_startup::PreStartupOffer::Startup { conn, .. } =
+            conn.offer_pre_startup(message)
+        else {
+            panic!("unexpected pre-startup branch")
+        };
+        let _transport = conn.into_transport();
     }
 }

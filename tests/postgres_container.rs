@@ -214,7 +214,8 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
         panic!("PostgreSQL did not confirm authentication")
     };
     let awaiting_ready = awaiting_ok.authentication_ok();
-    let _ready = finish_startup(awaiting_ready).await?;
+    let ready = finish_startup(awaiting_ready).await?;
+    let _transport = ready.into_transport();
     Ok(())
 }
 
@@ -314,7 +315,9 @@ async fn submit_password(
     };
     finish_startup(awaiting_ok.authentication_ok())
         .await
-        .map(|_ready| ())
+        .map(|ready| {
+            let _transport = ready.into_transport();
+        })
 }
 
 #[tokio::test]

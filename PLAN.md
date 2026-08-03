@@ -154,7 +154,7 @@ neutral composition harnesses and examples.
   15, 16, and 17 Alpine images on 4 August 2026; CI preserves that matrix.
 - [x] Add fuzzing for both directional codecs, pre-startup decoding, SCRAM, and
   runtime FSM projection.
-- [ ] Establish performance and monomorphisation budgets against pgcat/proxy
+- [x] Establish performance and monomorphisation budgets against pgcat/proxy
   workloads.
 - [ ] Complete security review of TLS verification, channel binding, credential
   handling, frame limits, cancellation, and malformed-message behaviour.

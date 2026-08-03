@@ -66,6 +66,50 @@ pub struct ServerCopyOut<Resume>(PhantomData<Resume>);
 #[derive(Debug)]
 pub struct ServerCopyOutDone<Resume>(PhantomData<Resume>);
 
+#[derive(Debug)]
+pub enum BothOpen {}
+
+#[derive(Debug)]
+pub enum BothClientDone {}
+
+#[derive(Debug)]
+pub enum BothServerDone {}
+
+#[derive(Debug)]
+pub enum BothDone {}
+
+#[derive(Debug)]
+pub struct ServerCopyBoth<Resume, Ends>(PhantomData<(Resume, Ends)>);
+
+#[derive(Debug)]
+pub struct ServerCopyBothFailed<Resume>(PhantomData<Resume>);
+
+#[derive(Debug)]
+pub enum ServerCopyBothOpenOffer<S, C, Resume> {
+    Data {
+        conn: Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
+        data: Bytes,
+    },
+    Done(Conn<S, ServerCopyBoth<Resume, BothClientDone>, C>),
+    Fail {
+        conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        message: Bytes,
+    },
+}
+
+#[derive(Debug)]
+pub enum ServerCopyBothServerDoneOffer<S, C, Resume> {
+    Data {
+        conn: Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        data: Bytes,
+    },
+    Done(Conn<S, ServerCopyBoth<Resume, BothDone>, C>),
+    Fail {
+        conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        message: Bytes,
+    },
+}
+
 /// Client choice inside a server-role COPY IN sub-session.
 #[derive(Debug)]
 pub enum ServerCopyInOffer<S, C, Resume> {
@@ -88,6 +132,26 @@ pub type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C
 pub type CopyOutStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyOut<Resume>, C>, Frame)>;
 pub type CopyOutCompletion<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyOutDone<Resume>, C>, Frame)>;
+pub type CopyBothStart<S, C, Resume> =
+    io::Result<(Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, Frame)>;
+pub type CopyBothOpenProjection<S, C, Resume> = Result<
+    ServerCopyBothOpenOffer<S, C, Resume>,
+    Box<(
+        Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
+        FrontendMessage,
+    )>,
+>;
+pub type CopyBothServerDoneProjection<S, C, Resume> = Result<
+    ServerCopyBothServerDoneOffer<S, C, Resume>,
+    Box<(
+        Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        FrontendMessage,
+    )>,
+>;
+pub type CopyBothServerHalfClose<S, C, Resume> =
+    io::Result<(Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>, Frame)>;
+pub type CopyBothCompletion<S, C, Resume> =
+    io::Result<(Conn<S, ServerCopyBoth<Resume, BothDone>, C>, Frame)>;
 
 /// External choice offered by a client while the server role is ready.
 #[derive(Debug)]
@@ -242,6 +306,18 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
         Ok((
             self.transition(),
             BackendMessage::CopyOutResponse(response).to_frame()?,
+        ))
+    }
+
+    /// Starts a simple-query COPY BOTH sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopySimple> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyBothResponse(response).to_frame()?,
         ))
     }
 
@@ -467,6 +543,18 @@ impl<S, C> Conn<S, ServerExecute, C> {
             BackendMessage::CopyOutResponse(response).to_frame()?,
         ))
     }
+
+    /// Starts an extended-query COPY BOTH sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopyExtended> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyBothResponse(response).to_frame()?,
+        ))
+    }
 }
 
 impl<S, C, Resume> Conn<S, ServerCopyIn<Resume>, C> {
@@ -599,6 +687,151 @@ impl<S, C> Conn<S, ServerCopyOutDone<CopyExtended>, C> {
             self.transition(),
             BackendMessage::CommandComplete(tag).to_frame()?,
         ))
+    }
+}
+
+impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
+    /// Projects client data, half-close, or failure while both directions are open.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged state and message if it is not COPY traffic.
+    pub fn offer_frontend(self, message: FrontendMessage) -> CopyBothOpenProjection<S, C, Resume> {
+        match message {
+            FrontendMessage::CopyData(data) => {
+                Ok(ServerCopyBothOpenOffer::Data { conn: self, data })
+            }
+            FrontendMessage::CopyDone => Ok(ServerCopyBothOpenOffer::Done(self.transition())),
+            FrontendMessage::CopyFail(message) => Ok(ServerCopyBothOpenOffer::Fail {
+                conn: self.transition(),
+                message,
+            }),
+            other => Err(Box::new((self, other))),
+        }
+    }
+
+    /// Sends backend COPY data while its direction remains open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+        Ok((self, BackendMessage::CopyData(data).to_frame()?))
+    }
+
+    /// Half-closes the backend direction while the client direction remains open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed completion frame cannot be encoded.
+    pub fn done(self) -> CopyBothServerHalfClose<S, C, Resume> {
+        Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
+    }
+}
+
+impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
+    /// Sends remaining backend data after the client has half-closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+        Ok((self, BackendMessage::CopyData(data).to_frame()?))
+    }
+
+    /// Half-closes the backend direction, completing both COPY streams.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed completion frame cannot be encoded.
+    pub fn done(self) -> CopyBothCompletion<S, C, Resume> {
+        Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
+    }
+}
+
+impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C> {
+    /// Projects remaining client traffic after the backend has half-closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged state and message if it is not COPY traffic.
+    pub fn offer_frontend(
+        self,
+        message: FrontendMessage,
+    ) -> CopyBothServerDoneProjection<S, C, Resume> {
+        match message {
+            FrontendMessage::CopyData(data) => {
+                Ok(ServerCopyBothServerDoneOffer::Data { conn: self, data })
+            }
+            FrontendMessage::CopyDone => Ok(ServerCopyBothServerDoneOffer::Done(self.transition())),
+            FrontendMessage::CopyFail(message) => Ok(ServerCopyBothServerDoneOffer::Fail {
+                conn: self.transition(),
+                message,
+            }),
+            other => Err(Box::new((self, other))),
+        }
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyBoth<CopySimple, BothDone>, C> {
+    /// Completes simple-query COPY BOTH before `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyBoth<CopyExtended, BothDone>, C> {
+    /// Completes extended-query COPY BOTH and returns to the building loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyBothFailed<CopySimple>, C> {
+    /// Reports a client COPY failure before simple-query readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, ServerSimpleError, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::ErrorResponse(response).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyBothFailed<CopyExtended>, C> {
+    /// Reports a client COPY failure and discards the pipeline until `Sync`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
+        extended_error(self, response)
     }
 }
 
@@ -852,6 +1085,42 @@ mod tests {
         let (state, _) = query.ready(TransactionStatus::Idle).unwrap();
         let ServerReadyState::Ready(ready) = state else {
             panic!("idle COPY was marked dirty")
+        };
+        ready.into_transport();
+    }
+
+    #[test]
+    fn copy_both_tracks_half_closes_independently() {
+        let execute: Conn<(), ServerExecute> = Conn::new(()).transition();
+        let (both, response) = execute
+            .copy_both(CopyResponse {
+                overall_format: 0,
+                column_formats: vec![],
+            })
+            .unwrap();
+        assert_eq!(response.tag, b'W');
+        let ServerCopyBothOpenOffer::Done(client_done) =
+            both.offer_frontend(FrontendMessage::CopyDone).unwrap()
+        else {
+            panic!("client half-close projected to the wrong branch")
+        };
+        let (client_done, data) = client_done
+            .data(Bytes::from_static(b"remaining backend data"))
+            .unwrap();
+        assert_eq!(data.tag, b'd');
+        let (done, backend_done) = client_done.done().unwrap();
+        assert_eq!(backend_done.tag, b'c');
+        let (building, _) = done
+            .command_complete(Bytes::from_static(b"COPY 0"))
+            .unwrap();
+        let ServerExtendedOffer::Sync(sync) =
+            building.offer_frontend(FrontendMessage::Sync).unwrap()
+        else {
+            panic!("sync projected to the wrong branch")
+        };
+        let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
+        let ServerReadyState::Ready(ready) = state else {
+            panic!("idle sync was marked dirty")
         };
         ready.into_transport();
     }

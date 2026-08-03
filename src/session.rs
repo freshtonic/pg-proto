@@ -96,6 +96,11 @@ pub enum CopyOutTransition<S, C> {
 }
 
 #[derive(Debug)]
+pub enum CopyInTransition<S, C> {
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
 pub enum CopyBothReceive<S, C> {
     Data(Conn<S, CopyBoth, C>, Bytes),
     Done(Conn<S, CopyBothServerDone, C>),
@@ -439,6 +444,23 @@ impl<S, C> Conn<S, CopyIn, C> {
     /// Returns an error if the message contains a NUL byte.
     pub fn push_copy_fail(self, message: &[u8]) -> io::Result<(Conn<S, AwaitingReady, C>, Frame)> {
         Ok((self.transition(), cstr_frame(b'f', message)?))
+    }
+
+    /// Projects an asynchronous backend failure while COPY IN data is being sent.
+    ///
+    /// This branch is reachable after cancellation or an early server-side COPY
+    /// failure. Non-error messages leave the COPY IN connection unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection and item when it is not an error response.
+    pub fn offer(self, item: SessionItem) -> Result<CopyInTransition<S, C>, (Self, SessionItem)> {
+        match item {
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                Ok(CopyInTransition::Error(self.transition(), error))
+            }
+            item => Err((self, item)),
+        }
     }
 }
 
@@ -816,6 +838,33 @@ mod tests {
         let (awaiting, done) = server_done.push_copy_done();
         assert_eq!(done.tag, b'c');
         awaiting.into_transport();
+    }
+
+    #[test]
+    fn copy_in_can_receive_an_early_backend_error() {
+        let copy: Conn<(), CopyIn> = Conn::new(()).transition();
+        let error = DiagnosticResponse {
+            fields: vec![crate::codec::DiagnosticField {
+                code: b'M',
+                value: Bytes::from_static(b"copy cancelled"),
+            }],
+        };
+        let CopyInTransition::Error(draining, received) = copy
+            .offer(SessionItem::Message(BackendMessage::ErrorResponse(
+                error.clone(),
+            )))
+            .unwrap();
+        assert_eq!(received, error);
+
+        let DrainingTransition::Ready(ReadyState::Clean(ready)) =
+            draining.offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+        else {
+            panic!("COPY failure did not drain to readiness")
+        };
+        ready.release();
     }
 
     #[test]

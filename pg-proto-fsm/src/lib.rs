@@ -408,6 +408,11 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            pub struct ProjectionError {
+                pub state: RuntimeState,
+            }
+
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct RuntimeFsm {
                 state: RuntimeState,
             }
@@ -458,6 +463,23 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                             state: self.state,
                             event,
                         }),
+                    }
+                }
+
+                /// Projects a wire message using the current state, then advances.
+                ///
+                /// The projector is state-aware because one wire message can denote
+                /// different protocol events in nested or mixed sessions.
+                pub fn step_projected<Message>(
+                    &mut self,
+                    message: &Message,
+                    project: impl FnOnce(RuntimeState, &Message) -> Option<Event>,
+                ) -> Result<Event, ProjectionError> {
+                    let state = self.state;
+                    let event = project(state, message).ok_or(ProjectionError { state })?;
+                    match self.step(event) {
+                        Ok(()) => Ok(event),
+                        Err(_) => Err(ProjectionError { state }),
                     }
                 }
             }

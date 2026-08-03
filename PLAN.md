@@ -63,6 +63,8 @@ work using that feature is complete.
   eliminating manually duplicated message-to-event matching.
   - [x] Emit one canonical runtime transition table used for both target-state
     and direction lookup, and expose it for differential sequence generation.
+  - [x] Add state-aware wire-message projection hooks so nested and mixed
+    sessions cannot be projected through a context-free event map.
   - [ ] Generate the codec-message-to-event projection used by typed sessions.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.

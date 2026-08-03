@@ -208,3 +208,36 @@ fn runtime_exhaustively_accepts_exactly_the_generated_sequences() {
 
     check(&mut Vec::new(), 6);
 }
+
+#[test]
+fn message_projection_receives_the_current_protocol_state() {
+    #[derive(Clone, Copy)]
+    enum WireMessage {
+        Parse,
+        Complete,
+    }
+
+    let project = |state, message: &WireMessage| match (state, message) {
+        (query::RuntimeState::Ready | query::RuntimeState::Building, WireMessage::Parse) => {
+            Some(query::Event::Parse)
+        }
+        (query::RuntimeState::Simple, WireMessage::Complete) => Some(query::Event::Complete),
+        _ => None,
+    };
+
+    let mut runtime = query::RuntimeFsm::new();
+    assert_eq!(
+        runtime
+            .step_projected(&WireMessage::Parse, project)
+            .unwrap(),
+        query::Event::Parse
+    );
+    assert_eq!(runtime.state(), query::RuntimeState::Building);
+    assert_eq!(
+        runtime.step_projected(&WireMessage::Complete, project),
+        Err(query::ProjectionError {
+            state: query::RuntimeState::Building,
+        })
+    );
+    assert_eq!(runtime.state(), query::RuntimeState::Building);
+}

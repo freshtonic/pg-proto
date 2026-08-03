@@ -172,6 +172,24 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
         }
     });
+    let dual_typestate_impls = states.iter().map(|state| {
+        let source = &state.name;
+        let methods = state.transitions.iter().map(|transition| {
+            let method = &transition.method;
+            let target = &transition.target;
+            quote! {
+                #[must_use]
+                pub const fn #method(self) -> DualSession<#target> {
+                    DualSession { _phase: ::core::marker::PhantomData }
+                }
+            }
+        });
+        quote! {
+            impl DualSession<#source> {
+                #(#methods)*
+            }
+        }
+    });
     let svg = railroad_svg(&states);
     let diagram_name = format_ident!("{}_RAILROAD_SVG", module.to_string().to_uppercase());
 
@@ -252,6 +270,13 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 _phase: ::core::marker::PhantomData<Phase>,
             }
 
+            /// Typestate witness for the role dual to [`Session`].
+            #[must_use]
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            pub struct DualSession<Phase> {
+                _phase: ::core::marker::PhantomData<Phase>,
+            }
+
             impl Session<#initial> {
                 #[must_use]
                 pub const fn new() -> Self {
@@ -259,7 +284,15 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             }
 
+            impl DualSession<#initial> {
+                #[must_use]
+                pub const fn new() -> Self {
+                    Self { _phase: ::core::marker::PhantomData }
+                }
+            }
+
             #(#typestate_impls)*
+            #(#dual_typestate_impls)*
 
             pub const #diagram_name: &str = #svg;
         }

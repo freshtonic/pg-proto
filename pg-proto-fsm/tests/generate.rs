@@ -20,6 +20,8 @@ protocol! {
 #[test]
 fn typestate_and_runtime_fsm_follow_the_same_grammar() {
     let _ready: query::Session<query::Ready> = query::Session::new().query().complete();
+    let _dual_ready: query::DualSession<query::Ready> =
+        query::DualSession::new().query().complete();
 
     let mut runtime = query::RuntimeFsm::new();
     runtime.step(query::Event::Query).unwrap();

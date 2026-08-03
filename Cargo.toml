@@ -19,3 +19,7 @@ pedantic = "warn"
 bytes = "1.12.1"
 postgres-protocol = "0.6.12"
 tokio-util = { version = "0.7.19", features = ["codec"] }
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }

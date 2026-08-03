@@ -5,6 +5,8 @@ use std::{io, marker::PhantomData};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::startup::ProtocolVersion;
+
 /// Messages sent by a `PostgreSQL` frontend.
 #[derive(Debug)]
 pub enum Frontend {}
@@ -52,7 +54,10 @@ impl<D: Direction> Decoder for PgCodec<D> {
         let Some(frame) = decode_frame(source)? else {
             return Ok(None);
         };
-        D::decode(frame).map(Some)
+        let tag = frame.tag;
+        D::decode(frame).map(Some).map_err(|error| {
+            io::Error::new(error.kind(), format!("message tag 0x{tag:02x}: {error}"))
+        })
     }
 }
 
@@ -293,7 +298,7 @@ pub enum TransactionStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NegotiateProtocolVersion {
-    pub newest_minor: u32,
+    pub newest: ProtocolVersion,
     pub unsupported_options: Vec<Bytes>,
 }
 
@@ -313,7 +318,7 @@ pub enum BackendMessage {
     },
     BackendKeyData {
         process_id: u32,
-        secret_key: u32,
+        secret_key: Bytes,
     },
     ReadyForQuery(TransactionStatus),
     NegotiateProtocolVersion(NegotiateProtocolVersion),
@@ -395,8 +400,10 @@ fn decode_notification(mut body: Bytes) -> io::Result<BackendMessage> {
 
 fn decode_backend_key_data(mut body: Bytes) -> io::Result<BackendMessage> {
     let process_id = take_u32(&mut body)?;
-    let secret_key = take_u32(&mut body)?;
-    require_empty(&body)?;
+    if !(4..=256).contains(&body.len()) {
+        return Err(invalid("cancellation key length is outside 4..=256"));
+    }
+    let secret_key = body;
     Ok(BackendMessage::BackendKeyData {
         process_id,
         secret_key,
@@ -416,7 +423,9 @@ fn decode_ready(mut body: Bytes) -> io::Result<BackendMessage> {
 }
 
 fn decode_negotiate_protocol_version(mut body: Bytes) -> io::Result<BackendMessage> {
-    let newest_minor = take_u32(&mut body)?;
+    let newest = take_u32(&mut body)?;
+    let major = u16::try_from(newest >> 16).map_err(|_| invalid("protocol major overflow"))?;
+    let minor = u16::try_from(newest & 0xffff).map_err(|_| invalid("protocol minor overflow"))?;
     let count = take_u32(&mut body)?;
     let capacity = usize::try_from(count).map_err(|_| invalid("option count overflow"))?;
     let mut unsupported_options = Vec::with_capacity(capacity);
@@ -426,7 +435,7 @@ fn decode_negotiate_protocol_version(mut body: Bytes) -> io::Result<BackendMessa
     require_empty(&body)?;
     Ok(BackendMessage::NegotiateProtocolVersion(
         NegotiateProtocolVersion {
-            newest_minor,
+            newest: ProtocolVersion { major, minor },
             unsupported_options,
         },
     ))

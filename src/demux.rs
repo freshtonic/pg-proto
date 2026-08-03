@@ -23,10 +23,10 @@ pub struct Notification {
     pub payload: Bytes,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CancelKey {
     pub process_id: u32,
-    pub secret_key: u32,
+    pub secret_key: Bytes,
 }
 
 /// A protocol-advancing message, optionally closing a command boundary.
@@ -92,7 +92,7 @@ impl Demux {
             } => {
                 self.cancel_key = Some(CancelKey {
                     process_id,
-                    secret_key,
+                    secret_key: secret_key.clone(),
                 });
                 Some(SessionItem::Message(BackendMessage::BackendKeyData {
                     process_id,
@@ -131,8 +131,8 @@ impl Demux {
     }
 
     #[must_use]
-    pub const fn cancel_key(&self) -> Option<CancelKey> {
-        self.cancel_key
+    pub const fn cancel_key(&self) -> Option<&CancelKey> {
+        self.cancel_key.as_ref()
     }
 
     #[must_use]

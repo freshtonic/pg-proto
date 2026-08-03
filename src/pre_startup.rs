@@ -4,6 +4,7 @@
 //! byte, and a successful negotiation changes the connection's transport type.
 
 use crate::{Conn, Pristine, startup::StartupMessage};
+use bytes::BufMut as _;
 
 const SSL_REQUEST_CODE: u32 = 80_877_103;
 const GSSENC_REQUEST_CODE: u32 = 80_877_104;
@@ -154,17 +155,35 @@ impl<S> Conn<S, PreStartup, Pristine> {
         Ok((self.transition(), message.encode()?))
     }
 
+    /// Encodes a version 3.0 or 3.2 out-of-band cancellation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the cancellation key is between 4 and 256 bytes.
     pub fn cancel_request(
         self,
         process_id: u32,
-        secret_key: u32,
-    ) -> (Conn<S, Terminated>, [u8; 16]) {
-        let mut packet = [0; 16];
-        packet[..4].copy_from_slice(&16_u32.to_be_bytes());
-        packet[4..8].copy_from_slice(&CANCEL_REQUEST_CODE.to_be_bytes());
-        packet[8..12].copy_from_slice(&process_id.to_be_bytes());
-        packet[12..].copy_from_slice(&secret_key.to_be_bytes());
-        (self.transition(), packet)
+        secret_key: &[u8],
+    ) -> std::io::Result<(Conn<S, Terminated>, bytes::Bytes)> {
+        if !(4..=256).contains(&secret_key.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cancellation key length is outside 4..=256",
+            ));
+        }
+        let key_length = u32::try_from(secret_key.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cancellation key too large",
+            )
+        })?;
+        let length = 12 + key_length;
+        let mut packet = bytes::BytesMut::with_capacity(12 + secret_key.len());
+        packet.put_u32(length);
+        packet.put_u32(CANCEL_REQUEST_CODE);
+        packet.put_u32(process_id);
+        packet.extend_from_slice(secret_key);
+        Ok((self.transition(), packet.freeze()))
     }
 }
 
@@ -228,9 +247,11 @@ mod tests {
         let (_, ssl) = Conn::new(()).ssl_request();
         assert_eq!(ssl, [0, 0, 0, 8, 4, 210, 22, 47]);
 
-        let (_, cancel) = Conn::new(()).cancel_request(0x0102_0304, 0x0506_0708);
+        let (_, cancel) = Conn::new(())
+            .cancel_request(0x0102_0304, &[5, 6, 7, 8])
+            .expect("valid protocol 3.0 cancellation key");
         assert_eq!(
-            cancel,
+            &cancel[..],
             [0, 0, 0, 16, 4, 210, 22, 46, 1, 2, 3, 4, 5, 6, 7, 8]
         );
     }

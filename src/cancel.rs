@@ -12,6 +12,7 @@ use crate::demux::CancelKey;
 /// another process-specific strategy. The protocol library does not prescribe
 /// key lifecycle or storage.
 pub trait CancelKeyMint {
+    /// Error returned when a client-facing key cannot be minted.
     type Error;
 
     /// Mints a key to expose in client-facing `BackendKeyData`.
@@ -28,6 +29,7 @@ pub trait CancelKeyMint {
 /// metadata. [`CancelKeyMap`] is deliberately only a small reference
 /// implementation.
 pub trait CancelKeyRegistry {
+    /// Error returned when a key association cannot be registered.
     type Error;
 
     /// Observes the association between a client-facing and upstream key.
@@ -56,14 +58,19 @@ pub struct CancelKeyMap {
     mappings: HashMap<CancelKey, CancelKey>,
 }
 
+/// Validation or collision failure while registering a cancellation mapping.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegisterError {
+    /// Client-facing secret length was outside `PostgreSQL`'s accepted range.
     InvalidClientKeyLength(usize),
+    /// Upstream secret length was outside `PostgreSQL`'s accepted range.
     InvalidUpstreamKeyLength(usize),
+    /// The client-facing key already names another live mapping.
     ClientKeyCollision,
 }
 
 impl CancelKeyMap {
+    /// Creates an empty in-memory cancellation-key registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -103,11 +110,13 @@ impl CancelKeyMap {
         self.mappings.remove(client)
     }
 
+    /// Returns the number of live client-to-upstream mappings.
     #[must_use]
     pub fn len(&self) -> usize {
         self.mappings.len()
     }
 
+    /// Returns whether the registry contains no mappings.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.mappings.is_empty()

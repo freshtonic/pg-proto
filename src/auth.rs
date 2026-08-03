@@ -10,40 +10,52 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// The backend's initial authentication choice.
 pub enum Auth {}
 
 #[derive(Debug)]
+/// A cleartext or MD5 password response is required.
 pub enum PasswordResponse {}
 
 #[derive(Debug)]
+/// A SASL mechanism and optional initial response must be selected.
 pub enum SaslInitial {}
 
 #[derive(Debug)]
+/// The backend must provide the next SASL continuation or final message.
 pub enum Sasl {}
 
 #[derive(Debug)]
+/// A client response to a SASL challenge is required.
 pub enum SaslChallenge {}
 
 #[derive(Debug)]
+/// The received SASL final message must be verified by authentication policy.
 pub enum SaslFinal {}
 
 #[derive(Debug)]
+/// A client token for GSS, SSPI, or Kerberos authentication is required.
 pub enum TokenResponse {}
 
 #[derive(Debug)]
+/// The backend must continue or complete token-based authentication.
 pub enum TokenChallenge {}
 
 #[derive(Debug)]
+/// The selected mechanism has completed and `AuthenticationOk` is required.
 pub enum AwaitingAuthOk {}
 
 #[derive(Debug)]
+/// Authentication and startup have completed and commands may be issued.
 pub enum Ready {}
 
 #[derive(Debug)]
+/// Authentication succeeded and startup messages are being consumed until ready.
 pub enum AwaitingStartupReady {}
 
 /// TLS transports expose the RFC 5929 `tls-server-end-point` binding.
 pub trait TlsServerEndPoint {
+    /// Returns the RFC 5929 channel-binding bytes derived from the peer certificate.
     fn tls_server_end_point(&self) -> &[u8];
 }
 
@@ -58,73 +70,116 @@ impl<S: TlsServerEndPoint, Phase, Cleanliness> Conn<S, Phase, Cleanliness> {
 /// External choice offered by the backend during authentication.
 #[derive(Debug)]
 pub enum AuthOffer<S> {
+    /// Authentication completed without a credential exchange.
     Ok(Conn<S, AwaitingStartupReady>),
+    /// The backend requested a cleartext password.
     Cleartext(Conn<S, PasswordResponse>),
+    /// The backend requested a `PostgreSQL` MD5 password response.
     Md5 {
+        /// Connection waiting for the password response.
         conn: Conn<S, PasswordResponse>,
+        /// Four-byte salt supplied by the backend.
         salt: [u8; 4],
     },
+    /// The backend offered a SASL mechanism negotiation.
     Sasl {
+        /// Connection waiting for mechanism selection.
         conn: Conn<S, SaslInitial>,
+        /// Mechanism names offered in backend preference order.
         mechanisms: Vec<Bytes>,
     },
+    /// The backend requested GSSAPI authentication.
     Gss(Conn<S, TokenResponse>),
+    /// The backend requested SSPI authentication.
     Sspi(Conn<S, TokenResponse>),
+    /// The backend requested Kerberos V5 authentication.
     KerberosV5(Conn<S, TokenResponse>),
 }
 
+/// A startup message that advances or terminates authentication.
 #[derive(Debug)]
 pub enum AuthEvent<S> {
+    /// An authentication request or successful completion.
     Authentication(AuthOffer<S>),
+    /// A protocol-version negotiation message that leaves authentication active.
     Negotiate {
+        /// Connection remaining in the authentication phase.
         conn: Conn<S, Auth>,
+        /// Version and unsupported-option information supplied by the backend.
         message: codec::NegotiateProtocolVersion,
     },
+    /// Authentication failed and the connection is terminated.
     Error {
+        /// Terminated connection.
         conn: Conn<S, Terminated>,
+        /// Backend diagnostic describing the failure.
         error: codec::DiagnosticResponse,
     },
 }
 
+/// An external choice received during a SASL exchange.
 #[derive(Debug)]
 pub enum SaslEvent<S> {
+    /// The backend supplied another challenge.
     Continue {
+        /// Connection waiting for the corresponding client response.
         conn: Conn<S, SaslChallenge>,
+        /// Opaque mechanism-specific challenge bytes.
         challenge: Bytes,
     },
+    /// The backend supplied its final verifier.
     Final {
+        /// Connection waiting for verification by authentication policy.
         conn: Conn<S, SaslFinal>,
+        /// Opaque mechanism-specific server-final bytes.
         server_final: Bytes,
     },
+    /// The backend aborted authentication.
     Error {
+        /// Terminated connection.
         conn: Conn<S, Terminated>,
+        /// Backend diagnostic describing the failure.
         error: codec::DiagnosticResponse,
     },
 }
 
+/// Completion or failure after a credential mechanism finishes.
 #[derive(Debug)]
 pub enum AuthCompletion<S> {
+    /// The backend confirmed authentication.
     Ok(Conn<S, AwaitingStartupReady>),
+    /// The backend rejected authentication.
     Error {
+        /// Terminated connection.
         conn: Conn<S, Terminated>,
+        /// Backend diagnostic describing the failure.
         error: codec::DiagnosticResponse,
     },
 }
 
+/// An external choice during GSS, SSPI, or Kerberos token exchange.
 #[derive(Debug)]
 pub enum TokenAuthEvent<S> {
+    /// The backend supplied another token.
     Continue {
+        /// Connection waiting for the next client token.
         conn: Conn<S, TokenResponse>,
+        /// Opaque mechanism-specific backend token.
         token: Bytes,
     },
+    /// The backend confirmed authentication.
     Ok(Conn<S, AwaitingStartupReady>),
+    /// The backend rejected authentication.
     Error {
+        /// Terminated connection.
         conn: Conn<S, Terminated>,
+        /// Backend diagnostic describing the failure.
         error: codec::DiagnosticResponse,
     },
 }
 
 impl<S> Conn<S, Startup, Pristine> {
+    /// Enters backend-driven authentication after sending the startup message.
     pub fn authentication(self) -> Conn<S, Auth> {
         self.transition()
     }

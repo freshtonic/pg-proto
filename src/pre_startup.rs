@@ -13,45 +13,63 @@ const CANCEL_REQUEST_CODE: u32 = 80_877_102;
 /// `PostgreSQL`'s maximum accepted untagged startup packet size.
 pub const DEFAULT_MAX_PRE_STARTUP_PACKET_LEN: usize = 10_000;
 
+/// Connection awaits the client's first untagged startup-family packet.
 #[derive(Debug)]
 pub enum PreStartup {}
 
+/// A decoded `StartupMessage` is ready for protocol validation.
 #[derive(Debug)]
 pub enum Startup {}
 
+/// Client role awaits the server's raw SSL decision byte.
 #[derive(Debug)]
 pub enum AwaitingSslReply {}
 
+/// Client role awaits the server's raw GSS encryption decision byte.
 #[derive(Debug)]
 pub enum AwaitingGssReply {}
 
+/// SSL was accepted and the transport must complete a TLS handshake.
 #[derive(Debug)]
 pub enum TlsHandshake {}
 
+/// GSS encryption was accepted and the transport must complete its handshake.
 #[derive(Debug)]
 pub enum GssHandshake {}
 
+/// Pre-startup processing terminated without entering a normal session.
 #[derive(Debug)]
 pub enum Terminated {}
 
+/// Server role must accept or reject a client's `SSLRequest`.
 #[derive(Debug)]
 pub enum ServerSslDecision {}
 
+/// Server role must accept or reject a client's `GSSENCRequest`.
 #[derive(Debug)]
 pub enum ServerGssDecision {}
 
 /// Server-role projection of the client's first-packet external choice.
 #[derive(Debug)]
 pub enum PreStartupOffer<S, C = Pristine> {
+    /// Client requested TLS negotiation.
     Ssl(Conn<S, ServerSslDecision, C>),
+    /// Client requested GSS encryption negotiation.
     Gss(Conn<S, ServerGssDecision, C>),
+    /// Client sent an out-of-band cancellation request.
     Cancel {
+        /// Terminal connection carrying the received transport.
         conn: Conn<S, Terminated, C>,
+        /// Target backend process ID.
         process_id: u32,
+        /// Target backend secret key.
         secret_key: Bytes,
     },
+    /// Client supplied normal startup parameters.
     Startup {
+        /// Connection ready for protocol validation and authentication.
         conn: Conn<S, Startup, C>,
+        /// Decoded startup version and parameters.
         message: StartupMessage,
     },
 }
@@ -59,12 +77,16 @@ pub enum PreStartupOffer<S, C = Pristine> {
 /// The server's single-byte answer to an SSL request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EncryptionReply {
+    /// Server sent `S` and requires an in-place encryption handshake.
     Accepted,
+    /// Server sent `N` and declined encryption.
     Rejected,
+    /// Historical server sent `E` and terminated the connection.
     LegacyError,
 }
 
 impl EncryptionReply {
+    /// Returns `PostgreSQL`'s raw one-byte wire representation.
     #[must_use]
     pub const fn as_byte(self) -> u8 {
         match self {
@@ -78,9 +100,18 @@ impl EncryptionReply {
 /// The external choice occupying a new connection's untagged first packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PreStartupMessage {
+    /// Raw SSL negotiation request code 80877103.
     SslRequest,
+    /// Raw GSS encryption request code 80877104.
     GssEncRequest,
-    CancelRequest { process_id: u32, secret_key: Bytes },
+    /// Out-of-band cancellation packet.
+    CancelRequest {
+        /// Target backend process ID.
+        process_id: u32,
+        /// Target backend secret key.
+        secret_key: Bytes,
+    },
+    /// Normal protocol startup packet.
     Startup(StartupMessage),
 }
 
@@ -184,37 +215,56 @@ impl TryFrom<u8> for EncryptionReply {
     }
 }
 
+/// A raw encryption decision byte other than `S`, `N`, or legacy `E`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InvalidEncryptionReply(pub u8);
+pub struct InvalidEncryptionReply(
+    /// Invalid byte received from the server.
+    pub u8,
+);
 
 /// libpq-compatible TLS negotiation policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SslMode {
+    /// Never request TLS.
     Disable,
+    /// Try plaintext first and retry with TLS if plaintext fails.
     Allow,
+    /// Request TLS first but permit plaintext fallback.
     Prefer,
+    /// Require encryption without certificate verification.
     Require,
+    /// Require TLS and validate the certificate chain.
     VerifyCa,
+    /// Require TLS and validate both chain and server hostname.
     VerifyFull,
 }
 
+/// Peer-certificate checks required by an SSL mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertificateVerification {
+    /// Do not authenticate the peer certificate.
     None,
+    /// Validate the certificate chain against configured roots.
     CertificateAuthority,
+    /// Validate the certificate chain and requested hostname.
     CertificateAuthorityAndHost,
 }
 
 /// Actions needed to apply an [`SslMode`] across connection attempts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SslStrategy {
+    /// Whether the first connection should send `SSLRequest`.
     pub request_on_first_connection: bool,
+    /// Whether plaintext failure should open a new TLS-first connection.
     pub retry_with_ssl_after_plaintext_failure: bool,
+    /// Whether an `N` response permits continuation in plaintext.
     pub allow_server_rejection: bool,
+    /// Certificate verification required after TLS acceptance.
     pub verification: CertificateVerification,
 }
 
 impl SslMode {
+    /// Converts libpq-compatible mode semantics into connection actions.
     #[must_use]
     pub const fn strategy(self) -> SslStrategy {
         match self {
@@ -261,28 +311,39 @@ impl SslMode {
 /// A reply whose branches deliberately have different typestates.
 #[derive(Debug)]
 pub enum Negotiation<S, Handshake, C = Pristine> {
+    /// Encryption accepted; complete the transport handshake next.
     Accepted(Conn<S, Handshake, C>),
+    /// Encryption rejected; plaintext pre-startup choice resumes.
     Rejected(Conn<S, PreStartup, C>),
+    /// Historical `E` response terminated negotiation.
     LegacyError(Conn<S, Terminated, C>),
 }
 
 /// SSL negotiation after applying plaintext-fallback policy.
 #[derive(Debug)]
 pub enum SslModeNegotiation<S, C = Pristine> {
+    /// TLS was accepted and must be handshaken.
     Accepted(Conn<S, TlsHandshake, C>),
+    /// Mode permits continuation in plaintext.
     Plaintext(Conn<S, PreStartup, C>),
+    /// Server rejected TLS required by the configured mode.
     RequiredRejected {
+        /// Terminal connection retaining the transport.
         conn: Conn<S, Terminated, C>,
+        /// Mode whose requirement could not be met.
         mode: SslMode,
     },
+    /// Historical server error terminated negotiation.
     LegacyError(Conn<S, Terminated, C>),
 }
 
 impl<S> Conn<S, PreStartup, Pristine> {
+    /// Encodes `SSLRequest` and enters the raw-reply phase.
     pub fn ssl_request(self) -> (Conn<S, AwaitingSslReply>, [u8; 8]) {
         (self.transition(), ssl_request_packet())
     }
 
+    /// Encodes `GSSENCRequest` and enters the raw-reply phase.
     pub fn gssenc_request(self) -> (Conn<S, AwaitingGssReply>, [u8; 8]) {
         (self.transition(), gssenc_request_packet())
     }
@@ -359,10 +420,12 @@ impl<S, C> Conn<S, ServerSslDecision, C> {
 }
 
 impl<S, C> Conn<S, ServerGssDecision, C> {
+    /// Sends `N` and returns to plaintext pre-startup choice.
     pub fn reject_gss(self) -> (Conn<S, PreStartup, C>, u8) {
         (self.transition(), EncryptionReply::Rejected.as_byte())
     }
 
+    /// Sends `S` and requires a server-side GSS transport handshake.
     pub fn accept_gss(self) -> (Conn<S, GssHandshake, C>, u8) {
         (self.transition(), EncryptionReply::Accepted.as_byte())
     }
@@ -412,6 +475,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
 }
 
 impl<S, C> Conn<S, AwaitingGssReply, C> {
+    /// Applies the server's GSS encryption decision byte.
     pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, GssHandshake, C> {
         match reply {
             EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
@@ -446,6 +510,7 @@ impl<S> Conn<S, GssHandshake, Pristine> {
 }
 
 impl<S, C> Conn<S, GssHandshake, C> {
+    /// Completes a server-side GSS upgrade and returns to encrypted pre-startup.
     pub fn finish_server_gss<Gss>(
         self,
         upgrade: impl FnOnce(S) -> Gss,

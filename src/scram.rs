@@ -9,13 +9,19 @@ use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
 
+/// SASL mechanism name for SCRAM without channel binding.
 pub const SCRAM_SHA_256: &[u8] = b"SCRAM-SHA-256";
+/// SASL mechanism name for SCRAM with mandatory channel binding.
 pub const SCRAM_SHA_256_PLUS: &[u8] = b"SCRAM-SHA-256-PLUS";
+/// Default and minimum accepted PBKDF2 iteration count.
 pub const DEFAULT_ITERATIONS: u32 = 4096;
 
+/// Channel-binding evidence available to a server-side SCRAM exchange.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerChannelBinding {
+    /// The connection does not provide channel binding.
     None,
+    /// RFC 5929 `tls-server-end-point` bytes for the terminated TLS transport.
     TlsServerEndPoint(Vec<u8>),
 }
 

@@ -18,12 +18,15 @@ pub enum Backend {}
 /// A validated `PostgreSQL` tagged frame, including its tag but not its length.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
+    /// Direction-scoped one-byte message tag.
     pub tag: u8,
+    /// Message bytes after the tag and four-byte length field.
     pub body: Bytes,
 }
 
 /// Decoder direction. The same byte tag has different meanings in each direction.
 pub trait Direction {
+    /// Typed message family produced for this direction.
     type Message;
 
     /// # Errors
@@ -160,18 +163,31 @@ fn decode_frame(source: &mut BytesMut, max_frame_len: usize) -> io::Result<Optio
 /// Frontend messages whose contents a rewriting proxy must retain structurally.
 #[derive(Clone, Eq, PartialEq)]
 pub enum FrontendMessage {
+    /// Defines a prepared statement and its parameter OIDs.
     Parse(Parse),
+    /// Binds parameters and result formats to a portal.
     Bind(Bind),
+    /// Requests metadata for a statement or portal.
     Describe(Describe),
+    /// Closes a statement or portal.
     Close(Close),
+    /// Executes a bound portal.
     Execute(Execute),
+    /// Invokes the deprecated function-call protocol.
     FunctionCall(FunctionCall),
+    /// Executes one or more SQL statements through the simple-query protocol.
     Query(Bytes),
+    /// Requests that buffered backend responses be flushed.
     Flush,
+    /// Ends an extended-query pipeline and restores error recovery.
     Sync,
+    /// Gracefully closes the frontend session.
     Terminate,
+    /// Carries COPY or replication data.
     CopyData(Bytes),
+    /// Signals successful completion of a COPY input stream.
     CopyDone,
+    /// Aborts a COPY input stream with a diagnostic message.
     CopyFail(Bytes),
     /// Context determines whether this is password, GSS, or a SASL response.
     PasswordResponse(Bytes),
@@ -235,10 +251,14 @@ impl FrontendMessage {
     }
 }
 
+/// Structured `Parse` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Parse {
+    /// Client-visible prepared-statement name; empty denotes the unnamed statement.
     pub statement: Bytes,
+    /// SQL text supplied by the frontend.
     pub query: Bytes,
+    /// Declared parameter type OIDs; zero entries request inference.
     pub parameter_types: Vec<u32>,
 }
 
@@ -263,12 +283,18 @@ impl Parse {
     }
 }
 
+/// Structured `Bind` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bind {
+    /// Portal name; empty denotes the unnamed portal.
     pub portal: Bytes,
+    /// Prepared-statement name referenced by the portal.
     pub statement: Bytes,
+    /// Parameter format codes using `PostgreSQL`'s zero/one/per-value cardinality rules.
     pub parameter_formats: Vec<i16>,
+    /// Parameter values, with `None` representing SQL `NULL`.
     pub parameters: Vec<Option<Bytes>>,
+    /// Requested result-column format codes.
     pub result_formats: Vec<i16>,
 }
 
@@ -303,35 +329,52 @@ impl Bind {
     }
 }
 
+/// Structured `Describe` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Describe {
+    /// Namespace in which `name` is resolved.
     pub target: DescribeTarget,
+    /// Statement or portal name to describe.
     pub name: Bytes,
 }
 
+/// Namespace selected by `Describe` and `Close` messages.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescribeTarget {
+    /// Prepared-statement namespace.
     Statement,
+    /// Portal namespace.
     Portal,
 }
 
+/// Structured `Close` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Close {
+    /// Namespace in which `name` is resolved.
     pub target: DescribeTarget,
+    /// Statement or portal name to close.
     pub name: Bytes,
 }
 
+/// Structured `Execute` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Execute {
+    /// Portal to execute.
     pub portal: Bytes,
+    /// Maximum rows to return; zero requests all rows.
     pub max_rows: i32,
 }
 
+/// Structured legacy `FunctionCall` message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionCall {
+    /// OID of the function to invoke.
     pub function_oid: u32,
+    /// Per-argument format codes.
     pub argument_formats: Vec<i16>,
+    /// Function arguments, with `None` representing SQL `NULL`.
     pub arguments: Vec<Option<Bytes>>,
+    /// Requested result format code.
     pub result_format: i16,
 }
 
@@ -426,17 +469,26 @@ impl Direction for Frontend {
 /// Backend row metadata retained in reconstructable form.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowDescription {
+    /// Result columns in wire order.
     pub fields: Vec<FieldDescription>,
 }
 
+/// Metadata for one result column.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FieldDescription {
+    /// Column label presented to the frontend.
     pub name: Bytes,
+    /// Source table OID, or zero when not associated with a table.
     pub table_oid: u32,
+    /// One-based source column number, or zero when not applicable.
     pub column: i16,
+    /// `PostgreSQL` data-type OID.
     pub type_oid: u32,
+    /// Fixed type width, or `-1` for variable-width types.
     pub type_size: i16,
+    /// Type-specific modifier, or `-1` when absent.
     pub type_modifier: i32,
+    /// Result format: zero for text and one for binary.
     pub format: i16,
 }
 
@@ -465,90 +517,156 @@ impl RowDescription {
     }
 }
 
+/// Backend authentication request or continuation message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Authentication {
+    /// Authentication completed successfully.
     Ok,
+    /// Requests Kerberos V5 authentication.
     KerberosV5,
+    /// Requests a cleartext password response.
     CleartextPassword,
-    Md5Password { salt: [u8; 4] },
+    /// Requests a `PostgreSQL` MD5 password response.
+    Md5Password {
+        /// Four-byte server challenge salt.
+        salt: [u8; 4],
+    },
+    /// Begins a GSSAPI token exchange.
     Gss,
+    /// Continues a GSSAPI token exchange with a server token.
     GssContinue(Bytes),
+    /// Begins an SSPI token exchange.
     Sspi,
-    Sasl { mechanisms: Vec<Bytes> },
+    /// Offers SASL authentication mechanisms.
+    Sasl {
+        /// Mechanism names in server preference order.
+        mechanisms: Vec<Bytes>,
+    },
+    /// Carries a SASL server-first challenge.
     SaslContinue(Bytes),
+    /// Carries the SASL server-final message.
     SaslFinal(Bytes),
 }
 
+/// Transaction state reported by `ReadyForQuery`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransactionStatus {
+    /// No transaction is active.
     Idle,
+    /// A transaction is active and has not failed.
     InTransaction,
+    /// A transaction is active and failed; only rollback is legal.
     FailedTransaction,
 }
 
+/// Backend response negotiating a requested protocol minor version and options.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NegotiateProtocolVersion {
+    /// Newest protocol version supported by the server.
     pub newest: ProtocolVersion,
+    /// Startup option names the server does not support.
     pub unsupported_options: Vec<Bytes>,
 }
 
+/// Ordered diagnostic fields from an error or notice response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticResponse {
+    /// Diagnostic fields in their original wire order.
     pub fields: Vec<DiagnosticField>,
 }
 
+/// One tagged `PostgreSQL` diagnostic field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticField {
+    /// `PostgreSQL`'s one-byte diagnostic field code.
     pub code: u8,
+    /// Field value without its terminating NUL byte.
     pub value: Bytes,
 }
 
+/// Format metadata which begins a COPY sub-protocol.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CopyResponse {
+    /// Overall COPY format: zero for text and one for binary.
     pub overall_format: u8,
+    /// Per-column format codes.
     pub column_formats: Vec<i16>,
 }
 
+/// One result row retaining raw text or binary column values.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataRow {
+    /// Column values in result order; `None` represents SQL `NULL`.
     pub columns: Vec<Option<Bytes>>,
 }
 
+/// Messages sent by a `PostgreSQL` backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackendMessage {
+    /// Describes the columns of a result set.
     RowDescription(RowDescription),
+    /// Requests, continues, or completes authentication.
     Authentication(Authentication),
+    /// Confirms `Parse` completion.
     ParseComplete,
+    /// Confirms `Bind` completion.
     BindComplete,
+    /// Confirms `Close` completion.
     CloseComplete,
+    /// Reports a completed SQL command tag.
     CommandComplete(Bytes),
+    /// Carries COPY or replication data.
     CopyData(Bytes),
+    /// Signals completion of backend COPY output.
     CopyDone,
+    /// Enters COPY IN mode.
     CopyInResponse(CopyResponse),
+    /// Enters COPY OUT mode.
     CopyOutResponse(CopyResponse),
+    /// Enters bidirectional COPY mode.
     CopyBothResponse(CopyResponse),
+    /// Carries one result row.
     DataRow(DataRow),
+    /// Reports an empty simple-query string.
     EmptyQueryResponse,
+    /// Reports an error with structured diagnostics.
     ErrorResponse(DiagnosticResponse),
+    /// Reports that a described statement or portal has no row metadata.
     NoData,
+    /// Reports a runtime parameter value.
     ParameterStatus {
+        /// Parameter name.
         name: Bytes,
+        /// Current parameter value.
         value: Bytes,
     },
+    /// Reports a non-fatal notice.
     NoticeResponse(DiagnosticResponse),
+    /// Delivers an asynchronous `LISTEN`/`NOTIFY` notification.
     NotificationResponse {
+        /// Process ID of the notifying backend.
         process_id: u32,
+        /// Notification channel.
         channel: Bytes,
+        /// Notification payload.
         payload: Bytes,
     },
+    /// Supplies the backend cancellation key.
     BackendKeyData {
+        /// Backend process ID.
         process_id: u32,
+        /// Backend secret cancellation key.
         secret_key: Bytes,
     },
+    /// Marks an idle command boundary and reports transaction state.
     ReadyForQuery(TransactionStatus),
+    /// Reports inferred or declared prepared-statement parameter OIDs.
     ParameterDescription(Vec<u32>),
+    /// Reports that an execution stopped at its row limit and may resume.
     PortalSuspended,
+    /// Returns the legacy function-call result bytes.
     FunctionCallResponse(Bytes),
+    /// Negotiates protocol version and unsupported startup options.
     NegotiateProtocolVersion(NegotiateProtocolVersion),
 }
 

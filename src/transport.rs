@@ -38,6 +38,7 @@ pub struct Buffered<S, D = Backend> {
 }
 
 impl<S> Buffered<S, Backend> {
+    /// Wraps an upstream-facing transport which receives backend messages.
     pub fn new(io: S) -> Self {
         Self {
             io,
@@ -67,6 +68,7 @@ impl<S> Buffered<S, Backend> {
 }
 
 impl<S> Buffered<S, Frontend> {
+    /// Wraps a client-facing transport which receives frontend messages.
     pub fn new_frontend(io: S) -> Self {
         Self {
             io,
@@ -125,10 +127,12 @@ impl<S, D> Buffered<S, D> {
     }
 
     #[must_use]
+    /// Returns encoded bytes which have not yet been fully written.
     pub fn pending(&self) -> &[u8] {
         &self.outbound
     }
 
+    /// Removes buffering and returns the underlying I/O transport.
     pub fn into_inner(self) -> S {
         self.io
     }
@@ -138,10 +142,12 @@ impl<S, D> Buffered<S, D> {
     }
 
     #[must_use]
+    /// Returns the backend asynchronous-message demultiplexer.
     pub const fn demux(&self) -> &Demux {
         &self.demux
     }
 
+    /// Returns mutable access to the backend asynchronous-message demultiplexer.
     pub const fn demux_mut(&mut self) -> &mut Demux {
         &mut self.demux
     }
@@ -318,6 +324,7 @@ impl<S, D, Phase, Cleanliness> Conn<Buffered<S, D>, Phase, Cleanliness> {
     }
 
     #[must_use]
+    /// Returns encoded output which has not yet been flushed.
     pub fn pending_output(&self) -> &[u8] {
         self.transport().pending()
     }
@@ -525,6 +532,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     }
 
     #[must_use]
+    /// Returns the latest upstream cancellation key observed during startup.
     pub fn cancel_key(&self) -> Option<&CancelKey> {
         self.transport().demux().cancel_key()
     }
@@ -547,6 +555,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         self.transport().demux().transaction_status()
     }
 
+    /// Removes the oldest queued asynchronous notification.
     pub fn pop_notification(&mut self) -> Option<Notification> {
         self.transport_mut().demux_mut().pop_notification()
     }

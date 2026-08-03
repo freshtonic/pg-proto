@@ -7,7 +7,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 /// A frontend startup message, retained as bytes for lossless proxy forwarding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartupMessage {
+    /// Requested frontend/backend protocol version.
     pub version: ProtocolVersion,
+    /// Startup parameter names and values, including user and database.
     pub parameters: BTreeMap<Bytes, Bytes>,
 }
 
@@ -80,13 +82,18 @@ impl StartupMessage {
 /// `PostgreSQL` protocol version, including supported 3.x minor versions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolVersion {
+    /// Protocol major version.
     pub major: u16,
+    /// Protocol minor version.
     pub minor: u16,
 }
 
 impl ProtocolVersion {
+    /// `PostgreSQL` protocol 3.0.
     pub const V3_0: Self = Self { major: 3, minor: 0 };
+    /// `PostgreSQL` protocol 3.1.
     pub const V3_1: Self = Self { major: 3, minor: 1 };
+    /// `PostgreSQL` protocol 3.2.
     pub const V3_2: Self = Self { major: 3, minor: 2 };
 }
 

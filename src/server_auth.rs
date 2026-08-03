@@ -17,38 +17,54 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// The proxy is selecting how to authenticate its client.
 pub enum ServerAuth {}
 
 #[derive(Debug)]
+/// The client's startup protocol version is supported.
 pub enum ServerStartupValidated {}
 
 #[derive(Debug)]
+/// The client's startup protocol version must be rejected.
 pub enum ServerStartupRejected {}
 
 #[derive(Debug)]
+/// A password response is expected from the client.
 pub enum ServerPassword {}
 
 #[derive(Debug)]
+/// A SASL initial response is expected from the client.
 pub enum ServerSaslInitial {}
 
 #[derive(Debug)]
+/// A recursive SASL response exchange is in progress.
 pub enum ServerSasl {}
 
 #[derive(Debug)]
+/// A GSS, SSPI, or Kerberos response token is expected.
 pub enum ServerAuthResponse {}
 
 #[derive(Debug)]
+/// Authentication succeeded and startup metadata may be sent before readiness.
 pub enum ServerStartupReady {}
 
+/// Result of validating a client's requested protocol version.
 #[derive(Debug)]
 pub enum ServerProtocolOffer<S, C> {
+    /// The major version is supported, with optional minor-version negotiation.
     Supported {
+        /// Connection authorised to begin authentication.
         conn: Conn<S, ServerStartupValidated, C>,
+        /// Inspected startup message.
         message: StartupMessage,
+        /// Highest supported version to advertise when the requested minor is newer.
         negotiate_to: Option<ProtocolVersion>,
     },
+    /// The major protocol version is unsupported.
     Rejected {
+        /// Connection authorised only to send an error and terminate.
         conn: Conn<S, ServerStartupRejected, C>,
+        /// Rejected startup message.
         message: StartupMessage,
     },
 }
@@ -56,7 +72,9 @@ pub enum ServerProtocolOffer<S, C> {
 /// A decoded SASL initial response selected by the client.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SaslInitialResponse {
+    /// SASL mechanism selected by the client.
     pub mechanism: Bytes,
+    /// Optional mechanism-specific initial response.
     pub response: Option<Bytes>,
 }
 
@@ -73,9 +91,11 @@ impl std::fmt::Debug for SaslInitialResponse {
 /// A rejected frontend message paired with the unchanged authentication state.
 pub type ServerProjection<T, S, Phase, C> = Result<T, Box<(Conn<S, Phase, C>, FrontendMessage)>>;
 
+/// Projection of a valid password body or the unchanged server-password state.
 pub type PasswordProjection<S, C> =
     ServerProjection<(Conn<S, ServerAuth, C>, Bytes), S, ServerPassword, C>;
 
+/// Projection of a valid SASL initial response or the unchanged initial state.
 pub type SaslInitialProjection<S, C> =
     ServerProjection<(Conn<S, ServerSasl, C>, SaslInitialResponse), S, ServerSaslInitial, C>;
 

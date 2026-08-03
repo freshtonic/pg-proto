@@ -817,8 +817,14 @@ mod tests {
 
     #[test]
     fn copy_both_waits_for_both_half_closes() {
+        use crate::grammar::frontend::{Event, RuntimeFsm, RuntimeState};
+
+        let mut client_first = RuntimeFsm::new();
+        client_first.step(Event::Query).unwrap();
+        client_first.step(Event::CopyBoth).unwrap();
         let open: Conn<(), CopyBoth> = Conn::new(()).transition();
         let (client_done, frame) = open.push_copy_done();
+        client_first.step(Event::SendCopyDone).unwrap();
         assert_eq!(frame.tag, b'c');
         let CopyBothClientDoneReceive::Data(client_done, data) = client_done
             .offer(SessionItem::Message(BackendMessage::CopyData(
@@ -828,6 +834,7 @@ mod tests {
         else {
             panic!("backend data projected to the wrong branch")
         };
+        client_first.step(Event::ReceiveCopyData).unwrap();
         assert_eq!(data, Bytes::from_static(b"after client close"));
         let CopyBothClientDoneReceive::Done(awaiting) = client_done
             .offer(SessionItem::Message(BackendMessage::CopyDone))
@@ -835,8 +842,13 @@ mod tests {
         else {
             panic!("backend close projected to the wrong branch")
         };
+        client_first.step(Event::ReceiveCopyDone).unwrap();
+        assert_eq!(client_first.state(), RuntimeState::AwaitingReady);
         awaiting.into_transport();
 
+        let mut server_first = RuntimeFsm::new();
+        server_first.step(Event::Query).unwrap();
+        server_first.step(Event::CopyBoth).unwrap();
         let open: Conn<(), CopyBoth> = Conn::new(()).transition();
         let CopyBothReceive::Done(server_done) = open
             .offer(SessionItem::Message(BackendMessage::CopyDone))
@@ -844,11 +856,15 @@ mod tests {
         else {
             panic!("backend close projected to the wrong branch")
         };
+        server_first.step(Event::ReceiveCopyDone).unwrap();
         let (server_done, data) =
             server_done.push_copy_data(Bytes::from_static(b"after server close"));
+        server_first.step(Event::SendCopyData).unwrap();
         assert_eq!(data.tag, b'd');
         let (awaiting, done) = server_done.push_copy_done();
+        server_first.step(Event::SendCopyDone).unwrap();
         assert_eq!(done.tag, b'c');
+        assert_eq!(server_first.state(), RuntimeState::AwaitingReady);
         awaiting.into_transport();
     }
 

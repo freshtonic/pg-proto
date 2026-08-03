@@ -1,8 +1,8 @@
 //! Buffered, cancellation-safe outbound transport.
 
-use std::{io, sync::Arc};
+use std::{collections::BTreeMap, io, sync::Arc};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use rustls::{
     ClientConfig, ServerConfig,
     pki_types::{CertificateDer, ServerName},
@@ -405,6 +405,24 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         self.transport().demux().cancel_key()
     }
 
+    /// Returns the latest backend parameter values observed by the demux.
+    #[must_use]
+    pub fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
+        self.transport().demux().parameters()
+    }
+
+    /// Returns whether current parameters differ from the startup baseline.
+    #[must_use]
+    pub fn parameters_changed(&self) -> bool {
+        self.transport().demux().parameters_changed()
+    }
+
+    /// Returns the latest transaction status observed in `ReadyForQuery`.
+    #[must_use]
+    pub fn transaction_status(&self) -> Option<crate::codec::TransactionStatus> {
+        self.transport().demux().transaction_status()
+    }
+
     pub fn pop_notification(&mut self) -> Option<Notification> {
         self.transport_mut().demux_mut().pop_notification()
     }
@@ -584,6 +602,17 @@ mod tests {
                 .get(&Bytes::from_static(b"client_encoding")),
             Some(&Bytes::from_static(b"UTF8"))
         );
+        let conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
+        assert_eq!(
+            conn.parameters().get(b"client_encoding".as_slice()),
+            Some(&Bytes::from_static(b"UTF8"))
+        );
+        assert!(!conn.parameters_changed());
+        assert_eq!(
+            conn.transaction_status(),
+            Some(crate::codec::TransactionStatus::Idle)
+        );
+        conn.into_transport();
     }
 
     #[tokio::test]

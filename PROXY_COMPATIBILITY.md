@@ -49,6 +49,10 @@ points those policies consume.
   the two authentication mechanisms.
 - Current Proxy handles only SSLRequest in pre-startup; retaining GSSENC and
   protocol negotiation in `pg-proto` is necessary for broader PostgreSQL parity.
+- Neither audited implementation supplies GSSENC encryption or a production
+  Kerberos/GSSAPI/SSPI credential engine. `pg-proto` therefore owns the typed
+  negotiation/token loops and exposes adapter traits, but does not select an OS
+  credential provider on behalf of downstream applications.
 - Current Proxy rewrites both Parse and Bind and rewrites ParameterDescription,
   RowDescription, and DataRow responses. Byte-only forwarding is therefore not a
   sufficient proxy API for these messages.

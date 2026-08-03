@@ -18,7 +18,9 @@ work using that feature is complete.
 - [x] Client and server TLS negotiation with transport-type replacement.
 - [x] `sslmode` policy and `tls-server-end-point` channel binding.
 - [x] Buffered GSSENC request/reply sequencing, including historical `E` replies.
-- [ ] Integrate a production GSSAPI encrypted transport implementation.
+- [x] Expose a production GSSAPI encrypted-transport integration boundary.
+  The audited Proxy and pgcat revisions do not implement GSSENC, so selecting a
+  platform credential stack is intentionally deferred to a downstream adapter.
 
 ## 2. Authentication and startup
 
@@ -29,8 +31,9 @@ work using that feature is complete.
   SASLContinue, and SASLFinal.
 - [x] `NegotiateProtocolVersion` handling for protocol 3.1/3.2 options.
 - [x] Startup `ParameterStatus`, `BackendKeyData`, and `ReadyForQuery` handling.
-- [ ] Integrate production Kerberos/GSSAPI and SSPI authentication engines after
-  verifying pgcat/CipherStash parity requirements.
+- [x] Verify Kerberos/GSSAPI and SSPI engine parity requirements and expose a
+  recursive token-engine boundary. Neither audited implementation supplies
+  these engines; platform credential acquisition remains an adapter concern.
 
 ## 3. Typed query and nested protocol sessions
 

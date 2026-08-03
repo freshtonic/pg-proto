@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod demux;
 pub mod erased;
 pub mod grammar;
+pub mod integrations;
 pub mod intermediary;
 pub mod pre_startup;
 pub mod replication;

@@ -13,6 +13,7 @@ use crate::{
         FrontendMessage, FunctionCall, Parse, RowDescription, TransactionStatus,
     },
     pre_startup::Terminated,
+    replication::{BackendReplication, FrontendReplication},
 };
 
 #[derive(Debug)]
@@ -118,6 +119,44 @@ pub enum ServerCopyBothServerDoneOffer<S, C, Resume> {
         message: Bytes,
     },
 }
+
+#[derive(Debug)]
+pub enum ServerReplicationOpenOffer<S, C, Resume> {
+    Message {
+        conn: Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
+        message: FrontendReplication,
+    },
+    Done(Conn<S, ServerCopyBoth<Resume, BothClientDone>, C>),
+    Fail {
+        conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        message: Bytes,
+    },
+}
+
+#[derive(Debug)]
+pub enum ServerReplicationServerDoneOffer<S, C, Resume> {
+    Message {
+        conn: Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        message: FrontendReplication,
+    },
+    Done(Conn<S, ServerCopyBoth<Resume, BothDone>, C>),
+    Fail {
+        conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        message: Bytes,
+    },
+}
+
+pub type ServerReplicationOpenProjection<S, C, Resume> = Result<
+    ServerReplicationOpenOffer<S, C, Resume>,
+    (Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, io::Error),
+>;
+pub type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
+    ServerReplicationServerDoneOffer<S, C, Resume>,
+    (
+        Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        io::Error,
+    ),
+>;
 
 /// Client choice inside a server-role COPY IN sub-session.
 #[derive(Debug)]
@@ -717,6 +756,15 @@ impl<S, C, Resume> Conn<S, ServerCopyOut<Resume>, C> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
     }
 
+    /// Sends a structured WAL or keepalive payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+        self.data(message.encode())
+    }
+
     /// Ends the COPY data stream before its command completion.
     ///
     /// # Errors
@@ -787,6 +835,15 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
     }
 
+    /// Sends a structured WAL or keepalive payload while both halves are open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+        self.data(message.encode())
+    }
+
     /// Half-closes the backend direction while the client direction remains open.
     ///
     /// # Errors
@@ -805,6 +862,15 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
     /// Returns an error only if the data frame cannot be encoded.
     pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
+    }
+
+    /// Sends a structured WAL or keepalive payload after the client half-close.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+        self.data(message.encode())
     }
 
     /// Half-closes the backend direction, completing both COPY streams.
@@ -837,6 +903,44 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C> {
                 message,
             }),
             other => Err(Box::new((self, other))),
+        }
+    }
+}
+
+impl<S, C, Resume> ServerCopyBothOpenOffer<S, C, Resume> {
+    /// Decodes client COPY data as a structured standby message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection with a decoding error for malformed known payloads.
+    pub fn decode_replication(self) -> ServerReplicationOpenProjection<S, C, Resume> {
+        match self {
+            Self::Data { conn, data } => match FrontendReplication::decode(data) {
+                Ok(message) => Ok(ServerReplicationOpenOffer::Message { conn, message }),
+                Err(error) => Err((conn, error)),
+            },
+            Self::Done(conn) => Ok(ServerReplicationOpenOffer::Done(conn)),
+            Self::Fail { conn, message } => Ok(ServerReplicationOpenOffer::Fail { conn, message }),
+        }
+    }
+}
+
+impl<S, C, Resume> ServerCopyBothServerDoneOffer<S, C, Resume> {
+    /// Decodes remaining client COPY data as a structured standby message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection with a decoding error for malformed known payloads.
+    pub fn decode_replication(self) -> ServerReplicationServerDoneProjection<S, C, Resume> {
+        match self {
+            Self::Data { conn, data } => match FrontendReplication::decode(data) {
+                Ok(message) => Ok(ServerReplicationServerDoneOffer::Message { conn, message }),
+                Err(error) => Err((conn, error)),
+            },
+            Self::Done(conn) => Ok(ServerReplicationServerDoneOffer::Done(conn)),
+            Self::Fail { conn, message } => {
+                Ok(ServerReplicationServerDoneOffer::Fail { conn, message })
+            }
         }
     }
 }
@@ -1217,5 +1321,44 @@ mod tests {
             panic!("idle sync was marked dirty")
         };
         ready.into_transport();
+    }
+
+    #[test]
+    fn copy_both_inspects_and_replaces_replication_messages() {
+        let both: Conn<(), ServerCopyBoth<CopySimple, BothOpen>> = Conn::new(()).transition();
+        let status = FrontendReplication::StandbyStatus {
+            written: 10,
+            flushed: 9,
+            applied: 8,
+            client_time: 7,
+            reply_requested: true,
+        };
+        let offer = both
+            .offer_frontend(FrontendMessage::CopyData(status.encode()))
+            .unwrap();
+        let ServerReplicationOpenOffer::Message {
+            conn: both,
+            message,
+        } = offer.decode_replication().unwrap()
+        else {
+            panic!("standby status projected to the wrong branch")
+        };
+        assert_eq!(message, status);
+
+        let replacement = BackendReplication::PrimaryKeepalive {
+            wal_end: 11,
+            server_time: 12,
+            reply_requested: false,
+        };
+        let (both, frame) = both.replication(&replacement).unwrap();
+        assert_eq!(frame.body, replacement.encode());
+        both.into_transport();
+
+        let both: Conn<(), ServerCopyBoth<CopySimple, BothOpen>> = Conn::new(()).transition();
+        let offer = both
+            .offer_frontend(FrontendMessage::CopyData(Bytes::from_static(b"rshort")))
+            .unwrap();
+        let (both, _) = offer.decode_replication().unwrap_err();
+        both.into_transport();
     }
 }

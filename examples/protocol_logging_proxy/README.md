@@ -11,18 +11,19 @@ with the customer/orders fixture:
 cargo run --example protocol_logging_proxy
 ```
 
-Connect with encryption disabled so that the demonstration can inspect frames:
+Connect with TLS required. The proxy terminates TLS and logs the resulting
+plaintext protocol messages before forwarding them upstream:
 
 ```sh
-psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=disable" \
+psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=require" \
   -c 'SELECT name FROM customers ORDER BY name'
 ```
 
 The output includes the startup packet and messages such as `Parse`, `Bind`,
 `RowDescription`, `DataRow`, `CommandComplete`, and `ReadyForQuery` in observed
-wire order. As with the SQL logger, this local example declines SSL and GSS
-requests; production proxies should terminate encryption rather than log
-plaintext traffic.
+wire order. The generated self-signed certificate is intended only for this
+demonstration; production deployments should provide an identity rooted in
+their normal certificate-management system.
 
 To use an existing server instead, pass the listener and upstream explicitly:
 

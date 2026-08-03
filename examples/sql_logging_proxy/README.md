@@ -6,10 +6,10 @@ and extended-query `Parse` statement, then prints the number of `DataRow`
 messages in each result when `CommandComplete` arrives.
 
 The example forwards authentication and all tagged protocol messages without
-changing them. To keep messages inspectable, it declines SSL and GSS encryption
-requests. Use `sslmode=disable` (or a mode which permits fallback) when connecting.
-A production proxy should instead terminate TLS using pg-proto's typed
-pre-startup transport transition.
+changing them. It terminates client TLS using pg-proto's typed pre-startup
+transport transition, then inspects and forwards the decrypted messages. The
+demonstration generates a fresh self-signed certificate each time it starts;
+`sslmode=require` encrypts the connection without requiring a persistent CA.
 
 ## Run the automated demonstration
 
@@ -44,7 +44,7 @@ cargo run --example sql_logging_proxy
 Then query it from another terminal:
 
 ```sh
-psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=disable" \
+psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=require" \
   -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
 ```
 
@@ -79,7 +79,7 @@ cargo run --example sql_logging_proxy -- 127.0.0.1:6432 127.0.0.1:5432
 Then query through it from a third terminal:
 
 ```sh
-psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=disable" \
+psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=require" \
   -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
 ```
 

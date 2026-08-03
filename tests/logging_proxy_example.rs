@@ -34,9 +34,18 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
     let proxy_address = listener.local_addr()?;
     let observations = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&observations);
+    let tls = proxy_support::ExampleTlsIdentity::generate()?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(tls.certificate())?;
+    let client_tls = tokio_postgres_rustls::MakeRustlsConnect::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
     let proxy = tokio::spawn(proxy_support::serve(
         listener,
         upstream,
+        tls,
         Arc::new(move |event| captured.lock().expect("observation lock").push(event)),
     ));
 
@@ -45,8 +54,9 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
         .host("127.0.0.1")
         .port(proxy_address.port())
         .user("postgres")
-        .dbname("postgres");
-    let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+        .dbname("postgres")
+        .ssl_mode(tokio_postgres::config::SslMode::Require);
+    let (client, connection) = config.connect(client_tls).await?;
     let connection = tokio::spawn(connection);
 
     let sql = "SELECT c.name, count(o.id)::bigint AS order_count \
@@ -70,6 +80,15 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
     assert!(captured.iter().any(|event| matches!(
         event,
         Observation::RowCount { rows: 3, command, .. } if command == "SELECT 3"
+    )));
+    assert!(captured.iter().any(|event| matches!(
+        event,
+        Observation::Protocol { message, .. } if message == "SslAccepted"
+    )));
+    assert!(captured.iter().any(|event| matches!(
+        event,
+        Observation::Protocol { direction: "client -> server (TLS plaintext)", message, .. }
+            if message.starts_with("Startup(")
     )));
     drop(captured);
 

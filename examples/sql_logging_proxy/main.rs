@@ -11,12 +11,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listen = address(1, "127.0.0.1:6432")?;
     let upstream = proxy_support::ExampleUpstream::resolve(env::args().nth(2).as_deref()).await?;
     let upstream_address = upstream.address();
+    let tls = proxy_support::ExampleTlsIdentity::generate()?;
     let listener = TcpListener::bind(listen).await?;
     println!("SQL logging proxy listening on {listen}; upstream is {upstream_address}");
 
     proxy_support::serve(
         listener,
         upstream_address,
+        tls,
         Arc::new(|event| match event {
             Observation::Sql {
                 connection,

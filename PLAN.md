@@ -179,6 +179,8 @@ neutral composition harnesses and examples.
   - [x] Document automated container and interactive workflows for both examples.
   - [x] Start and retain the populated test container automatically when no
     explicit upstream is supplied, and preflight explicit upstreams.
+  - [x] Terminate client TLS in the proxy through pg-proto's typed pre-startup
+    transport upgrade so policies observe decrypted messages.
 
 - [x] Extend connection-branded outbound construction across repeated Parse/Bind,
   both Describe and Close targets, Execute, Flush, and Sync.

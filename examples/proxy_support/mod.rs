@@ -1,17 +1,23 @@
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
-use bytes::BytesMut;
 use pg_proto::{
+    Conn,
     codec::{Backend, BackendMessage, Frontend, FrontendMessage},
-    pre_startup::{PreStartupMessage, decode_pre_startup},
+    pre_startup::{PreStartup, PreStartupMessage, PreStartupOffer, Startup},
+    tls::ServerTls,
     transport::Buffered,
+};
+use rcgen::generate_simple_self_signed;
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ContainerAsync, ImageExt as _, runners::AsyncRunner as _},
 };
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
 };
 
@@ -34,6 +40,36 @@ pub enum Observation {
 }
 
 pub type Observer = Arc<dyn Fn(Observation) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ExampleTlsIdentity {
+    config: Arc<ServerConfig>,
+    certificate: CertificateDer<'static>,
+}
+
+impl ExampleTlsIdentity {
+    pub fn generate() -> Result<Self, Box<dyn Error>> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let generated =
+            generate_simple_self_signed(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])?;
+        let certificate = CertificateDer::from(generated.cert.der().to_vec());
+        let key = PrivateKeyDer::try_from(generated.signing_key.serialize_der())?;
+        let config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.clone()], key)?,
+        );
+        Ok(Self {
+            config,
+            certificate,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn certificate(&self) -> CertificateDer<'static> {
+        self.certificate.clone()
+    }
+}
 
 pub struct ExampleUpstream {
     address: SocketAddr,
@@ -88,6 +124,7 @@ impl ExampleUpstream {
 pub async fn serve(
     listener: TcpListener,
     upstream: SocketAddr,
+    tls: ExampleTlsIdentity,
     observer: Observer,
 ) -> io::Result<()> {
     let mut next_connection = 1_u64;
@@ -96,8 +133,10 @@ pub async fn serve(
         let connection = next_connection;
         next_connection = next_connection.wrapping_add(1);
         let observer = Arc::clone(&observer);
+        let tls = tls.clone();
         tokio::spawn(async move {
-            if let Err(error) = proxy_connection(client, upstream, connection, observer).await {
+            if let Err(error) = proxy_connection(client, upstream, tls, connection, observer).await
+            {
                 eprintln!("connection {connection}: {error}");
             }
         });
@@ -105,72 +144,142 @@ pub async fn serve(
 }
 
 async fn proxy_connection(
-    mut client: TcpStream,
+    client: TcpStream,
     upstream: SocketAddr,
+    tls: ExampleTlsIdentity,
     connection: u64,
     observer: Observer,
 ) -> io::Result<()> {
+    let mut pre_startup = Conn::new(Buffered::new_frontend(client));
     loop {
-        let message = read_pre_startup(&mut client).await?;
+        let message = pre_startup.receive_pre_startup_wire().await?;
         observer(Observation::Protocol {
             connection,
             direction: "client -> server",
             message: format!("{message:?}"),
         });
-        match message {
-            PreStartupMessage::SslRequest | PreStartupMessage::GssEncRequest => {
-                // These examples deliberately keep the session inspectable. A
-                // production proxy would terminate TLS here with pg-proto's
-                // changing-transport pre-startup API.
-                client.write_all(b"N").await?;
+        match pre_startup.offer_pre_startup(message) {
+            PreStartupOffer::Ssl(decision) => {
+                let mut handshake = decision.approve_ssl();
+                handshake.flush().await?;
                 observer(Observation::Protocol {
                     connection,
                     direction: "server -> client",
-                    message: "EncryptionRejected".to_owned(),
+                    message: "SslAccepted".to_owned(),
+                });
+                let encrypted = handshake.accept_tls(tls.config, tls.certificate).await?;
+                return encrypted_startup(encrypted, upstream, connection, observer).await;
+            }
+            PreStartupOffer::Gss(decision) => {
+                pre_startup = decision.decline_gss();
+                pre_startup.flush().await?;
+                observer(Observation::Protocol {
+                    connection,
+                    direction: "server -> client",
+                    message: "GssEncryptionRejected".to_owned(),
                 });
             }
-            PreStartupMessage::CancelRequest { .. } => {
-                let mut server = TcpStream::connect(upstream).await?;
-                server.write_all(&message.to_packet()?).await?;
-                return Ok(());
+            PreStartupOffer::Cancel {
+                conn,
+                process_id,
+                secret_key,
+            } => {
+                drop(conn.into_transport().into_inner());
+                return forward_cancel(
+                    PreStartupMessage::CancelRequest {
+                        process_id,
+                        secret_key,
+                    },
+                    upstream,
+                )
+                .await;
             }
-            PreStartupMessage::Startup(_) => {
-                let mut server = TcpStream::connect(upstream).await?;
-                server.write_all(&message.to_packet()?).await?;
-                return forward_tagged(client, server, connection, observer).await;
+            PreStartupOffer::Startup { conn, message } => {
+                return begin_forwarding(conn, message, upstream, connection, observer).await;
             }
         }
     }
 }
 
-async fn read_pre_startup(client: &mut TcpStream) -> io::Result<PreStartupMessage> {
-    let wire_length = client.read_u32().await?;
-    let length = usize::try_from(wire_length)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "packet length overflow"))?;
-    if !(8..=pg_proto::pre_startup::DEFAULT_MAX_PRE_STARTUP_PACKET_LEN).contains(&length) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "pre-startup packet length is outside the configured limit",
-        ));
-    }
-    let mut packet = BytesMut::with_capacity(length);
-    packet.extend_from_slice(&wire_length.to_be_bytes());
-    packet.resize(length, 0);
-    client.read_exact(&mut packet[4..]).await?;
-    decode_pre_startup(&mut packet)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "incomplete pre-startup packet",
-        )
-    })
-}
-
-async fn forward_tagged(
-    client: TcpStream,
-    server: TcpStream,
+async fn encrypted_startup(
+    mut pre_startup: Conn<Buffered<ServerTls<TcpStream>, Frontend>, PreStartup>,
+    upstream: SocketAddr,
     connection: u64,
     observer: Observer,
 ) -> io::Result<()> {
+    let message = pre_startup.receive_pre_startup_wire().await?;
+    observer(Observation::Protocol {
+        connection,
+        direction: "client -> server (TLS plaintext)",
+        message: format!("{message:?}"),
+    });
+    match pre_startup.offer_pre_startup(message) {
+        PreStartupOffer::Startup { conn, message } => {
+            begin_forwarding(conn, message, upstream, connection, observer).await
+        }
+        PreStartupOffer::Cancel {
+            conn,
+            process_id,
+            secret_key,
+        } => {
+            drop(conn.into_transport().into_inner());
+            forward_cancel(
+                PreStartupMessage::CancelRequest {
+                    process_id,
+                    secret_key,
+                },
+                upstream,
+            )
+            .await
+        }
+        PreStartupOffer::Ssl(conn) => invalid_encrypted_request(conn, "SSLRequest"),
+        PreStartupOffer::Gss(conn) => invalid_encrypted_request(conn, "GSSENCRequest"),
+    }
+}
+
+fn invalid_encrypted_request<S, Phase>(
+    conn: Conn<Buffered<S, Frontend>, Phase>,
+    request: &str,
+) -> io::Result<()> {
+    drop(conn.into_transport().into_inner());
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{request} is not valid inside TLS"),
+    ))
+}
+
+async fn forward_cancel(message: PreStartupMessage, upstream: SocketAddr) -> io::Result<()> {
+    let mut server = TcpStream::connect(upstream).await?;
+    server.write_all(&message.to_packet()?).await
+}
+
+async fn begin_forwarding<S>(
+    conn: Conn<Buffered<S, Frontend>, Startup>,
+    message: pg_proto::startup::StartupMessage,
+    upstream: SocketAddr,
+    connection: u64,
+    observer: Observer,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let client = conn.into_transport().into_inner();
+    let mut server = TcpStream::connect(upstream).await?;
+    server
+        .write_all(&PreStartupMessage::Startup(message).to_packet()?)
+        .await?;
+    forward_tagged(client, server, connection, observer).await
+}
+
+async fn forward_tagged<S>(
+    client: S,
+    server: TcpStream,
+    connection: u64,
+    observer: Observer,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut downstream: Buffered<_, Frontend> = Buffered::new_frontend(client);
     let mut upstream: Buffered<_, Backend> = Buffered::new(server);
     let mut rows = 0_usize;

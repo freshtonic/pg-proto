@@ -61,6 +61,9 @@ work using that feature is complete.
   methods so generated APIs can replace the handwritten phase implementations.
 - [ ] Generate or share projection logic between the typed API and runtime FSM,
   eliminating manually duplicated message-to-event matching.
+  - [x] Emit one canonical runtime transition table used for both target-state
+    and direction lookup, and expose it for differential sequence generation.
+  - [ ] Generate the codec-message-to-event projection used by typed sessions.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
 - [ ] Remove superseded handwritten state-machine code after parity is proven.
@@ -130,3 +133,4 @@ work using that feature is complete.
   - [x] Type remaining data-bearing continuations; retain asynchronous notices,
     parameter statuses, and notifications below the session grammar as the
     deliberately filtered byte-stream projection.
+- [ ] Generate shared codec-message-to-event projection from the grammar.

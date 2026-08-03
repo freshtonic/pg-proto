@@ -171,7 +171,8 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .or_insert(&transition.event);
             events
         })
-        .into_values();
+        .into_values()
+        .collect::<Vec<_>>();
     let cleanliness_names = states
         .iter()
         .flat_map(|state| state.transitions.iter())
@@ -181,12 +182,22 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             names
         })
         .into_values();
-    let transition_arms = states.iter().flat_map(|state| {
+    let transition_descriptors = states.iter().flat_map(|state| {
         let source = &state.name;
         state.transitions.iter().map(move |transition| {
             let event = &transition.event;
             let target = &transition.target;
-            quote!((RuntimeState::#source, Event::#event) => RuntimeState::#target)
+            let choice = match transition.choice.unwrap_or(state.choice) {
+                ChoiceKind::Internal => quote!(ChoiceKind::Internal),
+                ChoiceKind::External => quote!(ChoiceKind::External),
+                ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
+            };
+            quote!(RuntimeTransition {
+                source: RuntimeState::#source,
+                event: Event::#event,
+                target: RuntimeState::#target,
+                choice: #choice,
+            })
         })
     });
     let choice_arms = states.iter().map(|state| {
@@ -197,18 +208,6 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             ChoiceKind::Mixed => quote!(ChoiceKind::Mixed),
         };
         quote!(RuntimeState::#name => #choice)
-    });
-    let event_choice_arms = states.iter().flat_map(|state| {
-        let source = &state.name;
-        state.transitions.iter().map(move |transition| {
-            let event = &transition.event;
-            let choice = match transition.choice.unwrap_or(state.choice) {
-                ChoiceKind::Internal => quote!(ChoiceKind::Internal),
-                ChoiceKind::External => quote!(ChoiceKind::External),
-                ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
-            };
-            quote!((RuntimeState::#source, Event::#event) => Some(#choice))
-        })
     });
     let typestate_impls = states.iter().map(|state| {
         let source = &state.name;
@@ -365,6 +364,8 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum Event { #(#events),* }
 
+            pub const ALL_EVENTS: &[Event] = &[#(Event::#events),*];
+
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum ChoiceKind { Internal, External, Mixed }
 
@@ -377,6 +378,27 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                         Self::Mixed => Self::Mixed,
                     }
                 }
+            }
+
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            pub struct RuntimeTransition {
+                pub source: RuntimeState,
+                pub event: Event,
+                pub target: RuntimeState,
+                pub choice: ChoiceKind,
+            }
+
+            pub const TRANSITIONS: &[RuntimeTransition] = &[#(#transition_descriptors),*];
+
+            #[must_use]
+            pub fn transition(
+                state: RuntimeState,
+                event: Event,
+            ) -> Option<RuntimeTransition> {
+                TRANSITIONS
+                    .iter()
+                    .copied()
+                    .find(|transition| transition.source == state && transition.event == event)
             }
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -413,13 +435,13 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
 
                 /// Returns the direction of one legal event from the current state.
                 #[must_use]
-                pub const fn event_choice(&self, event: Event) -> Option<ChoiceKind> {
-                    match (self.state, event) { #(#event_choice_arms,)* _ => None }
+                pub fn event_choice(&self, event: Event) -> Option<ChoiceKind> {
+                    transition(self.state, event).map(|transition| transition.choice)
                 }
 
                 /// Returns the direction of one legal event for the dual role.
                 #[must_use]
-                pub const fn dual_event_choice(&self, event: Event) -> Option<ChoiceKind> {
+                pub fn dual_event_choice(&self, event: Event) -> Option<ChoiceKind> {
                     match self.event_choice(event) {
                         Some(choice) => Some(choice.dual()),
                         None => None,
@@ -427,11 +449,16 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
 
                 pub fn step(&mut self, event: Event) -> Result<(), TransitionError> {
-                    self.state = match (self.state, event) {
-                        #(#transition_arms,)*
-                        (state, event) => return Err(TransitionError { state, event }),
-                    };
-                    Ok(())
+                    match transition(self.state, event) {
+                        Some(transition) => {
+                            self.state = transition.target;
+                            Ok(())
+                        }
+                        None => Err(TransitionError {
+                            state: self.state,
+                            event,
+                        }),
+                    }
                 }
             }
 

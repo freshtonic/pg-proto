@@ -142,3 +142,28 @@ fn mixed_states_retain_each_transition_direction() {
     assert!(duplex::DUPLEX_RAILROAD_SVG.contains('⊕'));
     assert!(duplex::DUPLEX_RAILROAD_SVG.contains('&'));
 }
+
+#[test]
+fn runtime_target_and_direction_share_the_generated_transition_table() {
+    assert_eq!(query::ALL_EVENTS.len(), 4);
+    assert_eq!(query::TRANSITIONS.len(), 5);
+
+    for (index, transition) in query::TRANSITIONS.iter().enumerate() {
+        assert!(!query::TRANSITIONS[..index].iter().any(|previous| {
+            previous.source == transition.source && previous.event == transition.event
+        }));
+        assert_eq!(
+            query::transition(transition.source, transition.event),
+            Some(*transition)
+        );
+    }
+
+    let mut runtime = query::RuntimeFsm::new();
+    let query_transition = query::transition(runtime.state(), query::Event::Query).unwrap();
+    assert_eq!(
+        runtime.event_choice(query::Event::Query),
+        Some(query_transition.choice)
+    );
+    runtime.step(query::Event::Query).unwrap();
+    assert_eq!(runtime.state(), query_transition.target);
+}

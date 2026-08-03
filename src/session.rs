@@ -9,13 +9,16 @@ use crate::{
     auth::Ready,
     codec::{
         BackendMessage, Bind, Close, CopyResponse, Describe, DiagnosticResponse, Execute, Frame,
-        Parse, TransactionStatus,
+        FunctionCall, Parse, TransactionStatus,
     },
     demux::SessionItem,
 };
 
 #[derive(Debug)]
 pub enum SimpleQuery {}
+
+#[derive(Debug)]
+pub enum FunctionCalling {}
 
 #[derive(Debug)]
 pub enum Building {}
@@ -62,6 +65,12 @@ pub enum SimpleTransition<S, C> {
 pub enum AwaitingReadyTransition<S, C> {
     Continue(Conn<S, AwaitingReady, C>, SessionItem),
     Ready(ReadyState<S, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum FunctionCallTransition<S, C> {
+    Response(Conn<S, AwaitingReady, C>, Bytes),
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
@@ -124,6 +133,18 @@ impl<S, C> Conn<S, Ready, C> {
         Ok((self.transition(), cstr_frame(b'Q', query)?))
     }
 
+    /// Buffers the deprecated function-call protocol message as a typed exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a count or argument length exceeds its wire field.
+    pub fn push_function_call(
+        self,
+        message: &FunctionCall,
+    ) -> io::Result<(Conn<S, FunctionCalling, C>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
+    }
+
     /// Begins extended-query construction and consumes the ready connection.
     ///
     /// ```compile_fail
@@ -135,6 +156,29 @@ impl<S, C> Conn<S, Ready, C> {
     /// ```
     pub fn begin_extended(self) -> Conn<S, Building, C> {
         self.transition()
+    }
+}
+
+impl<S, C> Conn<S, FunctionCalling, C> {
+    /// Accepts exactly the function result or an error, after which readiness
+    /// must still be consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and message for an illegal response.
+    pub fn offer(
+        self,
+        message: BackendMessage,
+    ) -> Result<FunctionCallTransition<S, C>, (Self, BackendMessage)> {
+        match message {
+            BackendMessage::FunctionCallResponse(value) => {
+                Ok(FunctionCallTransition::Response(self.transition(), value))
+            }
+            BackendMessage::ErrorResponse(error) => {
+                Ok(FunctionCallTransition::Error(self.transition(), error))
+            }
+            other => Err((self, other)),
+        }
     }
 }
 
@@ -549,6 +593,38 @@ mod tests {
         let (awaiting_ready, sync) = bound.push_sync();
         assert_eq!(sync.tag, b'S');
         awaiting_ready.into_transport();
+    }
+
+    #[test]
+    fn function_call_requires_result_then_ready() {
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let call = FunctionCall {
+            function_oid: 42,
+            argument_formats: vec![1],
+            arguments: vec![Some(Bytes::from_static(b"argument"))],
+            result_format: 1,
+        };
+        let (calling, frame) = ready.push_function_call(&call).unwrap();
+        assert_eq!(frame.tag, b'F');
+
+        let FunctionCallTransition::Response(awaiting_ready, result) = calling
+            .offer(BackendMessage::FunctionCallResponse(Bytes::from_static(
+                b"result",
+            )))
+            .unwrap()
+        else {
+            panic!("function result projected to the wrong branch")
+        };
+        assert_eq!(result, Bytes::from_static(b"result"));
+        let AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) =
+            awaiting_ready.offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+        else {
+            panic!("function call did not return to ready")
+        };
+        ready.into_transport();
     }
 
     #[test]

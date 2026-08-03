@@ -10,7 +10,7 @@ use crate::{
     auth::Ready,
     codec::{
         BackendMessage, Bind, Close, CopyResponse, Describe, DiagnosticResponse, Execute, Frame,
-        FrontendMessage, Parse, RowDescription, TransactionStatus,
+        FrontendMessage, FunctionCall, Parse, RowDescription, TransactionStatus,
     },
     pre_startup::Terminated,
 };
@@ -20,6 +20,15 @@ pub enum ServerSimpleQuery {}
 
 #[derive(Debug)]
 pub enum ServerSimpleError {}
+
+#[derive(Debug)]
+pub enum ServerFunctionCall {}
+
+#[derive(Debug)]
+pub enum ServerFunctionCallDone {}
+
+#[derive(Debug)]
+pub enum ServerFunctionCallError {}
 
 #[derive(Debug)]
 pub enum ServerBuilding {}
@@ -160,6 +169,10 @@ pub enum ServerReadyOffer<S, C> {
         conn: Conn<S, ServerSimpleQuery, C>,
         query: Bytes,
     },
+    FunctionCall {
+        conn: Conn<S, ServerFunctionCall, C>,
+        message: FunctionCall,
+    },
     Extended(ServerExtendedOffer<S, C>),
     Terminate(Conn<S, Terminated, C>),
 }
@@ -226,9 +239,64 @@ impl<S, C> Conn<S, Ready, C> {
                 conn: self.transition(),
                 query,
             }),
+            FrontendMessage::FunctionCall(message) => Ok(ServerReadyOffer::FunctionCall {
+                conn: self.transition(),
+                message,
+            }),
             FrontendMessage::Terminate => Ok(ServerReadyOffer::Terminate(self.transition())),
             other => project_extended(self, other).map(ServerReadyOffer::Extended),
         }
+    }
+}
+
+impl<S, C> Conn<S, ServerFunctionCall, C> {
+    /// Sends the typed function result before the mandatory ready message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the result is too large for a wire frame.
+    pub fn respond(self, value: Bytes) -> io::Result<(Conn<S, ServerFunctionCallDone, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::FunctionCallResponse(value).to_frame()?,
+        ))
+    }
+
+    /// Rejects the call before the mandatory ready message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, ServerFunctionCallError, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::ErrorResponse(response).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerFunctionCallDone, C> {
+    /// Sends readiness after a successful function call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed ready message cannot be encoded.
+    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+        ready(self, status)
+    }
+}
+
+impl<S, C> Conn<S, ServerFunctionCallError, C> {
+    /// Sends readiness after a failed function call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed ready message cannot be encoded.
+    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+        ready(self, status)
     }
 }
 
@@ -943,6 +1011,32 @@ mod tests {
         assert_eq!(frame.body, Bytes::from_static(b"I"));
         let ServerReadyState::Ready(ready) = state else {
             panic!("idle response was marked dirty")
+        };
+        ready.into_transport();
+    }
+
+    #[test]
+    fn function_call_is_inspectable_and_replaceable() {
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let call = FunctionCall {
+            function_oid: 42,
+            argument_formats: vec![1],
+            arguments: vec![Some(Bytes::from_static(b"original"))],
+            result_format: 1,
+        };
+        let ServerReadyOffer::FunctionCall { conn, message } = ready
+            .offer_frontend(FrontendMessage::FunctionCall(call.clone()))
+            .unwrap()
+        else {
+            panic!("function call projected to the wrong branch")
+        };
+        assert_eq!(message, call);
+
+        let (done, frame) = conn.respond(Bytes::from_static(b"replacement")).unwrap();
+        assert_eq!(frame.tag, b'V');
+        let (state, _) = done.ready(TransactionStatus::Idle).unwrap();
+        let ServerReadyState::Ready(ready) = state else {
+            panic!("idle function call was marked dirty")
         };
         ready.into_transport();
     }

@@ -174,7 +174,8 @@ neutral composition harnesses and examples.
   - [x] Forward typed frontend/backend messages while logging inbound SQL and
     result row counts.
   - [x] Provide a second binary which logs all decoded protocol messages.
-  - [ ] Exercise the SQL logger against a populated PostgreSQL test container.
+  - [x] Exercise the SQL logger against a populated PostgreSQL test container
+    containing a customer-orders schema and representative data.
   - [ ] Document how to run both examples.
 
 - [x] Extend connection-branded outbound construction across repeated Parse/Bind,

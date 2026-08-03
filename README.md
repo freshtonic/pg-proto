@@ -26,6 +26,9 @@ The crate currently includes:
 Security assumptions, safe defaults, and downstream responsibilities are
 recorded in [`SECURITY.md`](SECURITY.md).
 
+See [`MIGRATION.md`](MIGRATION.md) for moving a runtime-enum proxy to the typed
+API. Public API documentation is built with warnings denied in CI.
+
 The frontend and backend roles deliberately do not share an authentication
 mechanism. A proxy can terminate client authentication with one policy while it
 independently authenticates to the upstream server with another.

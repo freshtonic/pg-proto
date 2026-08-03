@@ -109,7 +109,9 @@ work using that feature is complete.
   - [x] Exhaust every event at every reachable state through bounded recursive
     paths for all six generated PostgreSQL role grammars, including unchanged
     state on rejection.
-- [ ] Remove superseded handwritten state-machine code after parity is proven.
+- [x] Remove superseded handwritten state-decision logic after parity is proven.
+  Transport/resource compatibility adapters remain intentionally, but their
+  message projection and transition decisions delegate to the generated grammar.
 
 ## 5. Proxy-enabling API and compatibility
 
@@ -158,7 +160,7 @@ neutral composition harnesses and examples.
   workloads.
 - [x] Complete security review of TLS verification, channel binding, credential
   handling, frame limits, cancellation, and malformed-message behaviour.
-- [ ] Publish API documentation, migration guidance, and a proxy integration
+- [x] Prepare publishable API documentation, migration guidance, and a proxy integration
   example.
 
 ## Current work

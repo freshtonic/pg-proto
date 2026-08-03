@@ -580,6 +580,56 @@ mod tests {
     }
 
     #[test]
+    fn codec_messages_drive_generated_extended_and_copy_sequences() {
+        let parse = FrontendMessage::Parse(Parse {
+            statement: Bytes::new(),
+            query: Bytes::from_static(b"select $1"),
+            parameter_types: vec![23],
+        });
+        let mut extended = backend::RuntimeFsm::new();
+        extended
+            .step_projected(&parse, backend::project_external)
+            .unwrap();
+        extended
+            .step_projected(&BackendMessage::ParseComplete, backend::project_internal)
+            .unwrap();
+        extended
+            .step_projected(&FrontendMessage::Sync, backend::project_external)
+            .unwrap();
+        extended
+            .step_projected(
+                &BackendMessage::ReadyForQuery(TransactionStatus::Idle),
+                backend::project_internal,
+            )
+            .unwrap();
+        assert_eq!(extended.state(), backend::RuntimeState::Ready);
+
+        let mut copy = backend::RuntimeFsm::new();
+        copy.step_projected(
+            &FrontendMessage::Query(Bytes::from_static(b"copy t from stdin")),
+            backend::project_external,
+        )
+        .unwrap();
+        copy.step_projected(
+            &BackendMessage::CopyInResponse(crate::codec::CopyResponse {
+                overall_format: 0,
+                column_formats: vec![0],
+            }),
+            backend::project_internal,
+        )
+        .unwrap();
+        assert_eq!(copy.state(), backend::RuntimeState::SimpleCopyIn);
+        assert!(
+            copy.step_projected(
+                &FrontendMessage::Query(Bytes::from_static(b"select 1")),
+                backend::project_external,
+            )
+            .is_err()
+        );
+        assert_eq!(copy.state(), backend::RuntimeState::SimpleCopyIn);
+    }
+
+    #[test]
     fn generated_typestate_and_runtime_accept_the_extended_loop() {
         let _typed = Session::new()
             .begin_extended()

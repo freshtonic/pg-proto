@@ -59,7 +59,7 @@ work using that feature is complete.
   replication grammar coverage.
 - [x] Attach typed message payloads and fallible transition results to generated
   methods so generated APIs can replace the handwritten phase implementations.
-- [ ] Generate or share projection logic between the typed API and runtime FSM,
+- [x] Generate or share projection logic between the typed API and runtime FSM,
   eliminating manually duplicated message-to-event matching.
   - [x] Emit one canonical runtime transition table used for both target-state
     and direction lookup, and expose it for differential sequence generation.
@@ -68,7 +68,7 @@ work using that feature is complete.
   - [x] Extend the grammar DSL with direction-specific message types and
     state-scoped transition patterns, emitting checked message-to-event
     projectors.
-  - [ ] Apply generated projectors to the PostgreSQL grammars and handwritten
+  - [x] Apply generated projectors to the PostgreSQL grammars and handwritten
     compatibility sessions.
     - [x] Generate state-aware client-message projection for backend Ready,
       extended-query/error-drain, COPY IN, and COPY BOTH states.
@@ -169,6 +169,6 @@ work using that feature is complete.
   - [x] Type remaining data-bearing continuations; retain asynchronous notices,
     parameter statuses, and notifications below the session grammar as the
     deliberately filtered byte-stream projection.
-- [ ] Apply generated codec-message-to-event projection throughout the protocol.
+- [x] Apply generated codec-message-to-event projection throughout the protocol.
 - [ ] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.

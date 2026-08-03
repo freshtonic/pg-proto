@@ -23,7 +23,7 @@ pub struct Notification {
     pub payload: Bytes,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CancelKey {
     pub process_id: u32,
     pub secret_key: Bytes,

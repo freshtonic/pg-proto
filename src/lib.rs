@@ -1,6 +1,7 @@
 //! Session-typed `PostgreSQL` wire protocol primitives.
 
 pub mod auth;
+pub mod cancel;
 pub mod codec;
 pub mod demux;
 pub mod grammar;

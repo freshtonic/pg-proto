@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/resource_creation_taints.rs:15:22
+   |
+15 |     require_pristine(building);
+   |     ---------------- ^^^^^^^^ expected `Conn<_, Building>`, found `Conn<S, Building, Dirty>`
+   |     |
+   |     arguments to this function are incorrect
+   |
+   = note: expected struct `Conn<_, pg_proto::session::Building, Pristine>`
+              found struct `Conn<S, pg_proto::session::Building, pg_proto::Dirty>`
+note: function defined here
+  --> tests/ui/resource_creation_taints.rs:4:4
+   |
+ 4 | fn require_pristine<S>(_: Conn<S, Building, Pristine>) {}
+   |    ^^^^^^^^^^^^^^^^    ------------------------------

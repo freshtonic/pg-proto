@@ -258,8 +258,8 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_parse(self, message: &Parse) -> io::Result<(Self, Frame)> {
-        Ok((self, message.to_frame()?))
+    pub fn push_parse(self, message: &Parse) -> io::Result<(Conn<S, Building, Dirty>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
     }
 
     /// Describe is a self-loop while constructing an extended-query pipeline.
@@ -285,7 +285,7 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, C>, Frame)> {
+    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }
 
@@ -310,15 +310,15 @@ impl<S, C> Conn<S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_parse(self, message: &Parse) -> io::Result<(Self, Frame)> {
-        Ok((self, message.to_frame()?))
+    pub fn push_parse(self, message: &Parse) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
     }
 
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_bind(self, message: &Bind) -> io::Result<(Self, Frame)> {
-        Ok((self, message.to_frame()?))
+    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
     }
 
     /// # Errors

@@ -533,7 +533,7 @@ async fn extended_query_pipeline_matches_postgres_18() -> Result<(), Box<dyn Err
         }
     };
     assert!(parse_complete && bind_complete && row_description && data_row);
-    let _transport = ready.release();
+    let _transport = ready.into_transport();
     Ok(())
 }
 

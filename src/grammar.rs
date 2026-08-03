@@ -355,6 +355,6 @@ mod tests {
         runtime.step(Event::Ready).unwrap();
 
         assert_eq!(runtime.state(), RuntimeState::Ready);
-        ready.release();
+        ready.into_transport();
     }
 }

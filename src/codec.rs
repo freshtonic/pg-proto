@@ -119,6 +119,27 @@ pub struct Parse {
     pub parameter_types: Vec<u32>,
 }
 
+impl Parse {
+    /// Reconstructs a checked Parse frame after inspection or rewriting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for NUL-containing strings or too many parameter types.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        put_cstr(&self.statement, &mut body)?;
+        put_cstr(&self.query, &mut body)?;
+        put_count(self.parameter_types.len(), &mut body)?;
+        for oid in &self.parameter_types {
+            body.put_u32(*oid);
+        }
+        Ok(Frame {
+            tag: b'P',
+            body: body.freeze(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bind {
     pub portal: Bytes,
@@ -126,6 +147,37 @@ pub struct Bind {
     pub parameter_formats: Vec<i16>,
     pub parameters: Vec<Option<Bytes>>,
     pub result_formats: Vec<i16>,
+}
+
+impl Bind {
+    /// Reconstructs a checked Bind frame, retaining every format code and value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid names, excessive counts, or oversized values.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        put_cstr(&self.portal, &mut body)?;
+        put_cstr(&self.statement, &mut body)?;
+        put_i16_vec(&self.parameter_formats, &mut body)?;
+        put_count(self.parameters.len(), &mut body)?;
+        for parameter in &self.parameters {
+            match parameter {
+                None => body.put_i32(-1),
+                Some(value) => {
+                    let length = i32::try_from(value.len())
+                        .map_err(|_| invalid_input("Bind parameter is too large"))?;
+                    body.put_i32(length);
+                    body.extend_from_slice(value);
+                }
+            }
+        }
+        put_i16_vec(&self.result_formats, &mut body)?;
+        Ok(Frame {
+            tag: b'B',
+            body: body.freeze(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,6 +190,26 @@ pub struct Describe {
 pub enum DescribeTarget {
     Statement,
     Portal,
+}
+
+impl Describe {
+    /// Reconstructs a checked Describe frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name contains a NUL byte.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        body.put_u8(match self.target {
+            DescribeTarget::Statement => b'S',
+            DescribeTarget::Portal => b'P',
+        });
+        put_cstr(&self.name, &mut body)?;
+        Ok(Frame {
+            tag: b'D',
+            body: body.freeze(),
+        })
+    }
 }
 
 impl Direction for Frontend {
@@ -171,6 +243,31 @@ pub struct FieldDescription {
     pub type_size: i16,
     pub type_modifier: i32,
     pub format: i16,
+}
+
+impl RowDescription {
+    /// Reconstructs checked result metadata after proxy rewriting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for excessive fields or NUL-containing field names.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        put_count(self.fields.len(), &mut body)?;
+        for field in &self.fields {
+            put_cstr(&field.name, &mut body)?;
+            body.put_u32(field.table_oid);
+            body.put_i16(field.column);
+            body.put_u32(field.type_oid);
+            body.put_i16(field.type_size);
+            body.put_i32(field.type_modifier);
+            body.put_i16(field.format);
+        }
+        Ok(Frame {
+            tag: b'T',
+            body: body.freeze(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,6 +511,30 @@ fn take_i16_vec(body: &mut Bytes) -> io::Result<Vec<i16>> {
     (0..count).map(|_| take_i16(body)).collect()
 }
 
+fn put_i16_vec(values: &[i16], body: &mut BytesMut) -> io::Result<()> {
+    put_count(values.len(), body)?;
+    for value in values {
+        body.put_i16(*value);
+    }
+    Ok(())
+}
+
+fn put_count(count: usize, body: &mut BytesMut) -> io::Result<()> {
+    let count =
+        u16::try_from(count).map_err(|_| invalid_input("message item count exceeds u16"))?;
+    body.put_u16(count);
+    Ok(())
+}
+
+fn put_cstr(value: &[u8], body: &mut BytesMut) -> io::Result<()> {
+    if value.contains(&0) {
+        return Err(invalid_input("message string contains a NUL byte"));
+    }
+    body.extend_from_slice(value);
+    body.put_u8(0);
+    Ok(())
+}
+
 fn take_cstr(body: &mut Bytes) -> io::Result<Bytes> {
     let end = body
         .iter()
@@ -464,6 +585,10 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+fn invalid_input(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
 fn unknown_tag(direction: &str, tag: u8) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -501,18 +626,27 @@ mod tests {
     #[test]
     fn parse_is_losslessly_structured() {
         let mut bytes = BytesMut::from(&b"P\0\0\0\x19stmt\0select $1\0\0\x01\0\0\0\x17"[..]);
+        let original = bytes.clone();
         let message = PgCodec::<Frontend>::default()
             .decode(&mut bytes)
             .expect("valid frame")
             .expect("complete frame");
-        assert_eq!(
-            message,
-            FrontendMessage::Parse(Parse {
-                statement: Bytes::from_static(b"stmt"),
-                query: Bytes::from_static(b"select $1"),
-                parameter_types: vec![23],
-            })
-        );
+        let expected = FrontendMessage::Parse(Parse {
+            statement: Bytes::from_static(b"stmt"),
+            query: Bytes::from_static(b"select $1"),
+            parameter_types: vec![23],
+        });
+        assert_eq!(message, expected);
+
+        let FrontendMessage::Parse(parsed) = message else {
+            unreachable!()
+        };
+        let frame = parsed.to_frame().expect("reconstructable Parse");
+        let mut encoded = BytesMut::new();
+        PgCodec::<Frontend>::default()
+            .encode(frame, &mut encoded)
+            .expect("encodable frame");
+        assert_eq!(encoded, original);
     }
 
     #[test]
@@ -526,5 +660,41 @@ mod tests {
                 .is_none()
         );
         assert_eq!(bytes, original);
+    }
+
+    #[test]
+    fn bind_round_trips_nulls_formats_and_values() {
+        let bind = Bind {
+            portal: Bytes::from_static(b"portal"),
+            statement: Bytes::from_static(b"statement"),
+            parameter_formats: vec![1, 0],
+            parameters: vec![None, Some(Bytes::from_static(b"value"))],
+            result_formats: vec![1],
+        };
+        let frame = bind.to_frame().expect("valid Bind");
+        assert_eq!(
+            Frontend::decode(frame).expect("decodable Bind"),
+            FrontendMessage::Bind(bind)
+        );
+    }
+
+    #[test]
+    fn row_description_round_trips_all_metadata() {
+        let description = RowDescription {
+            fields: vec![FieldDescription {
+                name: Bytes::from_static(b"answer"),
+                table_oid: 16_384,
+                column: 2,
+                type_oid: 23,
+                type_size: 4,
+                type_modifier: -1,
+                format: 1,
+            }],
+        };
+        let frame = description.to_frame().expect("valid RowDescription");
+        assert_eq!(
+            Backend::decode(frame).expect("decodable RowDescription"),
+            BackendMessage::RowDescription(description)
+        );
     }
 }

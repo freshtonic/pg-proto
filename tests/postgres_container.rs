@@ -4,10 +4,13 @@ use bytes::Bytes;
 use pg_proto::{
     Conn,
     auth::{AuthOffer, AwaitingStartupReady, PasswordResponse},
-    codec::{Authentication, BackendMessage, NegotiateProtocolVersion},
+    codec::{
+        Authentication, BackendMessage, Bind, Describe, DescribeTarget, Execute,
+        NegotiateProtocolVersion, Parse,
+    },
     demux::SessionItem,
     pre_startup::Startup,
-    session::{ReadyState, SimpleTransition},
+    session::{AwaitingReadyTransition, ReadyState, SimpleTransition},
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
@@ -309,4 +312,87 @@ async fn submit_password(
     finish_startup(awaiting_ok.authentication_ok())
         .await
         .map(|_ready| ())
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn extended_query_pipeline_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let ready = trust_ready(port).await?;
+
+    let building = ready.begin_extended();
+    let (mut building, frame) = building.push_parse(&Parse {
+        statement: Bytes::from_static(b"answer"),
+        query: Bytes::from_static(b"SELECT $1::int4"),
+        parameter_types: vec![23],
+    })?;
+    building.push_frame(frame)?;
+    let (mut bound, frame) = building.push_bind(&Bind {
+        portal: Bytes::from_static(b"answer_portal"),
+        statement: Bytes::from_static(b"answer"),
+        parameter_formats: vec![0],
+        parameters: vec![Some(Bytes::from_static(b"42"))],
+        result_formats: vec![0],
+    })?;
+    bound.push_frame(frame)?;
+    let (mut bound, frame) = bound.push_describe(&Describe {
+        target: DescribeTarget::Portal,
+        name: Bytes::from_static(b"answer_portal"),
+    })?;
+    bound.push_frame(frame)?;
+    let (mut bound, frame) = bound.push_execute(&Execute {
+        portal: Bytes::from_static(b"answer_portal"),
+        max_rows: 0,
+    })?;
+    bound.push_frame(frame)?;
+    let (mut awaiting, frame) = bound.push_sync();
+    awaiting.push_frame(frame)?;
+    awaiting.flush().await?;
+
+    let mut parse_complete = false;
+    let mut bind_complete = false;
+    let mut row_description = false;
+    let mut data_row = false;
+    let ready = loop {
+        let item = awaiting.receive().await?;
+        match awaiting.offer(item) {
+            AwaitingReadyTransition::Continue(next, item) => {
+                awaiting = next;
+                match item {
+                    SessionItem::Message(BackendMessage::ParseComplete) => parse_complete = true,
+                    SessionItem::Message(BackendMessage::BindComplete) => bind_complete = true,
+                    SessionItem::Message(BackendMessage::RowDescription(_)) => {
+                        row_description = true;
+                    }
+                    SessionItem::Message(BackendMessage::DataRow(_)) => data_row = true,
+                    _ => {}
+                }
+            }
+            AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) => break ready,
+            AwaitingReadyTransition::Ready(ReadyState::Dirty { .. }) => {
+                return Err("extended query left a dirty connection".into());
+            }
+            AwaitingReadyTransition::Error(_, error) => {
+                return Err(format!("extended query failed: {error:?}").into());
+            }
+        }
+    };
+    assert!(parse_complete && bind_complete && row_description && data_row);
+    let _transport = ready.release();
+    Ok(())
+}
+
+async fn trust_ready(
+    port: u16,
+) -> Result<Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>, Box<dyn Error>> {
+    let offer = receive_auth_offer(connected_startup(port).await?).await?;
+    let AuthOffer::Ok(awaiting_ready) = offer else {
+        return Err("PostgreSQL did not use trust authentication".into());
+    };
+    finish_startup(awaiting_ready).await
 }

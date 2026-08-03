@@ -108,23 +108,36 @@ work using that feature is complete.
     state on rejection.
 - [ ] Remove superseded handwritten state-machine code after parity is proven.
 
-## 5. Proxy composition and production parity
+## 5. Proxy-enabling API and compatibility
 
-- [ ] Audit current `cipherstash/proxy` and pgcat protocol use, including function
-  calls, authentication mechanisms, extension messages, and pooling behaviour.
-- [ ] Define the three-party client ↔ proxy ↔ upstream composition API.
-- [ ] Support independent downstream and upstream authentication mechanisms and
-  credentials in one proxy session.
-- [ ] Connect typed interception/replacement to EQL statement and result rewriting.
-- [ ] Integrate prepared-statement and portal name maps with proxy routing.
-- [ ] Integrate client-issued and proxy-minted `BackendKeyData` with the
-  client-to-upstream cancellation-key map.
-- [ ] Forward asynchronous notices, notifications, and parameter statuses with
-  correct ordering and command attribution.
-- [ ] Enforce pool release and reset rules across transactions, GUC changes,
-  LISTEN/NOTIFY, advisory locks, portals, and prepared statements.
-- [ ] Add end-to-end proxy tests covering asymmetric authentication, TLS on either
-  side, message rewriting, cancellation, COPY, replication, and pooled reuse.
+`pg-proto` is a protocol library for implementing the next Proxy; it does not
+absorb Proxy's application logic. CipherStash-specific EQL rewriting, credential
+management, routing, pool orchestration, and deployment remain downstream. The
+work here is to expose sufficiently general primitives and prove them with
+neutral composition harnesses and examples.
+
+- [ ] Audit current `cipherstash/proxy` and pgcat protocol use solely to identify
+  required wire coverage, interception points, and library invariants; record
+  every discovered obligation without importing application policy.
+- [ ] Define a neutral client ↔ intermediary ↔ upstream composition API that
+  retains independent typed sessions on both sides.
+- [ ] Prove independent downstream and upstream TLS/authentication mechanisms and
+  credentials can be composed without coupling their state or policy.
+- [ ] Expose typed interception/replacement hooks sufficient for arbitrary
+  downstream SQL and result rewriting, demonstrated by a non-CipherStash example.
+- [ ] Expose prepared-statement and portal namespace primitives that a downstream
+  router or rewriter can own, without implementing routing policy.
+- [ ] Expose cancellation-key minting, observation, and mapping hooks without
+  embedding a production registry or cancellation policy.
+- [ ] Expose ordered forwarding hooks for notices, notifications, parameter
+  statuses, and command attribution without prescribing their destination.
+- [ ] Expose cleanliness evidence and policy hooks for transactions, GUC changes,
+  LISTEN/NOTIFY, advisory locks, portals, and prepared statements; pool policy
+  remains downstream.
+- [ ] Add a neutral end-to-end intermediary harness covering asymmetric auth/TLS,
+  message rewriting, cancellation, COPY, replication, and connection reuse.
+- [ ] Document the application boundary and provide a proxy-construction example
+  showing where downstream policy plugs in.
 
 ## 6. Verification and release gates
 

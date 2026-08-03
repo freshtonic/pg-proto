@@ -12,6 +12,7 @@ use crate::{
         BackendMessage, Bind, Close, CopyResponse, Describe, DiagnosticResponse, Execute, Frame,
         FrontendMessage, FunctionCall, Parse, RowDescription, TransactionStatus,
     },
+    grammar::backend,
     pre_startup::Terminated,
     replication::{BackendReplication, FrontendReplication},
 };
@@ -273,17 +274,28 @@ impl<S, C> Conn<S, Ready, C> {
     /// Returns the unchanged connection and message for choices not yet legal in
     /// this simple-query projection.
     pub fn offer_frontend(self, message: FrontendMessage) -> ReadyProjection<S, C> {
-        match message {
-            FrontendMessage::Query(query) => Ok(ServerReadyOffer::Query {
-                conn: self.transition(),
-                query,
-            }),
-            FrontendMessage::FunctionCall(message) => Ok(ServerReadyOffer::FunctionCall {
-                conn: self.transition(),
-                message,
-            }),
-            FrontendMessage::Terminate => Ok(ServerReadyOffer::Terminate(self.transition())),
-            other => project_extended(self, other).map(ServerReadyOffer::Extended),
+        match (
+            backend::project_external(backend::RuntimeState::Ready, &message),
+            message,
+        ) {
+            (Some(backend::Event::Query), FrontendMessage::Query(query)) => {
+                Ok(ServerReadyOffer::Query {
+                    conn: self.transition(),
+                    query,
+                })
+            }
+            (Some(backend::Event::FunctionCall), FrontendMessage::FunctionCall(message)) => {
+                Ok(ServerReadyOffer::FunctionCall {
+                    conn: self.transition(),
+                    message,
+                })
+            }
+            (Some(backend::Event::Terminate), FrontendMessage::Terminate) => {
+                Ok(ServerReadyOffer::Terminate(self.transition()))
+            }
+            (Some(_), other) => project_extended(self, backend::RuntimeState::Ready, other)
+                .map(ServerReadyOffer::Extended),
+            (None, other) => Err(Box::new((self, other))),
         }
     }
 
@@ -362,7 +374,7 @@ impl<S, C> Conn<S, ServerBuilding, C> {
         self,
         message: FrontendMessage,
     ) -> ExtendedProjection<S, ServerBuilding, C> {
-        project_extended(self, message)
+        project_extended(self, backend::RuntimeState::Building, message)
     }
 }
 
@@ -1045,33 +1057,50 @@ impl<S, C> Conn<S, ServerSync, C> {
 
 fn project_extended<S, Phase, C>(
     conn: Conn<S, Phase, C>,
+    state: backend::RuntimeState,
     message: FrontendMessage,
 ) -> ExtendedProjection<S, Phase, C> {
-    Ok(match message {
-        FrontendMessage::Parse(message) => ServerExtendedOffer::Parse {
-            conn: conn.transition(),
-            message,
+    Ok(
+        match (backend::project_external(state, &message), message) {
+            (Some(backend::Event::Parse), FrontendMessage::Parse(message)) => {
+                ServerExtendedOffer::Parse {
+                    conn: conn.transition(),
+                    message,
+                }
+            }
+            (Some(backend::Event::Bind), FrontendMessage::Bind(message)) => {
+                ServerExtendedOffer::Bind {
+                    conn: conn.transition(),
+                    message,
+                }
+            }
+            (Some(backend::Event::Describe), FrontendMessage::Describe(message)) => {
+                ServerExtendedOffer::Describe {
+                    conn: conn.transition(),
+                    message,
+                }
+            }
+            (Some(backend::Event::Execute), FrontendMessage::Execute(message)) => {
+                ServerExtendedOffer::Execute {
+                    conn: conn.transition(),
+                    message,
+                }
+            }
+            (Some(backend::Event::Close), FrontendMessage::Close(message)) => {
+                ServerExtendedOffer::Close {
+                    conn: conn.transition(),
+                    message,
+                }
+            }
+            (Some(backend::Event::Flush), FrontendMessage::Flush) => {
+                ServerExtendedOffer::Flush(conn.transition())
+            }
+            (Some(backend::Event::Sync), FrontendMessage::Sync) => {
+                ServerExtendedOffer::Sync(conn.transition())
+            }
+            (_, other) => return Err(Box::new((conn, other))),
         },
-        FrontendMessage::Bind(message) => ServerExtendedOffer::Bind {
-            conn: conn.transition(),
-            message,
-        },
-        FrontendMessage::Describe(message) => ServerExtendedOffer::Describe {
-            conn: conn.transition(),
-            message,
-        },
-        FrontendMessage::Execute(message) => ServerExtendedOffer::Execute {
-            conn: conn.transition(),
-            message,
-        },
-        FrontendMessage::Close(message) => ServerExtendedOffer::Close {
-            conn: conn.transition(),
-            message,
-        },
-        FrontendMessage::Flush => ServerExtendedOffer::Flush(conn.transition()),
-        FrontendMessage::Sync => ServerExtendedOffer::Sync(conn.transition()),
-        other => return Err(Box::new((conn, other))),
-    })
+    )
 }
 
 fn extended_error<S, Phase, C>(

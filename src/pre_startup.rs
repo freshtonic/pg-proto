@@ -351,6 +351,11 @@ impl<S, C> Conn<S, ServerSslDecision, C> {
     pub fn accept_ssl(self) -> (Conn<S, TlsHandshake, C>, u8) {
         (self.transition(), EncryptionReply::Accepted.as_byte())
     }
+
+    /// Emits the historical raw `E` response and terminates negotiation.
+    pub fn legacy_ssl_error(self) -> (Conn<S, Terminated, C>, u8) {
+        (self.transition(), EncryptionReply::LegacyError.as_byte())
+    }
 }
 
 impl<S, C> Conn<S, ServerGssDecision, C> {
@@ -360,6 +365,11 @@ impl<S, C> Conn<S, ServerGssDecision, C> {
 
     pub fn accept_gss(self) -> (Conn<S, GssHandshake, C>, u8) {
         (self.transition(), EncryptionReply::Accepted.as_byte())
+    }
+
+    /// Emits the historical raw `E` response and terminates negotiation.
+    pub fn legacy_gss_error(self) -> (Conn<S, Terminated, C>, u8) {
+        (self.transition(), EncryptionReply::LegacyError.as_byte())
     }
 }
 

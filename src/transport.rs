@@ -348,6 +348,14 @@ impl<S, Cleanliness> Conn<Buffered<S, Frontend>, ServerSslDecision, Cleanliness>
         self.transport_mut().push_raw(b"N");
         self.transition()
     }
+
+    /// Buffers the historical raw `E` response and terminates negotiation.
+    pub fn reject_ssl_with_legacy_error(
+        mut self,
+    ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::Terminated, Cleanliness> {
+        self.transport_mut().push_raw(b"E");
+        self.transition()
+    }
 }
 
 impl<S, Cleanliness>
@@ -364,6 +372,14 @@ impl<S, Cleanliness>
     /// Buffers the server's raw `N` response and returns to pre-startup choice.
     pub fn decline_gss(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
         self.transport_mut().push_raw(b"N");
+        self.transition()
+    }
+
+    /// Buffers the historical raw `E` response and terminates negotiation.
+    pub fn reject_gss_with_legacy_error(
+        mut self,
+    ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::Terminated, Cleanliness> {
+        self.transport_mut().push_raw(b"E");
         self.transition()
     }
 }
@@ -893,5 +909,29 @@ mod tests {
         let handshake = decision.approve_gss();
         assert_eq!(handshake.pending_output(), b"S");
         handshake.into_transport();
+
+        let conn = Conn::new(Buffered::<_, Frontend>::new_frontend(()));
+        let crate::pre_startup::PreStartupOffer::Gss(decision) =
+            conn.offer_pre_startup(PreStartupMessage::GssEncRequest)
+        else {
+            panic!("expected GSSENC decision")
+        };
+        let terminated = decision.reject_gss_with_legacy_error();
+        assert_eq!(terminated.pending_output(), b"E");
+        terminated.into_transport();
+    }
+
+    #[test]
+    fn client_facing_transport_buffers_legacy_ssl_error() {
+        let conn = Conn::new(Buffered::<_, Frontend>::new_frontend(()));
+        let crate::pre_startup::PreStartupOffer::Ssl(decision) =
+            conn.offer_pre_startup(PreStartupMessage::SslRequest)
+        else {
+            panic!("expected SSL decision")
+        };
+
+        let terminated = decision.reject_ssl_with_legacy_error();
+        assert_eq!(terminated.pending_output(), b"E");
+        terminated.into_transport();
     }
 }

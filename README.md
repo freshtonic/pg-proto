@@ -51,6 +51,13 @@ policy, cancellation storage, and pool cleanliness. The more detailed
 [`rewriting_intermediary` example] reconstructs modified `Parse`, `Bind`,
 `Describe`, and `RowDescription` frames.
 
+Two end-to-end examples demonstrate real forwarding: the
+[`SQL logging proxy`](examples/sql_logging_proxy/README.md) prints inbound SQL and
+result row counts, while the
+[`protocol logging proxy`](examples/protocol_logging_proxy/README.md) prints every
+decoded message in both directions. Their integration test starts an official
+PostgreSQL test container populated with customer and order data.
+
 [`Intermediary`]: crate::intermediary::Intermediary
 [`proxy_skeleton` example]: examples/proxy_skeleton.rs
 [`rewriting_intermediary` example]: examples/rewriting_intermediary.rs

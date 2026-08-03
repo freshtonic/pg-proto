@@ -103,7 +103,7 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
 async fn run_select_42(
     ready: Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>,
 ) -> Result<(), Box<dyn Error>> {
-    let (mut query, frame) = ready.push_query(b"SELECT 42::int4")?;
+    let (mut query, frame) = ready.push_stateless_query(b"SELECT 42::int4")?;
     query.push_frame(frame)?;
     query.flush().await?;
     let mut saw_row_description = false;
@@ -557,7 +557,7 @@ async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn E
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
     let ready = trust_ready(port).await?;
-    let (mut query, frame) = ready.push_query(b"SELECT FROM")?;
+    let (mut query, frame) = ready.push_stateless_query(b"SELECT FROM")?;
     query.push_frame(frame)?;
     query.flush().await?;
 
@@ -602,7 +602,8 @@ async fn copy_out_nested_session_matches_postgres_18() -> Result<(), Box<dyn Err
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
     let ready = trust_ready(port).await?;
-    let (mut query, frame) = ready.push_query(b"COPY (SELECT generate_series(1, 2)) TO STDOUT")?;
+    let (mut query, frame) =
+        ready.push_stateless_query(b"COPY (SELECT generate_series(1, 2)) TO STDOUT")?;
     query.push_frame(frame)?;
     query.flush().await?;
 
@@ -663,7 +664,7 @@ async fn copy_in_nested_session_matches_postgres_18() -> Result<(), Box<dyn Erro
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
     let ready = trust_ready(port).await?;
-    let (mut query, frame) = ready.push_query(b"COPY copy_test FROM STDIN")?;
+    let (mut query, frame) = ready.push_stateless_query(b"COPY copy_test FROM STDIN")?;
     query.push_frame(frame)?;
     query.flush().await?;
 

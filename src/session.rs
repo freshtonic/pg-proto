@@ -163,12 +163,29 @@ impl<S, C> Conn<S, Ready, C> {
         (self.transition(), empty_frame(b'X'))
     }
 
-    /// Buffers a simple query and enters its response phase.
+    /// Buffers a simple query and conservatively taints the pooled session.
+    ///
+    /// Simple-query text can create resources which are not reflected in
+    /// `ParameterStatus`, including listeners, prepared statements, and
+    /// advisory locks. Use [`Self::push_stateless_query`] only after custom SQL
+    /// inspection has established that the command cannot retain session state.
     ///
     /// # Errors
     ///
     /// Returns an error if the query contains a NUL byte.
-    pub fn push_query(self, query: &[u8]) -> io::Result<(Conn<S, SimpleQuery, C>, Frame)> {
+    pub fn push_query(self, query: &[u8]) -> io::Result<(Conn<S, SimpleQuery, Dirty>, Frame)> {
+        Ok((self.transition(), cstr_frame(b'Q', query)?))
+    }
+
+    /// Buffers query text which the caller has proved leaves no session state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query contains a NUL byte.
+    pub fn push_stateless_query(
+        self,
+        query: &[u8],
+    ) -> io::Result<(Conn<S, SimpleQuery, C>, Frame)> {
         Ok((self.transition(), cstr_frame(b'Q', query)?))
     }
 
@@ -879,6 +896,39 @@ mod tests {
             panic!("parameter change should taint readiness")
         };
         conn.into_transport();
+    }
+
+    #[test]
+    fn simple_queries_are_dirty_unless_inspection_proves_them_stateless() {
+        fn require_dirty<S>(conn: Conn<S, Ready, Dirty>) {
+            conn.into_transport();
+        }
+
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let (query, _) = ready.push_query(b"LISTEN events").unwrap();
+        let SimpleTransition::Ready(ReadyState::Clean(dirty)) = query
+            .offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+            .unwrap()
+        else {
+            panic!("idle readiness should preserve the query's dirty evidence")
+        };
+        require_dirty(dirty);
+
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let (query, _) = ready.push_stateless_query(b"SELECT 1").unwrap();
+        let SimpleTransition::Ready(ReadyState::Clean(pristine)) = query
+            .offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+            .unwrap()
+        else {
+            panic!("stateless query should retain pristine evidence")
+        };
+        pristine.release();
     }
 
     #[test]

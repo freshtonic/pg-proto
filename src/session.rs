@@ -7,7 +7,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 use crate::{
     Conn, Dirty, Pristine,
     auth::Ready,
-    codec::{BackendMessage, CopyResponse, DiagnosticResponse, Frame, TransactionStatus},
+    codec::{
+        BackendMessage, Bind, Close, CopyResponse, Describe, DiagnosticResponse, Execute, Frame,
+        Parse, TransactionStatus,
+    },
     demux::SessionItem,
 };
 
@@ -112,13 +115,21 @@ impl<S> Conn<S, Ready, Pristine> {
 
 impl<S, C> Conn<S, Building, C> {
     /// Parse is a self-loop while constructing an extended-query pipeline.
-    pub fn push_parse(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'P', body })
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_parse(self, message: &Parse) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
     }
 
     /// Describe is a self-loop while constructing an extended-query pipeline.
-    pub fn push_describe(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'D', body })
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
     }
 
     /// Bind introduces an executable portal.
@@ -132,8 +143,23 @@ impl<S, C> Conn<S, Building, C> {
     ///     let _ = conn.push_execute(Bytes::new());
     /// }
     /// ```
-    pub fn push_bind(self, body: Bytes) -> (Conn<S, BoundBuilding, C>, Frame) {
-        (self.transition(), Frame { tag: b'B', body })
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, C>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
+    }
+
+    /// Close is legal while building, but does not make a portal executable.
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
+    }
+
+    pub fn push_flush(self) -> (Self, Frame) {
+        (self, empty_frame(b'H'))
     }
 
     pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
@@ -142,21 +168,45 @@ impl<S, C> Conn<S, Building, C> {
 }
 
 impl<S, C> Conn<S, BoundBuilding, C> {
-    pub fn push_parse(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'P', body })
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_parse(self, message: &Parse) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
     }
 
-    pub fn push_bind(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'B', body })
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_bind(self, message: &Bind) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
     }
 
-    pub fn push_describe(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'D', body })
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
     }
 
     /// Execute is unavailable until a Bind transition has occurred.
-    pub fn push_execute(self, body: Bytes) -> (Self, Frame) {
-        (self, Frame { tag: b'E', body })
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_execute(self, message: &Execute) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the structured message cannot be reconstructed.
+    pub fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
+        Ok((self, message.to_frame()?))
+    }
+
+    pub fn push_flush(self) -> (Self, Frame) {
+        (self, empty_frame(b'H'))
     }
 
     pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
@@ -340,9 +390,28 @@ mod tests {
     fn extended_building_self_loops_then_syncs() {
         let ready: Conn<(), Ready> = Conn::new(()).transition();
         let building = ready.begin_extended();
-        let (building, _) = building.push_parse(Bytes::new());
-        let (bound, _) = building.push_bind(Bytes::new());
-        let (bound, _) = bound.push_execute(Bytes::new());
+        let (building, _) = building
+            .push_parse(&Parse {
+                statement: Bytes::from_static(b"statement"),
+                query: Bytes::from_static(b"select $1"),
+                parameter_types: vec![23],
+            })
+            .expect("valid Parse");
+        let (bound, _) = building
+            .push_bind(&Bind {
+                portal: Bytes::from_static(b"portal"),
+                statement: Bytes::from_static(b"statement"),
+                parameter_formats: vec![0],
+                parameters: vec![Some(Bytes::from_static(b"42"))],
+                result_formats: vec![0],
+            })
+            .expect("valid Bind");
+        let (bound, _) = bound
+            .push_execute(&Execute {
+                portal: Bytes::from_static(b"portal"),
+                max_rows: 0,
+            })
+            .expect("valid Execute");
         let (_awaiting_ready, sync) = bound.push_sync();
         assert_eq!(sync.tag, b'S');
     }

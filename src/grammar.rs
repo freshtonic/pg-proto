@@ -198,6 +198,7 @@ protocol! {
             external: crate::codec::BackendMessage,
         }
         Auth external {
+            Negotiate(negotiate: crate::codec::NegotiateProtocolVersion) => Auth <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
             Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
             Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
             Md5(md5: [u8; 4]) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Md5Password { .. }),
@@ -443,6 +444,7 @@ protocol! {
             Reject(reject) => Terminated,
         }
         Auth internal {
+            Negotiate(negotiate: crate::codec::NegotiateProtocolVersion) => Auth <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
             Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
             Md5(md5: [u8; 4]) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Md5Password { .. }),
             Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Sasl { .. }),
@@ -477,7 +479,6 @@ protocol! {
         StartupReady internal {
             ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::ParameterStatus { .. },
             BackendKeyData(backend_key_data: (u32, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::BackendKeyData { .. },
-            NegotiateProtocol(negotiate_protocol: crate::codec::NegotiateProtocolVersion) => StartupReady <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Ready external {}
@@ -1067,13 +1068,13 @@ mod tests {
     fn generated_server_authentication_keeps_mechanisms_independent() {
         let _typed = server_authentication::Session::new()
             .begin()
+            .negotiate()
             .sasl()
             .initial()
             .continue_response()
             .response()
             .final_response()
             .ok()
-            .negotiate_protocol()
             .parameter_status()
             .backend_key_data()
             .ready();
@@ -1081,6 +1082,7 @@ mod tests {
         let mut runtime = server_authentication::RuntimeFsm::new();
         for event in [
             server_authentication::Event::Begin,
+            server_authentication::Event::Negotiate,
             server_authentication::Event::Gss,
             server_authentication::Event::Response,
             server_authentication::Event::Continue,

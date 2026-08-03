@@ -90,6 +90,12 @@ work using that feature is complete.
       upstream and server roles.
     - [x] Generate asymmetric authentication and startup-completion projection,
       including recursive SASL/token exchanges and shared password tags.
+    - [x] Correct `NegotiateProtocolVersion` to an authentication-phase self-loop
+      for both roles.
+    - [x] Route client-side authentication mechanism, recursive token/SASL, and
+      completion classification through generated projection.
+    - [ ] Route server-side authentication response classification through
+      generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

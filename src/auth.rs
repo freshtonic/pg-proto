@@ -5,6 +5,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use crate::demux::SessionItem;
 use crate::{
     Conn, Pristine, codec,
+    grammar::authentication as auth_grammar,
     pre_startup::{Startup, Terminated},
 };
 
@@ -180,23 +181,38 @@ impl<S> Conn<S, Auth, Pristine> {
     ///
     /// SASL continuation/final messages are rejected before SASL is selected.
     pub fn offer(self, authentication: codec::Authentication) -> std::io::Result<AuthOffer<S>> {
-        match authentication {
-            codec::Authentication::Ok => Ok(AuthOffer::Ok(self.transition())),
-            codec::Authentication::CleartextPassword => Ok(AuthOffer::Cleartext(self.transition())),
-            codec::Authentication::Md5Password { salt } => Ok(AuthOffer::Md5 {
-                conn: self.transition(),
-                salt,
-            }),
-            codec::Authentication::Sasl { mechanisms } => Ok(AuthOffer::Sasl {
-                conn: self.transition(),
-                mechanisms,
-            }),
-            codec::Authentication::Gss => Ok(AuthOffer::Gss(self.transition())),
-            codec::Authentication::Sspi => Ok(AuthOffer::Sspi(self.transition())),
-            codec::Authentication::KerberosV5 => Ok(AuthOffer::KerberosV5(self.transition())),
-            codec::Authentication::GssContinue(_)
-            | codec::Authentication::SaslContinue(_)
-            | codec::Authentication::SaslFinal(_) => Err(std::io::Error::new(
+        match (
+            project_authentication(auth_grammar::RuntimeState::Auth, &authentication),
+            authentication,
+        ) {
+            (Some(auth_grammar::Event::Ok), codec::Authentication::Ok) => {
+                Ok(AuthOffer::Ok(self.transition()))
+            }
+            (Some(auth_grammar::Event::Cleartext), codec::Authentication::CleartextPassword) => {
+                Ok(AuthOffer::Cleartext(self.transition()))
+            }
+            (Some(auth_grammar::Event::Md5), codec::Authentication::Md5Password { salt }) => {
+                Ok(AuthOffer::Md5 {
+                    conn: self.transition(),
+                    salt,
+                })
+            }
+            (Some(auth_grammar::Event::Sasl), codec::Authentication::Sasl { mechanisms }) => {
+                Ok(AuthOffer::Sasl {
+                    conn: self.transition(),
+                    mechanisms,
+                })
+            }
+            (Some(auth_grammar::Event::Gss), codec::Authentication::Gss) => {
+                Ok(AuthOffer::Gss(self.transition()))
+            }
+            (Some(auth_grammar::Event::Sspi), codec::Authentication::Sspi) => {
+                Ok(AuthOffer::Sspi(self.transition()))
+            }
+            (Some(auth_grammar::Event::KerberosV5), codec::Authentication::KerberosV5) => {
+                Ok(AuthOffer::KerberosV5(self.transition()))
+            }
+            _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "authentication continuation before mechanism selection",
             )),
@@ -227,21 +243,28 @@ impl<S> Conn<S, TokenChallenge, Pristine> {
         self,
         message: codec::BackendMessage,
     ) -> Result<TokenAuthEvent<S>, (Self, codec::BackendMessage)> {
-        match message {
-            codec::BackendMessage::Authentication(codec::Authentication::GssContinue(token)) => {
-                Ok(TokenAuthEvent::Continue {
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::TokenChallenge, &message),
+            message,
+        ) {
+            (
+                Some(auth_grammar::Event::Continue),
+                codec::BackendMessage::Authentication(codec::Authentication::GssContinue(token)),
+            ) => Ok(TokenAuthEvent::Continue {
+                conn: self.transition(),
+                token,
+            }),
+            (
+                Some(auth_grammar::Event::Ok),
+                codec::BackendMessage::Authentication(codec::Authentication::Ok),
+            ) => Ok(TokenAuthEvent::Ok(self.transition())),
+            (Some(auth_grammar::Event::Error), codec::BackendMessage::ErrorResponse(error)) => {
+                Ok(TokenAuthEvent::Error {
                     conn: self.transition(),
-                    token,
+                    error,
                 })
             }
-            codec::BackendMessage::Authentication(codec::Authentication::Ok) => {
-                Ok(TokenAuthEvent::Ok(self.transition()))
-            }
-            codec::BackendMessage::ErrorResponse(error) => Ok(TokenAuthEvent::Error {
-                conn: self.transition(),
-                error,
-            }),
-            message => Err((self, message)),
+            (_, message) => Err((self, message)),
         }
     }
 }
@@ -311,16 +334,24 @@ impl<S> Conn<S, Sasl, Pristine> {
         self,
         authentication: codec::Authentication,
     ) -> Result<SaslEvent<S>, (Self, codec::Authentication)> {
-        match authentication {
-            codec::Authentication::SaslContinue(challenge) => Ok(SaslEvent::Continue {
+        match (
+            project_authentication(auth_grammar::RuntimeState::Sasl, &authentication),
+            authentication,
+        ) {
+            (
+                Some(auth_grammar::Event::Continue),
+                codec::Authentication::SaslContinue(challenge),
+            ) => Ok(SaslEvent::Continue {
                 conn: self.transition(),
                 challenge,
             }),
-            codec::Authentication::SaslFinal(server_final) => Ok(SaslEvent::Final {
-                conn: self.transition(),
-                server_final,
-            }),
-            authentication => Err((self, authentication)),
+            (Some(auth_grammar::Event::Final), codec::Authentication::SaslFinal(server_final)) => {
+                Ok(SaslEvent::Final {
+                    conn: self.transition(),
+                    server_final,
+                })
+            }
+            (_, authentication) => Err((self, authentication)),
         }
     }
 
@@ -378,17 +409,33 @@ impl<S> Conn<S, AwaitingAuthOk, Pristine> {
         self,
         message: codec::BackendMessage,
     ) -> Result<AuthCompletion<S>, (Self, codec::BackendMessage)> {
-        match message {
-            codec::BackendMessage::Authentication(codec::Authentication::Ok) => {
-                Ok(AuthCompletion::Ok(self.transition()))
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::AwaitingAuthOk, &message),
+            message,
+        ) {
+            (
+                Some(auth_grammar::Event::Ok),
+                codec::BackendMessage::Authentication(codec::Authentication::Ok),
+            ) => Ok(AuthCompletion::Ok(self.transition())),
+            (Some(auth_grammar::Event::Error), codec::BackendMessage::ErrorResponse(error)) => {
+                Ok(AuthCompletion::Error {
+                    conn: self.transition(),
+                    error,
+                })
             }
-            codec::BackendMessage::ErrorResponse(error) => Ok(AuthCompletion::Error {
-                conn: self.transition(),
-                error,
-            }),
-            message => Err((self, message)),
+            (_, message) => Err((self, message)),
         }
     }
+}
+
+fn project_authentication(
+    state: auth_grammar::RuntimeState,
+    authentication: &codec::Authentication,
+) -> Option<auth_grammar::Event> {
+    auth_grammar::project_external(
+        state,
+        &codec::BackendMessage::Authentication(authentication.clone()),
+    )
 }
 
 impl<S> Conn<S, AwaitingStartupReady, Pristine> {

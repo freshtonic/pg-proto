@@ -3,7 +3,10 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::demux::SessionItem;
-use crate::{Conn, Pristine, codec, pre_startup::Startup};
+use crate::{
+    Conn, Pristine, codec,
+    pre_startup::{Startup, Terminated},
+};
 
 #[derive(Debug)]
 pub enum Auth {}
@@ -70,6 +73,10 @@ pub enum AuthEvent<S> {
         conn: Conn<S, Auth>,
         message: codec::NegotiateProtocolVersion,
     },
+    Error {
+        conn: Conn<S, Terminated>,
+        error: codec::DiagnosticResponse,
+    },
 }
 
 #[derive(Debug)]
@@ -81,6 +88,19 @@ pub enum SaslEvent<S> {
     Final {
         conn: Conn<S, SaslFinal>,
         server_final: Bytes,
+    },
+    Error {
+        conn: Conn<S, Terminated>,
+        error: codec::DiagnosticResponse,
+    },
+}
+
+#[derive(Debug)]
+pub enum AuthCompletion<S> {
+    Ok(Conn<S, AwaitingStartupReady>),
+    Error {
+        conn: Conn<S, Terminated>,
+        error: codec::DiagnosticResponse,
     },
 }
 
@@ -126,6 +146,10 @@ impl<S> Conn<S, Auth, Pristine> {
             codec::BackendMessage::NegotiateProtocolVersion(message) => Ok(AuthEvent::Negotiate {
                 conn: self,
                 message,
+            }),
+            codec::BackendMessage::ErrorResponse(error) => Ok(AuthEvent::Error {
+                conn: self.transition(),
+                error,
             }),
             message => Err((self, message, None)),
         }
@@ -238,6 +262,29 @@ impl<S> Conn<S, Sasl, Pristine> {
             authentication => Err((self, authentication)),
         }
     }
+
+    /// Projects an authentication error which terminates an active SASL exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection and message for an illegal response.
+    pub fn offer_backend(
+        self,
+        message: codec::BackendMessage,
+    ) -> Result<SaslEvent<S>, (Self, codec::BackendMessage)> {
+        match message {
+            codec::BackendMessage::Authentication(authentication) => self
+                .offer(authentication)
+                .map_err(|(conn, authentication)| {
+                    (conn, codec::BackendMessage::Authentication(authentication))
+                }),
+            codec::BackendMessage::ErrorResponse(error) => Ok(SaslEvent::Error {
+                conn: self.transition(),
+                error,
+            }),
+            message => Err((self, message)),
+        }
+    }
 }
 
 impl<S> Conn<S, SaslChallenge, Pristine> {
@@ -261,8 +308,25 @@ impl<S> Conn<S, SaslFinal, Pristine> {
 }
 
 impl<S> Conn<S, AwaitingAuthOk, Pristine> {
-    pub fn authentication_ok(self) -> Conn<S, AwaitingStartupReady> {
-        self.transition()
+    /// Requires backend evidence that authentication succeeded or failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection and message for an illegal response.
+    pub fn offer(
+        self,
+        message: codec::BackendMessage,
+    ) -> Result<AuthCompletion<S>, (Self, codec::BackendMessage)> {
+        match message {
+            codec::BackendMessage::Authentication(codec::Authentication::Ok) => {
+                Ok(AuthCompletion::Ok(self.transition()))
+            }
+            codec::BackendMessage::ErrorResponse(error) => Ok(AuthCompletion::Error {
+                conn: self.transition(),
+                error,
+            }),
+            message => Err((self, message)),
+        }
     }
 }
 
@@ -388,5 +452,38 @@ mod tests {
             panic!("authentication projected to the wrong branch")
         };
         ready.into_transport();
+    }
+
+    #[test]
+    fn authentication_completion_requires_backend_evidence() {
+        let awaiting: Conn<(), AwaitingAuthOk> = Conn::new(()).transition();
+        let AuthCompletion::Ok(startup) = awaiting
+            .offer(codec::BackendMessage::Authentication(
+                codec::Authentication::Ok,
+            ))
+            .unwrap()
+        else {
+            panic!("AuthenticationOk projected to the wrong branch")
+        };
+        startup.into_transport();
+
+        let awaiting: Conn<(), AwaitingAuthOk> = Conn::new(()).transition();
+        let error = codec::DiagnosticResponse {
+            fields: vec![codec::DiagnosticField {
+                code: b'M',
+                value: Bytes::from_static(b"password authentication failed"),
+            }],
+        };
+        let AuthCompletion::Error {
+            conn,
+            error: projected,
+        } = awaiting
+            .offer(codec::BackendMessage::ErrorResponse(error.clone()))
+            .unwrap()
+        else {
+            panic!("authentication error projected to the wrong branch")
+        };
+        assert_eq!(projected, error);
+        conn.into_transport();
     }
 }

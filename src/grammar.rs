@@ -120,6 +120,7 @@ protocol! {
             Gss(gss) => Auth,
             Sspi(sspi) => Auth,
             KerberosV5(kerberos_v5) => Auth,
+            Error(error) => Terminated,
         }
         PasswordResponse internal {
             Password(password) => AwaitingAuthOk,
@@ -128,16 +129,25 @@ protocol! {
             Initial(initial) => Sasl,
         }
         Sasl external {
-            Continue(continue_response) => Sasl,
-            Final(final_response) => AwaitingAuthOk,
+            Continue(continue_response) => SaslChallenge,
+            Final(final_response) => SaslFinal,
+            Error(error) => Terminated,
+        }
+        SaslChallenge internal {
+            Response(response) => Sasl,
+        }
+        SaslFinal internal {
+            Verified(verified) => AwaitingAuthOk,
         }
         AwaitingAuthOk external {
             Ok(ok) => AwaitingStartupReady,
+            Error(error) => Terminated,
         }
         AwaitingStartupReady external {
             Ready(ready) => Ready,
         }
         Ready external {}
+        Terminated external {}
     }
 }
 
@@ -259,8 +269,11 @@ mod tests {
             .sasl()
             .initial()
             .continue_response()
+            .response()
             .continue_response()
+            .response()
             .final_response()
+            .verified()
             .ok()
             .ready();
 
@@ -269,8 +282,11 @@ mod tests {
             authentication::Event::Sasl,
             authentication::Event::Initial,
             authentication::Event::Continue,
+            authentication::Event::Response,
             authentication::Event::Continue,
+            authentication::Event::Response,
             authentication::Event::Final,
+            authentication::Event::Verified,
             authentication::Event::Ok,
             authentication::Event::Ready,
         ] {

@@ -3,10 +3,9 @@ use std::{collections::BTreeMap, error::Error, time::Duration};
 use bytes::Bytes;
 use pg_proto::{
     Conn,
-    auth::{AuthOffer, AwaitingStartupReady, PasswordResponse, SaslEvent},
+    auth::{AuthCompletion, AuthOffer, AwaitingStartupReady, PasswordResponse, SaslEvent},
     codec::{
-        Authentication, BackendMessage, Bind, Describe, DescribeTarget, Execute,
-        NegotiateProtocolVersion, Parse,
+        BackendMessage, Bind, Describe, DescribeTarget, Execute, NegotiateProtocolVersion, Parse,
     },
     demux::SessionItem,
     pre_startup::{Negotiation, Startup},
@@ -226,12 +225,12 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
     };
     scram.finish(&server_final)?;
     let mut awaiting_ok = final_state.verified();
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
-        awaiting_ok.receive().await?
-    else {
+    let SessionItem::Message(message) = awaiting_ok.receive().await? else {
         panic!("PostgreSQL did not confirm authentication")
     };
-    let awaiting_ready = awaiting_ok.authentication_ok();
+    let AuthCompletion::Ok(awaiting_ready) = awaiting_ok.offer(message).unwrap() else {
+        panic!("PostgreSQL rejected authentication")
+    };
     let ready = finish_startup(awaiting_ready).await?;
     let _transport = ready.into_transport();
     Ok(())
@@ -348,12 +347,12 @@ async fn scram_sha_256_plus_over_typed_tls_matches_postgres_18() -> Result<(), B
     };
     scram.finish(&server_final)?;
     let mut awaiting_ok = final_state.verified();
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
-        awaiting_ok.receive().await?
-    else {
+    let SessionItem::Message(message) = awaiting_ok.receive().await? else {
         panic!("PostgreSQL did not confirm SCRAM-PLUS authentication")
     };
-    let mut awaiting_ready = awaiting_ok.authentication_ok();
+    let AuthCompletion::Ok(mut awaiting_ready) = awaiting_ok.offer(message).unwrap() else {
+        panic!("PostgreSQL rejected SCRAM-PLUS authentication")
+    };
     let ready = loop {
         let item = awaiting_ready.receive().await?;
         match awaiting_ready.offer_ready(item) {
@@ -454,16 +453,15 @@ async fn submit_password(
     let (mut awaiting_ok, frame) = conn.password(password)?;
     awaiting_ok.push_frame(frame)?;
     awaiting_ok.flush().await?;
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
-        awaiting_ok.receive().await?
-    else {
+    let SessionItem::Message(message) = awaiting_ok.receive().await? else {
         panic!("PostgreSQL rejected the password response")
     };
-    finish_startup(awaiting_ok.authentication_ok())
-        .await
-        .map(|ready| {
-            let _transport = ready.into_transport();
-        })
+    let AuthCompletion::Ok(awaiting_ready) = awaiting_ok.offer(message).unwrap() else {
+        panic!("PostgreSQL rejected the password response")
+    };
+    finish_startup(awaiting_ready).await.map(|ready| {
+        let _transport = ready.into_transport();
+    })
 }
 
 #[tokio::test]

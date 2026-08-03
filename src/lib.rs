@@ -6,6 +6,7 @@ pub mod codec;
 pub mod demux;
 pub mod grammar;
 pub mod pre_startup;
+pub mod resources;
 pub mod server_auth;
 pub mod server_session;
 pub mod session;

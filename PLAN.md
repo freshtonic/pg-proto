@@ -129,7 +129,7 @@ neutral composition harnesses and examples.
   router or rewriter can own, without implementing routing policy.
 - [x] Expose cancellation-key minting, observation, and mapping hooks without
   embedding a production registry or cancellation policy.
-- [ ] Expose ordered forwarding hooks for notices, notifications, parameter
+- [x] Expose ordered forwarding hooks for notices, notifications, parameter
   statuses, and command attribution without prescribing their destination.
 - [ ] Expose cleanliness evidence and policy hooks for transactions, GUC changes,
   LISTEN/NOTIFY, advisory locks, portals, and prepared statements; pool policy

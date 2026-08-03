@@ -14,7 +14,10 @@ use crate::{
     Conn,
     auth::TlsServerEndPoint,
     codec::{Backend, BackendMessage, Direction, Frame, Frontend, FrontendMessage, PgCodec},
-    demux::{CancelKey, Demux, Notification, ParameterStatus, SessionItem, TaggedNotice},
+    demux::{
+        CancelKey, Demux, Notification, OrderedAsyncEvent, ParameterStatus, SessionItem,
+        TaggedNotice,
+    },
     pre_startup::{
         AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
         PreStartup, PreStartupMessage, ServerSslDecision, SslMode, SslModeNegotiation,
@@ -556,6 +559,11 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// Removes the next ordered parameter update for forwarding to the client.
     pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
         self.transport_mut().demux_mut().pop_parameter_status()
+    }
+
+    /// Removes the next independent backend event in original wire order.
+    pub fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
+        self.transport_mut().demux_mut().pop_async_event()
     }
 }
 

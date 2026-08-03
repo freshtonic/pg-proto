@@ -30,6 +30,22 @@ pub struct ParameterStatus {
     pub value: Bytes,
 }
 
+/// A causally independent backend event retained in its original wire order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AsyncEvent {
+    Notice(TaggedNotice),
+    ParameterStatus(ParameterStatus),
+    Notification(Notification),
+}
+
+/// Ordering and command attribution for an asynchronous backend event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedAsyncEvent {
+    pub sequence: u64,
+    pub command: CommandIndex,
+    pub event: AsyncEvent,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CancelKey {
     pub process_id: u32,
@@ -59,6 +75,8 @@ pub struct Demux {
     notices: VecDeque<TaggedNotice>,
     notifications: VecDeque<Notification>,
     parameter_statuses: VecDeque<ParameterStatus>,
+    async_events: VecDeque<OrderedAsyncEvent>,
+    next_async_sequence: u64,
     parameters: BTreeMap<Bytes, Bytes>,
     startup_parameters: Option<BTreeMap<Bytes, Bytes>>,
     parameters_changed: bool,
@@ -79,13 +97,15 @@ impl Demux {
                     fields,
                 };
                 self.pending_notices.push(notice.clone());
-                self.notices.push_back(notice);
+                self.notices.push_back(notice.clone());
+                self.push_async(AsyncEvent::Notice(notice));
                 None
             }
             BackendMessage::ParameterStatus { name, value } => {
                 self.parameters.insert(name.clone(), value.clone());
-                self.parameter_statuses
-                    .push_back(ParameterStatus { name, value });
+                let status = ParameterStatus { name, value };
+                self.parameter_statuses.push_back(status.clone());
+                self.push_async(AsyncEvent::ParameterStatus(status));
                 if let Some(startup_parameters) = &self.startup_parameters {
                     self.parameters_changed = self.parameters != *startup_parameters;
                 }
@@ -96,11 +116,13 @@ impl Demux {
                 channel,
                 payload,
             } => {
-                self.notifications.push_back(Notification {
+                let notification = Notification {
                     process_id,
                     channel,
                     payload,
-                });
+                };
+                self.notifications.push_back(notification.clone());
+                self.push_async(AsyncEvent::Notification(notification));
                 None
             }
             BackendMessage::BackendKeyData {
@@ -172,6 +194,21 @@ impl Demux {
     /// Removes the next ordered status update for forwarding to a client.
     pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
         self.parameter_statuses.pop_front()
+    }
+
+    /// Removes the next asynchronous event in original backend wire order.
+    pub fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
+        self.async_events.pop_front()
+    }
+
+    fn push_async(&mut self, event: AsyncEvent) {
+        let sequence = self.next_async_sequence;
+        self.next_async_sequence = self.next_async_sequence.saturating_add(1);
+        self.async_events.push_back(OrderedAsyncEvent {
+            sequence,
+            command: self.command,
+            event,
+        });
     }
 }
 
@@ -306,5 +343,32 @@ mod tests {
                 payload: Bytes::from_static(b"payload"),
             })
         );
+    }
+
+    #[test]
+    fn asynchronous_events_preserve_cross_kind_wire_order() {
+        let mut demux = Demux::default();
+        demux.route(BackendMessage::ParameterStatus {
+            name: Bytes::from_static(b"TimeZone"),
+            value: Bytes::from_static(b"UTC"),
+        });
+        demux.route(BackendMessage::NotificationResponse {
+            process_id: 7,
+            channel: Bytes::from_static(b"jobs"),
+            payload: Bytes::from_static(b"ready"),
+        });
+        demux.route(BackendMessage::NoticeResponse(DiagnosticResponse {
+            fields: vec![],
+        }));
+
+        let events = std::iter::from_fn(|| demux.pop_async_event()).collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].sequence, 0);
+        assert!(matches!(events[0].event, AsyncEvent::ParameterStatus(_)));
+        assert_eq!(events[1].sequence, 1);
+        assert!(matches!(events[1].event, AsyncEvent::Notification(_)));
+        assert_eq!(events[2].sequence, 2);
+        assert!(matches!(events[2].event, AsyncEvent::Notice(_)));
+        assert!(events.iter().all(|event| event.command == CommandIndex(0)));
     }
 }

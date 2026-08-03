@@ -53,7 +53,7 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
 
     let mut auth = startup_conn.authentication();
     let mut negotiation = None;
-    let mut awaiting_ready = tokio::time::timeout(Duration::from_secs(10), async {
+    let awaiting_ready = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let SessionItem::Message(message) = auth.receive().await? {
                 match message {
@@ -76,25 +76,14 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
     })
     .await??;
 
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if matches!(
-                awaiting_ready.receive().await?,
-                SessionItem::Message(BackendMessage::ReadyForQuery(_))
-            ) {
-                return Ok::<_, std::io::Error>(());
-            }
-        }
-    })
-    .await??;
+    let ready = finish_startup(awaiting_ready).await?;
 
     assert_negotiation(negotiation);
     assert!(
-        awaiting_ready.cancel_key().is_some(),
+        ready.cancel_key().is_some(),
         "server did not expose cancellation keys"
     );
 
-    let ready = awaiting_ready.ready();
     let (mut query, frame) = ready.push_query(b"SELECT 42::int4")?;
     query.push_frame(frame)?;
     query.flush().await?;
@@ -187,7 +176,7 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
         panic!("PostgreSQL did not confirm authentication")
     };
     let awaiting_ready = awaiting_ok.authentication_ok();
-    finish_startup(awaiting_ready).await?;
+    let _ready = finish_startup(awaiting_ready).await?;
     Ok(())
 }
 
@@ -214,14 +203,12 @@ async fn connected_startup(
 
 async fn finish_startup(
     mut conn: Conn<Buffered<tokio::net::TcpStream>, AwaitingStartupReady>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>, Box<dyn Error>> {
     loop {
-        if matches!(
-            conn.receive().await?,
-            SessionItem::Message(BackendMessage::ReadyForQuery(_))
-        ) {
-            let _ready = conn.ready();
-            return Ok(());
+        let item = conn.receive().await?;
+        match conn.offer_ready(item) {
+            Ok(ready) => return Ok(ready),
+            Err((next, _item)) => conn = next,
         }
     }
 }
@@ -287,5 +274,7 @@ async fn submit_password(
     else {
         panic!("PostgreSQL rejected the password response")
     };
-    finish_startup(awaiting_ok.authentication_ok()).await
+    finish_startup(awaiting_ok.authentication_ok())
+        .await
+        .map(|_ready| ())
 }

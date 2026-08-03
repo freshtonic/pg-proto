@@ -2,6 +2,7 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 
+use crate::demux::SessionItem;
 use crate::{Conn, Pristine, codec, pre_startup::Startup};
 
 #[derive(Debug)]
@@ -169,8 +170,20 @@ impl<S> Conn<S, AwaitingAuthOk, Pristine> {
 }
 
 impl<S> Conn<S, AwaitingStartupReady, Pristine> {
-    pub fn ready(self) -> Conn<S, Ready> {
-        self.transition()
+    /// Completes startup only when presented with a projected `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and item when it is not `ReadyForQuery`.
+    pub fn offer_ready(self, item: SessionItem) -> Result<Conn<S, Ready>, (Self, SessionItem)> {
+        if matches!(
+            item,
+            SessionItem::Message(codec::BackendMessage::ReadyForQuery(_))
+        ) {
+            Ok(self.transition())
+        } else {
+            Err((self, item))
+        }
     }
 }
 

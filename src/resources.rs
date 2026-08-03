@@ -14,7 +14,7 @@ use crate::{
     demux::SessionItem,
     session::{
         AwaitingReady, AwaitingReadyTransition, BoundBuilding, Building, Draining,
-        DrainingTransition, ErrorResponse, ReadyState,
+        DrainingTransition, ErrorResponse, ReadyState, SimpleQuery,
     },
 };
 
@@ -522,6 +522,25 @@ impl<'id, S, C> ResourceConnection<'id, S, Ready, C> {
             resources,
         }
     }
+
+    /// Begins a simple query and invalidates the unnamed prepared statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query cannot be reconstructed on the wire.
+    pub fn query(
+        self,
+        query: &[u8],
+    ) -> Result<(ResourceConnection<'id, S, SimpleQuery, Dirty>, Frame), ResourceProtocolError>
+    {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        resources.simple_query_boundary();
+        let (conn, frame) = conn.push_query(query)?;
+        Ok((ResourceConnection { conn, resources }, frame))
+    }
 }
 
 impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
@@ -923,6 +942,46 @@ mod tests {
             assert!(ready.statement_is_live(&statement));
             assert!(!ready.portal_is_live(&portal));
             ready.into_connection().into_transport();
+        });
+    }
+
+    #[test]
+    fn simple_query_invalidates_only_the_unnamed_statement() {
+        let ready: Conn<(), crate::auth::Ready> = Conn::new(()).transition();
+        with_connection_resources(ready.begin_extended(), |connection| {
+            let (connection, unnamed, _) = connection
+                .prepare(
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::from_static(b"select 1"),
+                    vec![],
+                )
+                .unwrap();
+            let (connection, named, _) = connection
+                .prepare(
+                    Bytes::from_static(b"client_named"),
+                    Bytes::from_static(b"proxy_named"),
+                    Bytes::from_static(b"select 2"),
+                    vec![],
+                )
+                .unwrap();
+            let (awaiting, _) = connection.sync();
+            let ResourceAwaitingTransition::Ready(ResourceReadyState::Clean(ready)) = awaiting
+                .offer(SessionItem::ReadyForQuery {
+                    status: TransactionStatus::Idle,
+                    parameters_changed: false,
+                })
+            else {
+                panic!("idle readiness should complete the extended cycle")
+            };
+            assert!(ready.statement_is_live(&unnamed));
+            assert!(ready.statement_is_live(&named));
+
+            let (query, frame) = ready.query(b"select 3").unwrap();
+            assert_eq!(frame.tag, b'Q');
+            assert!(!query.statement_is_live(&unnamed));
+            assert!(query.statement_is_live(&named));
+            query.into_connection().into_transport();
         });
     }
 

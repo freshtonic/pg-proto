@@ -44,7 +44,7 @@ work using that feature is complete.
 - [x] Positionally tagged notices and ordered asynchronous-message sinks.
 - [x] Connection-branded prepared statements and portals with name rewriting.
 - [x] Exact typestate erasure and checked re-entry at storage boundaries.
-- [ ] Extend the connection-branded resource wrapper over the complete extended
+- [x] Extend the connection-branded resource wrapper over the complete extended
   cycle, including repeated Parse/Bind, Close, Sync, response consumption, and
   resource invalidation at protocol boundaries.
 
@@ -109,7 +109,9 @@ work using that feature is complete.
   error-drain consumption, invalidating unnamed portals at idle transaction
   boundaries.
 - [x] Cover the complete asynchronous branded cycle against live PostgreSQL 18.
-- [ ] Add explicit unnamed-resource boundary regression tests to the branded
+- [x] Add explicit unnamed-resource boundary regression tests to the branded
   connection API.
   - [x] Idle transaction completion invalidates the unnamed portal only.
-  - [ ] A simple-query boundary invalidates the unnamed statement.
+  - [x] A simple-query boundary invalidates the unnamed statement only.
+- [ ] Attach typed message payloads and fallible results to generated grammar
+  transitions, beginning with frontend extended-query construction.

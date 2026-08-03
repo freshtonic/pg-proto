@@ -9,6 +9,7 @@ protocol! {
             Query(query) => Simple,
             BeginExtended(begin_extended) => Building,
             FunctionCall(function_call) => FunctionCalling,
+            Reset(reset) => Resetting,
             Terminate(terminate) => Terminated,
         }
         FunctionCalling external {
@@ -75,6 +76,16 @@ protocol! {
         Draining external {
             Continue(continue_response) => Draining,
             Ready(ready) => Ready,
+        }
+        Resetting external {
+            Continue(continue_reset) => Resetting,
+            DiscardComplete(discard_complete) => ResetComplete,
+            Error(error) => Draining,
+        }
+        ResetComplete external {
+            Continue(continue_reset) => ResetComplete,
+            Ready(ready) => Ready,
+            Error(error) => Draining,
         }
         Terminated external {}
     }
@@ -623,6 +634,45 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), RuntimeState::Terminated);
+    }
+
+    #[test]
+    fn generated_pool_reset_requires_discard_and_ready_evidence() {
+        let _typed = Session::new()
+            .reset()
+            .continue_reset()
+            .discard_complete()
+            .continue_reset()
+            .ready();
+
+        let mut runtime = RuntimeFsm::new();
+        runtime.step(Event::Reset).unwrap();
+        assert!(runtime.step(Event::Ready).is_err());
+        runtime.step(Event::DiscardComplete).unwrap();
+        runtime.step(Event::Ready).unwrap();
+        assert_eq!(runtime.state(), RuntimeState::Ready);
+
+        let dirty: Conn<(), crate::auth::Ready, crate::Dirty> =
+            Conn::new(()).transition().mark_dirty();
+        let (resetting, _) = dirty.begin_reset().unwrap();
+        let crate::session::ResettingTransition::Complete(complete) =
+            resetting.offer(SessionItem::CommandComplete {
+                tag: Bytes::from_static(b"DISCARD ALL"),
+                command: crate::demux::CommandIndex(1),
+                notices: Vec::new(),
+            })
+        else {
+            panic!("DISCARD ALL did not advance reset recovery")
+        };
+        let crate::session::ResetCompleteTransition::Ready(ready) =
+            complete.offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+        else {
+            panic!("idle readiness did not restore pristine evidence")
+        };
+        ready.release();
     }
 
     #[test]

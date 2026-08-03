@@ -7,6 +7,7 @@ use pg_proto::{
     codec::{Authentication, BackendMessage, NegotiateProtocolVersion},
     demux::SessionItem,
     pre_startup::Startup,
+    session::SimpleTransition,
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
@@ -84,26 +85,52 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
         "server did not expose cancellation keys"
     );
 
+    run_select_42(ready).await?;
+    Ok(())
+}
+
+async fn run_select_42(
+    ready: Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>,
+) -> Result<(), Box<dyn Error>> {
     let (mut query, frame) = ready.push_query(b"SELECT 42::int4")?;
     query.push_frame(frame)?;
     query.flush().await?;
     let mut saw_row_description = false;
     let mut saw_data_row = false;
     let mut saw_command_complete = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let ready = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            match query.receive().await? {
-                SessionItem::Message(BackendMessage::RowDescription(_)) => {
-                    saw_row_description = true;
+            let item = query.receive().await?;
+            match query.offer(item) {
+                Ok(SimpleTransition::Continue(next, item)) => {
+                    query = next;
+                    match item {
+                        SessionItem::Message(BackendMessage::RowDescription(_)) => {
+                            saw_row_description = true;
+                        }
+                        SessionItem::Message(BackendMessage::DataRow(_)) => {
+                            saw_data_row = true;
+                        }
+                        SessionItem::CommandComplete { .. } => saw_command_complete = true,
+                        SessionItem::Message(_) => {}
+                    }
                 }
-                SessionItem::Message(BackendMessage::DataRow(_)) => {
-                    saw_data_row = true;
+                Ok(SimpleTransition::Ready(ready, _status)) => {
+                    return Ok::<_, std::io::Error>(ready);
                 }
-                SessionItem::CommandComplete { .. } => saw_command_complete = true,
-                SessionItem::Message(BackendMessage::ReadyForQuery(_)) => {
-                    return Ok::<_, std::io::Error>(());
+                Ok(SimpleTransition::Error(_, _)) => {
+                    return Err(std::io::Error::other("query returned ErrorResponse"));
                 }
-                SessionItem::Message(_) => {}
+                Ok(
+                    SimpleTransition::CopyIn(_, _)
+                    | SimpleTransition::CopyOut(_, _)
+                    | SimpleTransition::CopyBoth(_, _),
+                ) => {
+                    return Err(std::io::Error::other("query unexpectedly entered COPY"));
+                }
+                Err((_next, _item)) => {
+                    return Err(std::io::Error::other("illegal simple-query response"));
+                }
             }
         }
     })
@@ -112,7 +139,6 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
     assert!(saw_data_row);
     assert!(saw_command_complete);
 
-    let ready = query.response_complete().ready();
     let _transport = ready.release();
     Ok(())
 }

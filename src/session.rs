@@ -4,7 +4,12 @@ use std::io;
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use crate::{Conn, Dirty, Pristine, auth::Ready, codec::Frame};
+use crate::{
+    Conn, Dirty, Pristine,
+    auth::Ready,
+    codec::{BackendMessage, CopyResponse, DiagnosticResponse, Frame, TransactionStatus},
+    demux::SessionItem,
+};
 
 #[derive(Debug)]
 pub enum SimpleQuery {}
@@ -30,10 +35,32 @@ pub enum CopyBoth {}
 #[derive(Debug)]
 pub enum Draining {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ErrorResponse(pub Bytes);
+pub type ErrorResponse = DiagnosticResponse;
 
 pub type Fallible<T, S, C = Pristine> = Result<T, (Conn<S, Draining, C>, ErrorResponse)>;
+
+#[derive(Debug)]
+pub enum SimpleTransition<S, C> {
+    Continue(Conn<S, SimpleQuery, C>, SessionItem),
+    CopyIn(Conn<S, CopyIn, C>, CopyResponse),
+    CopyOut(Conn<S, CopyOut, C>, CopyResponse),
+    CopyBoth(Conn<S, CopyBoth, C>, CopyResponse),
+    Ready(Conn<S, Ready, C>, TransactionStatus),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum AwaitingReadyTransition<S, C> {
+    Continue(Conn<S, AwaitingReady, C>, SessionItem),
+    Ready(Conn<S, Ready, C>, TransactionStatus),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum DrainingTransition<S, C> {
+    Continue(Conn<S, Draining, C>, SessionItem),
+    Ready(Conn<S, Ready, C>, TransactionStatus),
+}
 
 impl<S, C> Conn<S, Ready, C> {
     /// Buffers a simple query and enters its response phase.
@@ -128,24 +155,36 @@ impl<S, C> Conn<S, BoundBuilding, C> {
 }
 
 impl<S, C> Conn<S, SimpleQuery, C> {
-    pub fn copy_in(self) -> Conn<S, CopyIn, C> {
-        self.transition()
-    }
-
-    pub fn copy_out(self) -> Conn<S, CopyOut, C> {
-        self.transition()
-    }
-
-    pub fn copy_both(self) -> Conn<S, CopyBoth, C> {
-        self.transition()
-    }
-
-    pub fn response_complete(self) -> Conn<S, AwaitingReady, C> {
-        self.transition()
-    }
-
-    pub fn error(self, error: ErrorResponse) -> (Conn<S, Draining, C>, ErrorResponse) {
-        (self.transition(), error)
+    /// Advances a simple-query session using an actual projected backend item.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and item if it is illegal in this phase.
+    pub fn offer(self, item: SessionItem) -> Result<SimpleTransition<S, C>, (Self, SessionItem)> {
+        match item {
+            SessionItem::Message(BackendMessage::CopyInResponse(response)) => {
+                Ok(SimpleTransition::CopyIn(self.transition(), response))
+            }
+            SessionItem::Message(BackendMessage::CopyOutResponse(response)) => {
+                Ok(SimpleTransition::CopyOut(self.transition(), response))
+            }
+            SessionItem::Message(BackendMessage::CopyBothResponse(response)) => {
+                Ok(SimpleTransition::CopyBoth(self.transition(), response))
+            }
+            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
+                Ok(SimpleTransition::Ready(self.transition(), status))
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                Ok(SimpleTransition::Error(self.transition(), error))
+            }
+            item @ (SessionItem::CommandComplete { .. }
+            | SessionItem::Message(
+                BackendMessage::RowDescription(_)
+                | BackendMessage::DataRow(_)
+                | BackendMessage::EmptyQueryResponse,
+            )) => Ok(SimpleTransition::Continue(self, item)),
+            item => Err((self, item)),
+        }
     }
 }
 
@@ -204,20 +243,29 @@ impl<S, C> Conn<S, CopyBoth, C> {
 }
 
 impl<S, C> Conn<S, Draining, C> {
-    /// Non-ready messages are consumed without leaving the draining phase.
-    pub fn drain_message(self) -> Self {
-        self
-    }
-
     /// `ReadyForQuery` is the sole exit from error draining.
-    pub fn ready(self) -> Conn<S, Ready, C> {
-        self.transition()
+    pub fn offer(self, item: SessionItem) -> DrainingTransition<S, C> {
+        match item {
+            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
+                DrainingTransition::Ready(self.transition(), status)
+            }
+            item => DrainingTransition::Continue(self, item),
+        }
     }
 }
 
 impl<S, C> Conn<S, AwaitingReady, C> {
-    pub fn ready(self) -> Conn<S, Ready, C> {
-        self.transition()
+    /// Consumes responses after Sync until `ReadyForQuery` proves readiness.
+    pub fn offer(self, item: SessionItem) -> AwaitingReadyTransition<S, C> {
+        match item {
+            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
+                AwaitingReadyTransition::Ready(self.transition(), status)
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                AwaitingReadyTransition::Error(self.transition(), error)
+            }
+            item => AwaitingReadyTransition::Continue(self, item),
+        }
     }
 }
 

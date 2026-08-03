@@ -13,6 +13,7 @@ use crate::{
     },
     demux::SessionItem,
     pre_startup::Terminated,
+    replication::{BackendReplication, FrontendReplication},
 };
 
 #[derive(Debug)]
@@ -107,6 +108,25 @@ pub enum CopyBothClientDoneReceive<S, C> {
     Done(Conn<S, AwaitingReady, C>),
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
+
+#[derive(Debug)]
+pub enum ReplicationReceive<S, C> {
+    Message(Conn<S, CopyBoth, C>, BackendReplication),
+    Done(Conn<S, CopyBothServerDone, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum ReplicationClientDoneReceive<S, C> {
+    Message(Conn<S, CopyBothClientDone, C>, BackendReplication),
+    Done(Conn<S, AwaitingReady, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+pub type ReplicationProjection<S, C> =
+    Result<ReplicationReceive<S, C>, (Conn<S, CopyBoth, C>, io::Error)>;
+pub type ReplicationClientDoneProjection<S, C> =
+    Result<ReplicationClientDoneReceive<S, C>, (Conn<S, CopyBothClientDone, C>, io::Error)>;
 
 #[derive(Debug)]
 pub enum ReadyState<S, C> {
@@ -430,6 +450,24 @@ impl<S, C> Conn<S, CopyBothClientDone, C> {
     }
 }
 
+impl<S, C> CopyBothClientDoneReceive<S, C> {
+    /// Decodes data received after the frontend half-close.
+    ///
+    /// # Errors
+    ///
+    /// Returns the connection with a decoding error for malformed known payloads.
+    pub fn decode_replication(self) -> ReplicationClientDoneProjection<S, C> {
+        match self {
+            Self::Data(conn, data) => match BackendReplication::decode(data) {
+                Ok(message) => Ok(ReplicationClientDoneReceive::Message(conn, message)),
+                Err(error) => Err((conn, error)),
+            },
+            Self::Done(conn) => Ok(ReplicationClientDoneReceive::Done(conn)),
+            Self::Error(conn, error) => Ok(ReplicationClientDoneReceive::Error(conn, error)),
+        }
+    }
+}
+
 impl<S, C> Conn<S, CopyBothServerDone, C> {
     /// Continues sending after the backend half has closed.
     pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
@@ -440,6 +478,11 @@ impl<S, C> Conn<S, CopyBothServerDone, C> {
                 body: data,
             },
         )
+    }
+
+    /// Sends a structured standby message after the backend half-close.
+    pub fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
+        self.push_copy_data(message.encode())
     }
 
     /// Closes the remaining frontend half and begins readiness processing.
@@ -481,6 +524,11 @@ impl<S, C> Conn<S, CopyBoth, C> {
         )
     }
 
+    /// Sends a structured standby message in the walsender stream.
+    pub fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
+        self.push_copy_data(message.encode())
+    }
+
     pub fn push_copy_done(self) -> (Conn<S, CopyBothClientDone, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
@@ -502,6 +550,24 @@ impl<S, C> Conn<S, CopyBoth, C> {
                 Ok(CopyBothReceive::Error(self.transition(), error))
             }
             item => Err((self, item)),
+        }
+    }
+}
+
+impl<S, C> CopyBothReceive<S, C> {
+    /// Decodes a COPY BOTH data branch as a walsender message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the connection with a decoding error for malformed known payloads.
+    pub fn decode_replication(self) -> ReplicationProjection<S, C> {
+        match self {
+            Self::Data(conn, data) => match BackendReplication::decode(data) {
+                Ok(message) => Ok(ReplicationReceive::Message(conn, message)),
+                Err(error) => Err((conn, error)),
+            },
+            Self::Done(conn) => Ok(ReplicationReceive::Done(conn)),
+            Self::Error(conn, error) => Ok(ReplicationReceive::Error(conn, error)),
         }
     }
 }
@@ -733,6 +799,46 @@ mod tests {
         let (awaiting, done) = server_done.push_copy_done();
         assert_eq!(done.tag, b'c');
         awaiting.into_transport();
+    }
+
+    #[test]
+    fn copy_both_projects_typed_replication_without_losing_connection() {
+        let open: Conn<(), CopyBoth> = Conn::new(()).transition();
+        let status = FrontendReplication::StandbyStatus {
+            written: 10,
+            flushed: 9,
+            applied: 8,
+            client_time: 7,
+            reply_requested: true,
+        };
+        let (open, frame) = open.push_replication(&status);
+        assert_eq!(frame.body, status.encode());
+
+        let keepalive = BackendReplication::PrimaryKeepalive {
+            wal_end: 11,
+            server_time: 12,
+            reply_requested: true,
+        };
+        let receive = open
+            .offer(SessionItem::Message(BackendMessage::CopyData(
+                keepalive.encode(),
+            )))
+            .unwrap();
+        let ReplicationReceive::Message(open, decoded) = receive.decode_replication().unwrap()
+        else {
+            panic!("keepalive projected to the wrong branch")
+        };
+        assert_eq!(decoded, keepalive);
+        open.into_transport();
+
+        let open: Conn<(), CopyBoth> = Conn::new(()).transition();
+        let receive = open
+            .offer(SessionItem::Message(BackendMessage::CopyData(
+                Bytes::from_static(b"kshort"),
+            )))
+            .unwrap();
+        let (open, _) = receive.decode_replication().unwrap_err();
+        open.into_transport();
     }
 
     #[test]

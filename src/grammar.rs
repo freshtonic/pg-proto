@@ -126,7 +126,19 @@ protocol! {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use bytes::Bytes;
+
     use super::{authentication, frontend, pre_startup};
+    use crate::{
+        Conn,
+        auth::AuthOffer,
+        codec::{Authentication, Bind, Execute, Parse, TransactionStatus},
+        demux::SessionItem,
+        session::{AwaitingReadyTransition, ReadyState},
+        startup::{ProtocolVersion, StartupMessage},
+    };
     use frontend::{Event, RuntimeFsm, RuntimeState, Session};
 
     #[test]
@@ -201,5 +213,68 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), authentication::RuntimeState::Ready);
+    }
+
+    #[test]
+    fn runtime_fsm_tracks_the_handwritten_extended_typestate() {
+        let message = StartupMessage {
+            version: ProtocolVersion::V3_2,
+            parameters: BTreeMap::new(),
+        };
+        let (startup, _) = Conn::new(()).startup(&message).unwrap();
+        let AuthOffer::Ok(awaiting_ready) =
+            startup.authentication().offer(Authentication::Ok).unwrap()
+        else {
+            panic!("authentication projected to the wrong branch")
+        };
+        let ready = awaiting_ready
+            .offer_ready(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+            .unwrap();
+        let mut runtime = RuntimeFsm::new();
+
+        let building = ready.begin_extended();
+        runtime.step(Event::BeginExtended).unwrap();
+        let (building, _) = building
+            .push_parse(&Parse {
+                statement: Bytes::from_static(b"s"),
+                query: Bytes::from_static(b"select $1"),
+                parameter_types: vec![23],
+            })
+            .unwrap();
+        runtime.step(Event::Parse).unwrap();
+        let (bound, _) = building
+            .push_bind(&Bind {
+                portal: Bytes::new(),
+                statement: Bytes::from_static(b"s"),
+                parameter_formats: vec![],
+                parameters: vec![Some(Bytes::from_static(b"42"))],
+                result_formats: vec![],
+            })
+            .unwrap();
+        runtime.step(Event::Bind).unwrap();
+        let (bound, _) = bound
+            .push_execute(&Execute {
+                portal: Bytes::new(),
+                max_rows: 0,
+            })
+            .unwrap();
+        runtime.step(Event::Execute).unwrap();
+        let (awaiting_ready, _) = bound.push_sync();
+        runtime.step(Event::Sync).unwrap();
+        let AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) =
+            awaiting_ready.offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+        else {
+            panic!("ready evidence projected to the wrong branch")
+        };
+        runtime.step(Event::Ready).unwrap();
+
+        assert_eq!(runtime.state(), RuntimeState::Ready);
+        ready.release();
     }
 }

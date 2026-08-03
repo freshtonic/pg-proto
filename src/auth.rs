@@ -18,6 +18,9 @@ pub enum SaslInitial {}
 pub enum Sasl {}
 
 #[derive(Debug)]
+pub enum SaslChallenge {}
+
+#[derive(Debug)]
 pub enum SaslFinal {}
 
 #[derive(Debug)]
@@ -66,6 +69,18 @@ pub enum AuthEvent<S> {
     Negotiate {
         conn: Conn<S, Auth>,
         message: codec::NegotiateProtocolVersion,
+    },
+}
+
+#[derive(Debug)]
+pub enum SaslEvent<S> {
+    Continue {
+        conn: Conn<S, SaslChallenge>,
+        challenge: Bytes,
+    },
+    Final {
+        conn: Conn<S, SaslFinal>,
+        server_final: Bytes,
     },
 }
 
@@ -202,19 +217,45 @@ impl<S: TlsServerEndPoint> Conn<S, SaslInitial, Pristine> {
 }
 
 impl<S> Conn<S, Sasl, Pristine> {
-    /// Sends one response and remains in the recursive SASL sub-session.
-    pub fn continue_with(self, response: Bytes) -> (Self, codec::Frame) {
+    /// Projects the next server challenge or final verifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection and authentication message for an illegal branch.
+    pub fn offer(
+        self,
+        authentication: codec::Authentication,
+    ) -> Result<SaslEvent<S>, (Self, codec::Authentication)> {
+        match authentication {
+            codec::Authentication::SaslContinue(challenge) => Ok(SaslEvent::Continue {
+                conn: self.transition(),
+                challenge,
+            }),
+            codec::Authentication::SaslFinal(server_final) => Ok(SaslEvent::Final {
+                conn: self.transition(),
+                server_final,
+            }),
+            authentication => Err((self, authentication)),
+        }
+    }
+}
+
+impl<S> Conn<S, SaslChallenge, Pristine> {
+    /// Sends the response to one received challenge and re-enters the SASL loop.
+    pub fn respond(self, response: Bytes) -> (Conn<S, Sasl>, codec::Frame) {
         (
-            self,
+            self.transition(),
             codec::Frame {
                 tag: b'p',
                 body: response,
             },
         )
     }
+}
 
-    /// Accepts the server-final data after the SCRAM implementation verifies it.
-    pub fn server_final(self, _verified_server_final: Bytes) -> Conn<S, AwaitingAuthOk> {
+impl<S> Conn<S, SaslFinal, Pristine> {
+    /// Records that custom SCRAM logic verified the received server-final value.
+    pub fn verified(self) -> Conn<S, AwaitingAuthOk> {
         self.transition()
     }
 }
@@ -272,6 +313,7 @@ fn sasl_initial<S>(
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
     struct Tls(Vec<u8>);
 
     impl TlsServerEndPoint for Tls {
@@ -281,13 +323,30 @@ mod tests {
     }
 
     #[test]
-    fn sasl_continue_is_a_self_loop() {
-        let conn: Conn<Tls, Sasl> = Conn::new(Tls(vec![1])).transition();
-        let (conn, first) = conn.continue_with(Bytes::from_static(b"one"));
-        let (conn, second) = conn.continue_with(Bytes::from_static(b"two"));
-        assert_eq!(first.body, Bytes::from_static(b"one"));
-        assert_eq!(second.body, Bytes::from_static(b"two"));
-        let _transport = conn.into_transport();
+    fn sasl_continue_alternates_challenge_and_response() {
+        let sasl: Conn<Tls, Sasl> = Conn::new(Tls(vec![1])).transition();
+        let SaslEvent::Continue { conn, challenge } = sasl
+            .offer(codec::Authentication::SaslContinue(Bytes::from_static(
+                b"challenge",
+            )))
+            .unwrap()
+        else {
+            panic!("challenge projected to the wrong branch")
+        };
+        assert_eq!(challenge, Bytes::from_static(b"challenge"));
+        let (sasl, response) = conn.respond(Bytes::from_static(b"response"));
+        assert_eq!(response.body, Bytes::from_static(b"response"));
+
+        let SaslEvent::Final { conn, server_final } = sasl
+            .offer(codec::Authentication::SaslFinal(Bytes::from_static(
+                b"verified",
+            )))
+            .unwrap()
+        else {
+            panic!("server final projected to the wrong branch")
+        };
+        assert_eq!(server_final, Bytes::from_static(b"verified"));
+        conn.verified().into_transport();
     }
 
     #[test]

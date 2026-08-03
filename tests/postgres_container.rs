@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, error::Error, time::Duration};
 use bytes::Bytes;
 use pg_proto::{
     Conn,
-    auth::{AuthOffer, AwaitingStartupReady, PasswordResponse},
+    auth::{AuthOffer, AwaitingStartupReady, PasswordResponse, SaslEvent},
     codec::{
         Authentication, BackendMessage, Bind, Describe, DescribeTarget, Execute,
         NegotiateProtocolVersion, Parse,
@@ -195,25 +195,37 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
     sasl.push_frame(initial)?;
     sasl.flush().await?;
 
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslContinue(
-        server_first,
-    ))) = sasl.receive().await?
+    let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+        sasl.receive().await?
     else {
         panic!("PostgreSQL did not continue SASL")
     };
+    let SaslEvent::Continue {
+        conn: challenge,
+        challenge: server_first,
+    } = sasl.offer(authentication).unwrap()
+    else {
+        panic!("PostgreSQL finished SASL before a challenge")
+    };
     scram.update(&server_first)?;
-    let (mut sasl, response) = sasl.continue_with(Bytes::copy_from_slice(scram.message()));
+    let (mut sasl, response) = challenge.respond(Bytes::copy_from_slice(scram.message()));
     sasl.push_frame(response)?;
     sasl.flush().await?;
 
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslFinal(
-        server_final,
-    ))) = sasl.receive().await?
+    let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+        sasl.receive().await?
     else {
         panic!("PostgreSQL did not finish SASL")
     };
+    let SaslEvent::Final {
+        conn: final_state,
+        server_final,
+    } = sasl.offer(authentication).unwrap()
+    else {
+        panic!("PostgreSQL sent another SASL challenge")
+    };
     scram.finish(&server_final)?;
-    let mut awaiting_ok = sasl.server_final(server_final);
+    let mut awaiting_ok = final_state.verified();
     let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
         awaiting_ok.receive().await?
     else {
@@ -306,24 +318,36 @@ async fn scram_sha_256_plus_over_typed_tls_matches_postgres_18() -> Result<(), B
     sasl.push_frame(initial)?;
     sasl.flush().await?;
 
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslContinue(
-        server_first,
-    ))) = sasl.receive().await?
+    let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+        sasl.receive().await?
     else {
         panic!("PostgreSQL did not continue SCRAM-PLUS")
     };
+    let SaslEvent::Continue {
+        conn: challenge,
+        challenge: server_first,
+    } = sasl.offer(authentication).unwrap()
+    else {
+        panic!("PostgreSQL finished SCRAM-PLUS before a challenge")
+    };
     scram.update(&server_first)?;
-    let (mut sasl, response) = sasl.continue_with(Bytes::copy_from_slice(scram.message()));
+    let (mut sasl, response) = challenge.respond(Bytes::copy_from_slice(scram.message()));
     sasl.push_frame(response)?;
     sasl.flush().await?;
-    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslFinal(
-        server_final,
-    ))) = sasl.receive().await?
+    let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+        sasl.receive().await?
     else {
         panic!("PostgreSQL did not finish SCRAM-PLUS")
     };
+    let SaslEvent::Final {
+        conn: final_state,
+        server_final,
+    } = sasl.offer(authentication).unwrap()
+    else {
+        panic!("PostgreSQL sent another SCRAM-PLUS challenge")
+    };
     scram.finish(&server_final)?;
-    let mut awaiting_ok = sasl.server_final(server_final);
+    let mut awaiting_ok = final_state.verified();
     let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
         awaiting_ok.receive().await?
     else {

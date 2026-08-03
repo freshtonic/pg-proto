@@ -117,6 +117,22 @@ pub enum FrontendMessage {
     Recognised(Frame),
 }
 
+impl FrontendMessage {
+    /// Reconstructs a frontend frame after inspection or modification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a structured message contains invalid values.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        match self {
+            Self::Parse(message) => message.to_frame(),
+            Self::Bind(message) => message.to_frame(),
+            Self::Describe(message) => message.to_frame(),
+            Self::Recognised(frame) => Ok(frame.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Parse {
     pub statement: Bytes,
@@ -324,6 +340,138 @@ pub enum BackendMessage {
     NegotiateProtocolVersion(NegotiateProtocolVersion),
     /// A recognised message not yet lifted into a more specific representation.
     Recognised(Frame),
+}
+
+impl BackendMessage {
+    /// Reconstructs a backend frame after inspection or modification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a structured message contains invalid values.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        match self {
+            Self::RowDescription(message) => message.to_frame(),
+            Self::Authentication(message) => authentication_frame(message),
+            Self::ParameterStatus { name, value } => {
+                let mut body = BytesMut::new();
+                put_cstr(name, &mut body)?;
+                put_cstr(value, &mut body)?;
+                Ok(Frame {
+                    tag: b'S',
+                    body: body.freeze(),
+                })
+            }
+            Self::NoticeResponse(body) => Ok(Frame {
+                tag: b'N',
+                body: body.clone(),
+            }),
+            Self::NotificationResponse {
+                process_id,
+                channel,
+                payload,
+            } => {
+                let mut body = BytesMut::new();
+                body.put_u32(*process_id);
+                put_cstr(channel, &mut body)?;
+                put_cstr(payload, &mut body)?;
+                Ok(Frame {
+                    tag: b'A',
+                    body: body.freeze(),
+                })
+            }
+            Self::BackendKeyData {
+                process_id,
+                secret_key,
+            } => {
+                if !(4..=256).contains(&secret_key.len()) {
+                    return Err(invalid_input("cancellation key length is outside 4..=256"));
+                }
+                let mut body = BytesMut::with_capacity(4 + secret_key.len());
+                body.put_u32(*process_id);
+                body.extend_from_slice(secret_key);
+                Ok(Frame {
+                    tag: b'K',
+                    body: body.freeze(),
+                })
+            }
+            Self::ReadyForQuery(status) => Ok(Frame {
+                tag: b'Z',
+                body: Bytes::copy_from_slice(&[status.as_byte()]),
+            }),
+            Self::NegotiateProtocolVersion(message) => message.to_frame(),
+            Self::Recognised(frame) => Ok(frame.clone()),
+        }
+    }
+}
+
+impl TransactionStatus {
+    const fn as_byte(self) -> u8 {
+        match self {
+            Self::Idle => b'I',
+            Self::InTransaction => b'T',
+            Self::FailedTransaction => b'E',
+        }
+    }
+}
+
+impl NegotiateProtocolVersion {
+    /// Reconstructs protocol negotiation, including unsupported option names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for too many options or NUL-containing names.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        body.put_u32((u32::from(self.newest.major) << 16) | u32::from(self.newest.minor));
+        let count = u32::try_from(self.unsupported_options.len())
+            .map_err(|_| invalid_input("unsupported option count exceeds u32"))?;
+        body.put_u32(count);
+        for option in &self.unsupported_options {
+            put_cstr(option, &mut body)?;
+        }
+        Ok(Frame {
+            tag: b'v',
+            body: body.freeze(),
+        })
+    }
+}
+
+fn authentication_frame(authentication: &Authentication) -> io::Result<Frame> {
+    let mut body = BytesMut::new();
+    match authentication {
+        Authentication::Ok => body.put_u32(0),
+        Authentication::KerberosV5 => body.put_u32(2),
+        Authentication::CleartextPassword => body.put_u32(3),
+        Authentication::Md5Password { salt } => {
+            body.put_u32(5);
+            body.extend_from_slice(salt);
+        }
+        Authentication::Gss => body.put_u32(7),
+        Authentication::GssContinue(data) => {
+            body.put_u32(8);
+            body.extend_from_slice(data);
+        }
+        Authentication::Sspi => body.put_u32(9),
+        Authentication::Sasl { mechanisms } => {
+            body.put_u32(10);
+            for mechanism in mechanisms {
+                put_cstr(mechanism, &mut body)?;
+            }
+            body.put_u8(0);
+        }
+        Authentication::SaslContinue(data) => {
+            body.put_u32(11);
+            body.extend_from_slice(data);
+        }
+        Authentication::SaslFinal(data) => {
+            body.put_u32(12);
+            body.extend_from_slice(data);
+        }
+    }
+    Ok(Frame {
+        tag: b'R',
+        body: body.freeze(),
+    })
 }
 
 impl Direction for Backend {

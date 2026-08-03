@@ -121,10 +121,15 @@ impl<S: AsyncRead + Unpin> Buffered<S> {
     pub async fn receive_session(&mut self) -> io::Result<SessionItem> {
         loop {
             let message = self.receive_backend().await?;
-            if let Some(item) = self.demux.route(message) {
+            if let Some(item) = self.project_backend(message) {
                 return Ok(item);
             }
         }
+    }
+
+    /// Projects an inspected or modified backend message into the session stream.
+    pub fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
+        self.demux.route(message)
     }
 }
 
@@ -163,6 +168,21 @@ impl<S: AsyncWrite + Unpin, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanli
 }
 
 impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanliness> {
+    /// Receives one backend message before demultiplexing or state advancement.
+    /// This is the interception point for proxy policy and message rewriting.
+    ///
+    /// # Errors
+    ///
+    /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
+    pub async fn receive_backend_wire(&mut self) -> io::Result<BackendMessage> {
+        self.transport_mut().receive_backend().await
+    }
+
+    /// Projects an inspected or modified message into the filtered session stream.
+    pub fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
+        self.transport_mut().project_backend(message)
+    }
+
     /// Receives the next message in the filtered session projection.
     ///
     /// # Errors
@@ -322,6 +342,41 @@ mod tests {
                 .parameters()
                 .get(&Bytes::from_static(b"client_encoding")),
             Some(&Bytes::from_static(b"UTF8"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_message_can_be_modified_before_projection() {
+        let (client, mut server) = tokio::io::duplex(128);
+        let original = BackendMessage::ParameterStatus {
+            name: Bytes::from_static(b"application_name"),
+            value: Bytes::from_static(b"upstream"),
+        };
+        let mut bytes = BytesMut::new();
+        PgCodec::<Backend>::default()
+            .encode(
+                original.to_frame().expect("reconstructable message"),
+                &mut bytes,
+            )
+            .expect("encodable message");
+        server.write_all(&bytes).await.expect("writable test peer");
+
+        let mut transport = Buffered::new(client);
+        let mut message = transport
+            .receive_backend()
+            .await
+            .expect("decodable message");
+        let BackendMessage::ParameterStatus { value, .. } = &mut message else {
+            panic!("unexpected message")
+        };
+        *value = Bytes::from_static(b"proxy");
+        assert!(transport.project_backend(message).is_none());
+        assert_eq!(
+            transport
+                .demux()
+                .parameters()
+                .get(&Bytes::from_static(b"application_name")),
+            Some(&Bytes::from_static(b"proxy"))
         );
     }
 }

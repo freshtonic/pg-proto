@@ -40,6 +40,12 @@ pub enum CopyOut {}
 pub enum CopyBoth {}
 
 #[derive(Debug)]
+pub enum CopyBothClientDone {}
+
+#[derive(Debug)]
+pub enum CopyBothServerDone {}
+
+#[derive(Debug)]
 pub enum Draining {}
 
 #[derive(Debug)]
@@ -91,6 +97,13 @@ pub enum CopyOutTransition<S, C> {
 #[derive(Debug)]
 pub enum CopyBothReceive<S, C> {
     Data(Conn<S, CopyBoth, C>, Bytes),
+    Done(Conn<S, CopyBothServerDone, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum CopyBothClientDoneReceive<S, C> {
+    Data(Conn<S, CopyBothClientDone, C>, Bytes),
     Done(Conn<S, AwaitingReady, C>),
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
@@ -392,6 +405,49 @@ impl<S, C> Conn<S, CopyIn, C> {
     }
 }
 
+impl<S, C> Conn<S, CopyBothClientDone, C> {
+    /// Continues receiving after the frontend half has closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and item for an illegal response.
+    pub fn offer(
+        self,
+        item: SessionItem,
+    ) -> Result<CopyBothClientDoneReceive<S, C>, (Self, SessionItem)> {
+        match item {
+            SessionItem::Message(BackendMessage::CopyData(data)) => {
+                Ok(CopyBothClientDoneReceive::Data(self, data))
+            }
+            SessionItem::Message(BackendMessage::CopyDone) => {
+                Ok(CopyBothClientDoneReceive::Done(self.transition()))
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                Ok(CopyBothClientDoneReceive::Error(self.transition(), error))
+            }
+            item => Err((self, item)),
+        }
+    }
+}
+
+impl<S, C> Conn<S, CopyBothServerDone, C> {
+    /// Continues sending after the backend half has closed.
+    pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
+        (
+            self,
+            Frame {
+                tag: b'd',
+                body: data,
+            },
+        )
+    }
+
+    /// Closes the remaining frontend half and begins readiness processing.
+    pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+        (self.transition(), empty_frame(b'c'))
+    }
+}
+
 impl<S, C> Conn<S, CopyOut, C> {
     /// Advances COPY OUT using backend evidence.
     ///
@@ -425,7 +481,7 @@ impl<S, C> Conn<S, CopyBoth, C> {
         )
     }
 
-    pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+    pub fn push_copy_done(self) -> (Conn<S, CopyBothClientDone, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
 
@@ -640,6 +696,43 @@ mod tests {
         assert_eq!(frame.tag, b'X');
         assert!(frame.body.is_empty());
         terminated.into_transport();
+    }
+
+    #[test]
+    fn copy_both_waits_for_both_half_closes() {
+        let open: Conn<(), CopyBoth> = Conn::new(()).transition();
+        let (client_done, frame) = open.push_copy_done();
+        assert_eq!(frame.tag, b'c');
+        let CopyBothClientDoneReceive::Data(client_done, data) = client_done
+            .offer(SessionItem::Message(BackendMessage::CopyData(
+                Bytes::from_static(b"after client close"),
+            )))
+            .unwrap()
+        else {
+            panic!("backend data projected to the wrong branch")
+        };
+        assert_eq!(data, Bytes::from_static(b"after client close"));
+        let CopyBothClientDoneReceive::Done(awaiting) = client_done
+            .offer(SessionItem::Message(BackendMessage::CopyDone))
+            .unwrap()
+        else {
+            panic!("backend close projected to the wrong branch")
+        };
+        awaiting.into_transport();
+
+        let open: Conn<(), CopyBoth> = Conn::new(()).transition();
+        let CopyBothReceive::Done(server_done) = open
+            .offer(SessionItem::Message(BackendMessage::CopyDone))
+            .unwrap()
+        else {
+            panic!("backend close projected to the wrong branch")
+        };
+        let (server_done, data) =
+            server_done.push_copy_data(Bytes::from_static(b"after server close"));
+        assert_eq!(data.tag, b'd');
+        let (awaiting, done) = server_done.push_copy_done();
+        assert_eq!(done.tag, b'c');
+        awaiting.into_transport();
     }
 
     #[test]

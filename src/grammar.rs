@@ -52,8 +52,18 @@ protocol! {
         CopyBoth internal {
             SendCopyData(send_copy_data) => CopyBoth,
             ReceiveCopyData(receive_copy_data) => CopyBoth,
-            CopyDone(copy_done) => AwaitingReady,
+            SendCopyDone(send_copy_done) => CopyBothClientDone,
+            ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
             Error(error) => Draining,
+        }
+        CopyBothClientDone external {
+            ReceiveCopyData(receive_copy_data) => CopyBothClientDone,
+            ReceiveCopyDone(receive_copy_done) => AwaitingReady,
+            Error(error) => Draining,
+        }
+        CopyBothServerDone internal {
+            SendCopyData(send_copy_data) => CopyBothServerDone,
+            SendCopyDone(send_copy_done) => AwaitingReady,
         }
         Draining external {
             Continue(continue_response) => Draining,
@@ -171,6 +181,33 @@ mod tests {
         runtime.step(Event::Query).unwrap();
         runtime.step(Event::CopyIn).unwrap();
         assert!(runtime.step(Event::Query).is_err());
+    }
+
+    #[test]
+    fn generated_copy_both_waits_for_both_half_closes() {
+        let mut client_first = RuntimeFsm::new();
+        for event in [
+            Event::Query,
+            Event::CopyBoth,
+            Event::SendCopyDone,
+            Event::ReceiveCopyData,
+            Event::ReceiveCopyDone,
+        ] {
+            client_first.step(event).unwrap();
+        }
+        assert_eq!(client_first.state(), RuntimeState::AwaitingReady);
+
+        let mut server_first = RuntimeFsm::new();
+        for event in [
+            Event::Query,
+            Event::CopyBoth,
+            Event::ReceiveCopyDone,
+            Event::SendCopyData,
+            Event::SendCopyDone,
+        ] {
+            server_first.step(event).unwrap();
+        }
+        assert_eq!(server_first.state(), RuntimeState::AwaitingReady);
     }
 
     #[test]

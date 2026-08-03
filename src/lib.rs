@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod codec;
 pub mod demux;
+pub mod grammar;
 pub mod pre_startup;
 pub mod server_auth;
 pub mod server_session;

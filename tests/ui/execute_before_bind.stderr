@@ -1,7 +1,7 @@
-error[E0599]: no method named `push_execute` found for struct `Conn<S, Building, C>` in the current scope
+error[E0599]: no method named `push_execute` found for struct `Conn<S, pg_proto::session::Building, C>` in the current scope
  --> tests/ui/execute_before_bind.rs:9:22
   |
 9 |     let _ = building.push_execute(&execute);
-  |                      ^^^^^^^^^^^^ method not found in `Conn<S, Building, C>`
+  |                      ^^^^^^^^^^^^ method not found in `Conn<S, pg_proto::session::Building, C>`
   |
-  = note: the method was found for `Conn<S, BoundBuilding, C>`
+  = note: the method was found for `Conn<S, pg_proto::session::BoundBuilding, C>`

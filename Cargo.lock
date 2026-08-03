@@ -1372,6 +1372,7 @@ name = "pg-proto"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "pg-proto-fsm",
  "postgres-protocol",
  "rcgen",
  "rustls",

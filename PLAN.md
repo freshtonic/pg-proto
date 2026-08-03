@@ -123,7 +123,7 @@ neutral composition harnesses and examples.
   retains independent typed sessions on both sides.
 - [ ] Prove independent downstream and upstream TLS/authentication mechanisms and
   credentials can be composed without coupling their state or policy.
-- [ ] Expose typed interception/replacement hooks sufficient for arbitrary
+- [x] Expose typed interception/replacement hooks sufficient for arbitrary
   downstream SQL and result rewriting, demonstrated by a non-CipherStash example.
 - [ ] Expose prepared-statement and portal namespace primitives that a downstream
   router or rewriter can own, without implementing routing policy.

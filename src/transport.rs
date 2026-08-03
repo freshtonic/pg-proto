@@ -3,16 +3,24 @@
 use std::io;
 
 use bytes::{Buf, BytesMut};
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio_util::codec::Encoder;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::codec::{Decoder, Encoder};
 
-use crate::{Conn, codec::Frame};
+use crate::{
+    Conn,
+    auth::TlsServerEndPoint,
+    codec::{Backend, BackendMessage, Frame, PgCodec},
+    demux::{CancelKey, Demux, Notification, SessionItem},
+};
 
 /// Transport wrapper which retains bytes until each write has completed.
 #[derive(Debug)]
 pub struct Buffered<S> {
     io: S,
     outbound: BytesMut,
+    inbound: BytesMut,
+    backend_codec: PgCodec<Backend>,
+    demux: Demux,
 }
 
 impl<S> Buffered<S> {
@@ -20,6 +28,9 @@ impl<S> Buffered<S> {
         Self {
             io,
             outbound: BytesMut::new(),
+            inbound: BytesMut::new(),
+            backend_codec: PgCodec::default(),
+            demux: Demux::default(),
         }
     }
 
@@ -39,6 +50,21 @@ impl<S> Buffered<S> {
 
     pub fn into_inner(self) -> S {
         self.io
+    }
+
+    #[must_use]
+    pub const fn demux(&self) -> &Demux {
+        &self.demux
+    }
+
+    pub const fn demux_mut(&mut self) -> &mut Demux {
+        &mut self.demux
+    }
+}
+
+impl<S: TlsServerEndPoint> TlsServerEndPoint for Buffered<S> {
+    fn tls_server_end_point(&self) -> &[u8] {
+        self.io.tls_server_end_point()
     }
 }
 
@@ -67,6 +93,41 @@ impl<S: AsyncWrite + Unpin> Buffered<S> {
     }
 }
 
+impl<S: AsyncRead + Unpin> Buffered<S> {
+    /// Receives one decoded backend message while retaining partial input.
+    ///
+    /// # Errors
+    ///
+    /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
+    pub async fn receive_backend(&mut self) -> io::Result<BackendMessage> {
+        loop {
+            if let Some(message) = self.backend_codec.decode(&mut self.inbound)? {
+                return Ok(message);
+            }
+            if self.io.read_buf(&mut self.inbound).await? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "backend closed with no complete message",
+                ));
+            }
+        }
+    }
+
+    /// Receives the next protocol-advancing message through the async demux.
+    ///
+    /// # Errors
+    ///
+    /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
+    pub async fn receive_session(&mut self) -> io::Result<SessionItem> {
+        loop {
+            let message = self.receive_backend().await?;
+            if let Some(item) = self.demux.route(message) {
+                return Ok(item);
+            }
+        }
+    }
+}
+
 impl<S, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanliness> {
     /// Adds an already-typed message to this connection's outbound buffer.
     ///
@@ -91,6 +152,26 @@ impl<S: AsyncWrite + Unpin, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanli
     /// Returns an error from the underlying transport.
     pub async fn flush(&mut self) -> io::Result<()> {
         self.transport_mut().flush().await
+    }
+}
+
+impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanliness> {
+    /// Receives the next message in the filtered session projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
+    pub async fn receive(&mut self) -> io::Result<SessionItem> {
+        self.transport_mut().receive_session().await
+    }
+
+    #[must_use]
+    pub fn cancel_key(&self) -> Option<&CancelKey> {
+        self.transport().demux().cancel_key()
+    }
+
+    pub fn pop_notification(&mut self) -> Option<Notification> {
+        self.transport_mut().demux_mut().pop_notification()
     }
 }
 
@@ -194,5 +275,46 @@ mod tests {
 
         assert_eq!(transport.pending(), &[0, 0, 4]);
         assert_eq!(transport.io.output, [b'S', 0]);
+    }
+
+    #[tokio::test]
+    async fn receive_filters_parameter_status_before_session_message() {
+        let (client, mut server) = tokio::io::duplex(256);
+        let mut wire = BytesMut::new();
+        let mut encoder = PgCodec::<Backend>::default();
+        encoder
+            .encode(
+                Frame {
+                    tag: b'S',
+                    body: Bytes::from_static(b"client_encoding\0UTF8\0"),
+                },
+                &mut wire,
+            )
+            .expect("encodable ParameterStatus");
+        encoder
+            .encode(
+                Frame {
+                    tag: b'Z',
+                    body: Bytes::from_static(b"I"),
+                },
+                &mut wire,
+            )
+            .expect("encodable ReadyForQuery");
+        server.write_all(&wire).await.expect("writable test peer");
+
+        let mut transport = Buffered::new(client);
+        assert_eq!(
+            transport.receive_session().await.expect("valid messages"),
+            SessionItem::Message(BackendMessage::ReadyForQuery(
+                crate::codec::TransactionStatus::Idle
+            ))
+        );
+        assert_eq!(
+            transport
+                .demux()
+                .parameters()
+                .get(&Bytes::from_static(b"client_encoding")),
+            Some(&Bytes::from_static(b"UTF8"))
+        );
     }
 }

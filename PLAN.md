@@ -88,6 +88,8 @@ work using that feature is complete.
       reset, and COPY response classification through generated projection.
     - [x] Generate dual raw pre-startup packet/single-byte reply projection for
       upstream and server roles.
+    - [x] Generate asymmetric authentication and startup-completion projection,
+      including recursive SASL/token exchanges and shared password tags.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

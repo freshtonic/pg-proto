@@ -193,47 +193,51 @@ protocol! {
 protocol! {
     pub mod authentication {
         initial Auth;
+        messages {
+            internal: crate::codec::FrontendMessage,
+            external: crate::codec::BackendMessage,
+        }
         Auth external {
-            Ok(ok) => AwaitingStartupReady,
-            Cleartext(cleartext) => PasswordResponse,
-            Md5(md5: [u8; 4]) => PasswordResponse,
-            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial,
-            Gss(gss) => TokenResponse,
-            Sspi(sspi) => TokenResponse,
-            KerberosV5(kerberos_v5) => TokenResponse,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
+            Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
+            Md5(md5: [u8; 4]) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Md5Password { .. }),
+            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Sasl { .. }),
+            Gss(gss) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Gss),
+            Sspi(sspi) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Sspi),
+            KerberosV5(kerberos_v5) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::KerberosV5),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         PasswordResponse internal {
-            Password(password: bytes::Bytes) => AwaitingAuthOk,
+            Password(password: bytes::Bytes) => AwaitingAuthOk <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenResponse internal {
-            Response(response: bytes::Bytes) => TokenChallenge,
+            Response(response: bytes::Bytes) => TokenChallenge <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenChallenge external {
-            Continue(continue_token: bytes::Bytes) => TokenResponse,
-            Ok(ok) => AwaitingStartupReady,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Continue(continue_token: bytes::Bytes) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::GssContinue(_)),
+            Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslInitial internal {
-            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl,
+            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         Sasl external {
-            Continue(continue_response: bytes::Bytes) => SaslChallenge,
-            Final(final_response: bytes::Bytes) => SaslFinal,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Continue(continue_response: bytes::Bytes) => SaslChallenge <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslContinue(_)),
+            Final(final_response: bytes::Bytes) => SaslFinal <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslFinal(_)),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslChallenge internal {
-            Response(response: bytes::Bytes) => Sasl,
+            Response(response: bytes::Bytes) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         SaslFinal internal {
             Verified(verified) => AwaitingAuthOk,
         }
         AwaitingAuthOk external {
-            Ok(ok) => AwaitingStartupReady,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         AwaitingStartupReady external {
-            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Ready external {}
         Terminated external {}
@@ -430,47 +434,51 @@ protocol! {
 protocol! {
     pub mod server_authentication {
         initial Startup;
+        messages {
+            internal: crate::codec::BackendMessage,
+            external: crate::codec::FrontendMessage,
+        }
         Startup internal {
             Begin(begin) => Auth,
             Reject(reject) => Terminated,
         }
         Auth internal {
-            Cleartext(cleartext) => PasswordResponse,
-            Md5(md5: [u8; 4]) => PasswordResponse,
-            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial,
-            Gss(gss) => TokenResponse,
-            Sspi(sspi) => TokenResponse,
-            KerberosV5(kerberos_v5) => TokenResponse,
-            Ok(ok) => StartupReady,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
+            Md5(md5: [u8; 4]) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Md5Password { .. }),
+            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Sasl { .. }),
+            Gss(gss) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Gss),
+            Sspi(sspi) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Sspi),
+            KerberosV5(kerberos_v5) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::KerberosV5),
+            Ok(ok) => StartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         PasswordResponse external {
-            Response(response: bytes::Bytes) => Auth,
+            Response(response: bytes::Bytes) => Auth <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         SaslInitial external {
-            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl,
+            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         Sasl internal {
-            Continue(continue_response: bytes::Bytes) => SaslResponse,
-            Final(final_response: bytes::Bytes) => Auth,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Continue(continue_response: bytes::Bytes) => SaslResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslContinue(_)),
+            Final(final_response: bytes::Bytes) => Auth <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslFinal(_)),
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslResponse external {
-            Response(response: bytes::Bytes) => Sasl,
+            Response(response: bytes::Bytes) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenResponse external {
-            Response(response: bytes::Bytes) => TokenPolicy,
+            Response(response: bytes::Bytes) => TokenPolicy <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenPolicy internal {
-            Continue(continue_token: bytes::Bytes) => TokenResponse,
+            Continue(continue_token: bytes::Bytes) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::GssContinue(_)),
             Verified(verified) => Auth,
-            Error(error: crate::codec::DiagnosticResponse) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         StartupReady internal {
-            ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady,
-            BackendKeyData(backend_key_data: (u32, bytes::Bytes)) => StartupReady,
-            NegotiateProtocol(negotiate_protocol: crate::codec::NegotiateProtocolVersion) => StartupReady,
-            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::ParameterStatus { .. },
+            BackendKeyData(backend_key_data: (u32, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::BackendKeyData { .. },
+            NegotiateProtocol(negotiate_protocol: crate::codec::NegotiateProtocolVersion) => StartupReady <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
+            Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Ready external {}
         Terminated external {}
@@ -1013,6 +1021,22 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), authentication::RuntimeState::Ready);
+        assert_eq!(
+            authentication::project_external(
+                authentication::RuntimeState::Sasl,
+                &BackendMessage::Authentication(Authentication::SaslContinue(Bytes::from_static(
+                    b"challenge"
+                ),)),
+            ),
+            Some(authentication::Event::Continue)
+        );
+        assert_eq!(
+            authentication::project_internal(
+                authentication::RuntimeState::SaslChallenge,
+                &FrontendMessage::PasswordResponse(Bytes::from_static(b"response")),
+            ),
+            Some(authentication::Event::Response)
+        );
     }
 
     #[test]

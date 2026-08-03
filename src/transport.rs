@@ -43,6 +43,21 @@ impl<S> Buffered<S, Backend> {
             demux: Demux::default(),
         }
     }
+
+    /// Creates a backend-facing transport with a bounded tagged-frame size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the limit is outside `PostgreSQL`'s frame range.
+    pub fn with_max_frame_len(io: S, max_frame_len: usize) -> io::Result<Self> {
+        Ok(Self {
+            io,
+            outbound: BytesMut::new(),
+            inbound: BytesMut::new(),
+            inbound_codec: PgCodec::with_max_frame_len(max_frame_len)?,
+            demux: Demux::default(),
+        })
+    }
 }
 
 impl<S> Buffered<S, Frontend> {
@@ -55,6 +70,21 @@ impl<S> Buffered<S, Frontend> {
             demux: Demux::default(),
         }
     }
+
+    /// Creates a frontend-facing transport with a bounded tagged-frame size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the limit is outside `PostgreSQL`'s frame range.
+    pub fn with_max_frame_len_frontend(io: S, max_frame_len: usize) -> io::Result<Self> {
+        Ok(Self {
+            io,
+            outbound: BytesMut::new(),
+            inbound: BytesMut::new(),
+            inbound_codec: PgCodec::with_max_frame_len(max_frame_len)?,
+            demux: Demux::default(),
+        })
+    }
 }
 
 impl<S, D> Buffered<S, D> {
@@ -64,7 +94,7 @@ impl<S, D> Buffered<S, D> {
     ///
     /// Returns an error when the frame is too large to encode.
     pub fn push(&mut self, frame: Frame) -> io::Result<()> {
-        crate::codec::PgCodec::<crate::codec::Frontend>::default().encode(frame, &mut self.outbound)
+        self.inbound_codec.encode(frame, &mut self.outbound)
     }
 
     #[must_use]
@@ -510,6 +540,19 @@ mod tests {
         transport.flush().await.expect("writable transport");
         assert!(transport.pending().is_empty());
         assert_eq!(transport.into_inner().output, [b'S', 0, 0, 0, 4]);
+    }
+
+    #[test]
+    fn buffered_transport_enforces_its_frame_limit_on_output() {
+        let mut transport = Buffered::<_, Backend>::with_max_frame_len((), 9).unwrap();
+        let error = transport
+            .push(Frame {
+                tag: b'Q',
+                body: Bytes::from_static(b"12345"),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(transport.pending().is_empty());
     }
 
     #[test]

@@ -35,14 +35,39 @@ pub trait Direction {
 /// A `PostgreSQL` codec which cannot confuse frontend and backend tag alphabets.
 #[derive(Debug)]
 pub struct PgCodec<D> {
+    max_frame_len: usize,
     _direction: PhantomData<fn() -> D>,
 }
+
+const MAX_PROTOCOL_FRAME_LEN: usize = i32::MAX as usize + 1;
 
 impl<D> Default for PgCodec<D> {
     fn default() -> Self {
         Self {
+            max_frame_len: MAX_PROTOCOL_FRAME_LEN,
             _direction: PhantomData,
         }
+    }
+}
+
+impl<D> PgCodec<D> {
+    /// Creates a codec with a total tagged-frame limit, including tag and length.
+    ///
+    /// # Errors
+    ///
+    /// Rejects limits smaller than an empty frame or larger than `PostgreSQL`'s
+    /// signed int32 length field can represent.
+    pub fn with_max_frame_len(max_frame_len: usize) -> io::Result<Self> {
+        if !(5..=MAX_PROTOCOL_FRAME_LEN).contains(&max_frame_len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "frame limit is outside PostgreSQL's tagged-frame range",
+            ));
+        }
+        Ok(Self {
+            max_frame_len,
+            _direction: PhantomData,
+        })
     }
 }
 
@@ -51,7 +76,7 @@ impl<D: Direction> Decoder for PgCodec<D> {
     type Error = io::Error;
 
     fn decode(&mut self, source: &mut BytesMut) -> io::Result<Option<Self::Item>> {
-        let Some(frame) = decode_frame(source)? else {
+        let Some(frame) = decode_frame(source, self.max_frame_len)? else {
             return Ok(None);
         };
         let tag = frame.tag;
@@ -65,6 +90,17 @@ impl<D> Encoder<Frame> for PgCodec<D> {
     type Error = io::Error;
 
     fn encode(&mut self, item: Frame, destination: &mut BytesMut) -> io::Result<()> {
+        let frame_len = item
+            .body
+            .len()
+            .checked_add(5)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
+        if frame_len > self.max_frame_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "frame exceeds configured limit",
+            ));
+        }
         let length = item
             .body
             .len()
@@ -79,7 +115,7 @@ impl<D> Encoder<Frame> for PgCodec<D> {
     }
 }
 
-fn decode_frame(source: &mut BytesMut) -> io::Result<Option<Frame>> {
+fn decode_frame(source: &mut BytesMut, max_frame_len: usize) -> io::Result<Option<Frame>> {
     if source.len() < 5 {
         source.reserve(5 - source.len());
         return Ok(None);
@@ -96,6 +132,18 @@ fn decode_frame(source: &mut BytesMut) -> io::Result<Option<Frame>> {
         .ok()
         .and_then(|length| length.checked_add(1))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "message length overflow"))?;
+    if frame_length > MAX_PROTOCOL_FRAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "message length exceeds PostgreSQL's signed int32 range",
+        ));
+    }
+    if frame_length > max_frame_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "message exceeds configured frame limit",
+        ));
+    }
     if source.len() < frame_length {
         source.reserve(frame_length - source.len());
         return Ok(None);
@@ -1184,6 +1232,32 @@ mod tests {
                 .is_none()
         );
         assert_eq!(bytes, original);
+    }
+
+    #[test]
+    fn frame_limits_reject_oversized_input_before_allocation() {
+        let mut codec = PgCodec::<Frontend>::with_max_frame_len(9).unwrap();
+        let mut oversized = BytesMut::from(&b"Q\0\0\0\x09"[..]);
+        let error = codec.decode(&mut oversized).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(oversized.len(), 5);
+
+        let mut signed_overflow = BytesMut::from(&[b'Q', 0x80, 0, 0, 0][..]);
+        let error = PgCodec::<Frontend>::default()
+            .decode(&mut signed_overflow)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let error = codec
+            .encode(
+                Frame {
+                    tag: b'Q',
+                    body: Bytes::from_static(b"12345"),
+                },
+                &mut BytesMut::new(),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

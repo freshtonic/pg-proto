@@ -125,21 +125,25 @@ protocol! {
 protocol! {
     pub mod pre_startup {
         initial PreStartup;
+        messages {
+            internal: crate::pre_startup::PreStartupMessage,
+            external: crate::pre_startup::EncryptionReply,
+        }
         PreStartup internal {
-            SslRequest(ssl_request) => AwaitingSslReply,
-            GssRequest(gss_request) => AwaitingGssReply,
-            Cancel(cancel: (u32, bytes::Bytes)) => Terminated,
-            Startup(startup: crate::startup::StartupMessage) => Auth,
+            SslRequest(ssl_request) => AwaitingSslReply <= crate::pre_startup::PreStartupMessage::SslRequest,
+            GssRequest(gss_request) => AwaitingGssReply <= crate::pre_startup::PreStartupMessage::GssEncRequest,
+            Cancel(cancel: (u32, bytes::Bytes)) => Terminated <= crate::pre_startup::PreStartupMessage::CancelRequest { .. },
+            Startup(startup: crate::startup::StartupMessage) => Auth <= crate::pre_startup::PreStartupMessage::Startup(_),
         }
         AwaitingSslReply external {
-            Accept(accept) => TlsHandshake,
-            Reject(reject) => PreStartup,
-            LegacyError(legacy_error) => Terminated,
+            Accept(accept) => TlsHandshake <= crate::pre_startup::EncryptionReply::Accepted,
+            Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
+            LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         AwaitingGssReply external {
-            Accept(accept) => GssHandshake,
-            Reject(reject) => PreStartup,
-            LegacyError(legacy_error) => Terminated,
+            Accept(accept) => GssHandshake <= crate::pre_startup::EncryptionReply::Accepted,
+            Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
+            LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         TlsHandshake internal {
             HandshakeComplete(complete) => PreStartup,
@@ -155,21 +159,25 @@ protocol! {
 protocol! {
     pub mod server_pre_startup {
         initial PreStartup;
+        messages {
+            internal: crate::pre_startup::EncryptionReply,
+            external: crate::pre_startup::PreStartupMessage,
+        }
         PreStartup external {
-            SslRequest(ssl_request) => SslDecision,
-            GssRequest(gss_request) => GssDecision,
-            Cancel(cancel: (u32, bytes::Bytes)) => Terminated,
-            Startup(startup: crate::startup::StartupMessage) => Auth,
+            SslRequest(ssl_request) => SslDecision <= crate::pre_startup::PreStartupMessage::SslRequest,
+            GssRequest(gss_request) => GssDecision <= crate::pre_startup::PreStartupMessage::GssEncRequest,
+            Cancel(cancel: (u32, bytes::Bytes)) => Terminated <= crate::pre_startup::PreStartupMessage::CancelRequest { .. },
+            Startup(startup: crate::startup::StartupMessage) => Auth <= crate::pre_startup::PreStartupMessage::Startup(_),
         }
         SslDecision internal {
-            Accept(accept) => TlsHandshake,
-            Reject(reject) => PreStartup,
-            LegacyError(legacy_error) => Terminated,
+            Accept(accept) => TlsHandshake <= crate::pre_startup::EncryptionReply::Accepted,
+            Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
+            LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         GssDecision internal {
-            Accept(accept) => GssHandshake,
-            Reject(reject) => PreStartup,
-            LegacyError(legacy_error) => Terminated,
+            Accept(accept) => GssHandshake <= crate::pre_startup::EncryptionReply::Accepted,
+            Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
+            LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         TlsHandshake internal {
             HandshakeComplete(complete) => PreStartup,
@@ -931,6 +939,21 @@ mod tests {
             Err((_session, never)) => match never {},
         };
         let Tls(_tcp) = auth.into_transport();
+
+        assert_eq!(
+            pre_startup::project_internal(
+                pre_startup::RuntimeState::PreStartup,
+                &crate::pre_startup::PreStartupMessage::SslRequest,
+            ),
+            Some(pre_startup::Event::SslRequest)
+        );
+        assert_eq!(
+            pre_startup::project_external(
+                pre_startup::RuntimeState::AwaitingSslReply,
+                &crate::pre_startup::EncryptionReply::Accepted,
+            ),
+            Some(pre_startup::Event::Accept)
+        );
     }
 
     #[test]

@@ -86,6 +86,8 @@ work using that feature is complete.
       queries, draining, reset, function call, and all COPY directions.
     - [x] Route handwritten upstream simple-query, function-call, draining,
       reset, and COPY response classification through generated projection.
+    - [x] Generate dual raw pre-startup packet/single-byte reply projection for
+      upstream and server roles.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

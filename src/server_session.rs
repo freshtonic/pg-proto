@@ -60,6 +60,12 @@ pub struct ServerCopyInDone<Resume>(PhantomData<Resume>);
 #[derive(Debug)]
 pub struct ServerCopyInFailed<Resume>(PhantomData<Resume>);
 
+#[derive(Debug)]
+pub struct ServerCopyOut<Resume>(PhantomData<Resume>);
+
+#[derive(Debug)]
+pub struct ServerCopyOutDone<Resume>(PhantomData<Resume>);
+
 /// Client choice inside a server-role COPY IN sub-session.
 #[derive(Debug)]
 pub enum ServerCopyInOffer<S, C, Resume> {
@@ -79,6 +85,9 @@ pub type CopyInProjection<S, C, Resume> = Result<
     Box<(Conn<S, ServerCopyIn<Resume>, C>, FrontendMessage)>,
 >;
 pub type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C>, Frame)>;
+pub type CopyOutStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyOut<Resume>, C>, Frame)>;
+pub type CopyOutCompletion<S, C, Resume> =
+    io::Result<(Conn<S, ServerCopyOutDone<Resume>, C>, Frame)>;
 
 /// External choice offered by a client while the server role is ready.
 #[derive(Debug)]
@@ -221,6 +230,18 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
         Ok((
             self.transition(),
             BackendMessage::CopyInResponse(response).to_frame()?,
+        ))
+    }
+
+    /// Starts a simple-query COPY OUT sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopySimple> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyOutResponse(response).to_frame()?,
         ))
     }
 
@@ -434,6 +455,18 @@ impl<S, C> Conn<S, ServerExecute, C> {
             BackendMessage::CopyInResponse(response).to_frame()?,
         ))
     }
+
+    /// Starts an extended-query COPY OUT sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopyExtended> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyOutResponse(response).to_frame()?,
+        ))
+    }
 }
 
 impl<S, C, Resume> Conn<S, ServerCopyIn<Resume>, C> {
@@ -515,6 +548,57 @@ impl<S, C> Conn<S, ServerCopyInFailed<CopyExtended>, C> {
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
         extended_error(self, response)
+    }
+}
+
+impl<S, C, Resume> Conn<S, ServerCopyOut<Resume>, C> {
+    /// Sends one COPY OUT data chunk and remains in the nested session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the data frame cannot be encoded.
+    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+        Ok((self, BackendMessage::CopyData(data).to_frame()?))
+    }
+
+    /// Ends the COPY data stream before its command completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed response cannot be encoded.
+    pub fn done(self) -> CopyOutCompletion<S, C, Resume> {
+        Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyOutDone<CopySimple>, C> {
+    /// Completes simple-query COPY OUT before `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyOutDone<CopyExtended>, C> {
+    /// Completes extended-query COPY OUT and returns to the building loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
     }
 }
 
@@ -743,6 +827,31 @@ mod tests {
         let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
         let ServerReadyState::Ready(ready) = state else {
             panic!("idle sync was marked dirty")
+        };
+        ready.into_transport();
+    }
+
+    #[test]
+    fn simple_copy_out_requires_done_before_command_completion() {
+        let query: Conn<(), ServerSimpleQuery> = Conn::new(()).transition();
+        let (copy, response) = query
+            .copy_out(CopyResponse {
+                overall_format: 0,
+                column_formats: vec![],
+            })
+            .unwrap();
+        assert_eq!(response.tag, b'H');
+        let (copy, data) = copy.data(Bytes::from_static(b"one\n")).unwrap();
+        assert_eq!(data.tag, b'd');
+        let (done, done_frame) = copy.done().unwrap();
+        assert_eq!(done_frame.tag, b'c');
+        let (query, complete) = done
+            .command_complete(Bytes::from_static(b"COPY 1"))
+            .unwrap();
+        assert_eq!(complete.tag, b'C');
+        let (state, _) = query.ready(TransactionStatus::Idle).unwrap();
+        let ServerReadyState::Ready(ready) = state else {
+            panic!("idle COPY was marked dirty")
         };
         ready.into_transport();
     }

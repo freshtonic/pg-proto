@@ -66,6 +66,10 @@ work using that feature is complete.
   - [ ] Generate the codec-message-to-event projection used by typed sessions.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
+  - [x] Exhaustively enumerate generated runtime valid/invalid sequences through
+    depth six from the canonical transition artefact.
+  - [ ] Generate codec-message sequences and compare generated and handwritten
+    projections across the complete protocol grammar.
 - [ ] Remove superseded handwritten state-machine code after parity is proven.
 
 ## 5. Proxy composition and production parity
@@ -134,3 +138,5 @@ work using that feature is complete.
     parameter statuses, and notifications below the session grammar as the
     deliberately filtered byte-stream projection.
 - [ ] Generate shared codec-message-to-event projection from the grammar.
+- [ ] Extend differential testing from canonical runtime events to codec-message
+  projections and handwritten sessions.

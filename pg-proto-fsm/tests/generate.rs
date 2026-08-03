@@ -167,3 +167,44 @@ fn runtime_target_and_direction_share_the_generated_transition_table() {
     runtime.step(query::Event::Query).unwrap();
     assert_eq!(runtime.state(), query_transition.target);
 }
+
+#[test]
+fn runtime_exhaustively_accepts_exactly_the_generated_sequences() {
+    fn check(prefix: &mut Vec<query::Event>, depth: usize) {
+        let mut expected = query::RuntimeState::Ready;
+        let mut expected_error = None;
+        for &event in prefix.iter() {
+            if let Some(transition) = query::transition(expected, event) {
+                expected = transition.target;
+            } else {
+                expected_error = Some(query::TransitionError {
+                    state: expected,
+                    event,
+                });
+                break;
+            }
+        }
+
+        let mut runtime = query::RuntimeFsm::new();
+        let mut actual_error = None;
+        for &event in prefix.iter() {
+            if let Err(error) = runtime.step(event) {
+                actual_error = Some(error);
+                break;
+            }
+        }
+        assert_eq!(actual_error, expected_error, "sequence: {prefix:?}");
+        assert_eq!(runtime.state(), expected, "sequence: {prefix:?}");
+
+        if depth == 0 {
+            return;
+        }
+        for &event in query::ALL_EVENTS {
+            prefix.push(event);
+            check(prefix, depth - 1);
+            prefix.pop();
+        }
+    }
+
+    check(&mut Vec::new(), 6);
+}

@@ -1436,6 +1436,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "sha2",
+ "subtle",
  "testcontainers-modules",
  "tokio",
  "tokio-postgres",

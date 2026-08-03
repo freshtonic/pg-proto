@@ -17,7 +17,8 @@ use crate::{
     demux::{CancelKey, Demux, Notification, SessionItem},
     pre_startup::{
         AwaitingSslReply, EncryptionReply, Negotiation, PreStartup, PreStartupMessage,
-        ServerSslDecision, TlsHandshake, decode_pre_startup, ssl_request_packet,
+        ServerSslDecision, SslMode, SslModeNegotiation, TlsHandshake, decode_pre_startup,
+        ssl_request_packet,
     },
     tls::{ClientTls, ServerTls},
 };
@@ -291,13 +292,26 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslRe
     /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
     pub async fn receive_ssl_reply(
         mut self,
-    ) -> io::Result<Negotiation<Buffered<S, Backend>, TlsHandshake>> {
+    ) -> io::Result<Negotiation<Buffered<S, Backend>, TlsHandshake, Cleanliness>> {
         let reply = self.transport_mut().receive_encryption_reply().await?;
         Ok(match reply {
             EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
             EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
             EncryptionReply::LegacyError => Negotiation::LegacyError(self.transition()),
         })
+    }
+
+    /// Receives the server decision and enforces the selected plaintext fallback policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
+    pub async fn receive_ssl_reply_for_mode(
+        mut self,
+        mode: SslMode,
+    ) -> io::Result<SslModeNegotiation<Buffered<S, Backend>, Cleanliness>> {
+        let reply = self.transport_mut().receive_encryption_reply().await?;
+        Ok(self.apply_ssl_reply(reply, mode))
     }
 }
 

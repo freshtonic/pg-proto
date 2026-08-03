@@ -230,10 +230,22 @@ impl SslMode {
 
 /// A reply whose branches deliberately have different typestates.
 #[derive(Debug)]
-pub enum Negotiation<S, Handshake> {
-    Accepted(Conn<S, Handshake>),
-    Rejected(Conn<S, PreStartup>),
-    LegacyError(Conn<S, Terminated>),
+pub enum Negotiation<S, Handshake, C = Pristine> {
+    Accepted(Conn<S, Handshake, C>),
+    Rejected(Conn<S, PreStartup, C>),
+    LegacyError(Conn<S, Terminated, C>),
+}
+
+/// SSL negotiation after applying plaintext-fallback policy.
+#[derive(Debug)]
+pub enum SslModeNegotiation<S, C = Pristine> {
+    Accepted(Conn<S, TlsHandshake, C>),
+    Plaintext(Conn<S, PreStartup, C>),
+    RequiredRejected {
+        conn: Conn<S, Terminated, C>,
+        mode: SslMode,
+    },
+    LegacyError(Conn<S, Terminated, C>),
 }
 
 impl<S> Conn<S, PreStartup, Pristine> {
@@ -321,7 +333,7 @@ impl<S, C> Conn<S, ServerGssDecision, C> {
     }
 }
 
-impl<S> Conn<S, AwaitingSslReply, Pristine> {
+impl<S, C> Conn<S, AwaitingSslReply, C> {
     /// Resolves the raw SSL response byte.
     ///
     /// A pending negotiation cannot send a startup message:
@@ -331,7 +343,36 @@ impl<S> Conn<S, AwaitingSslReply, Pristine> {
     /// let (pending, _) = Conn::new(()).ssl_request();
     /// let _ = pending.startup();
     /// ```
-    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, TlsHandshake> {
+    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, TlsHandshake, C> {
+        match reply {
+            EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
+            EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
+            EncryptionReply::LegacyError => Negotiation::LegacyError(self.transition()),
+        }
+    }
+
+    /// Resolves the SSL response while enforcing an [`SslMode`]'s fallback rule.
+    pub fn apply_ssl_reply(
+        self,
+        reply: EncryptionReply,
+        mode: SslMode,
+    ) -> SslModeNegotiation<S, C> {
+        match reply {
+            EncryptionReply::Accepted => SslModeNegotiation::Accepted(self.transition()),
+            EncryptionReply::Rejected if mode.strategy().allow_server_rejection => {
+                SslModeNegotiation::Plaintext(self.transition())
+            }
+            EncryptionReply::Rejected => SslModeNegotiation::RequiredRejected {
+                conn: self.transition(),
+                mode,
+            },
+            EncryptionReply::LegacyError => SslModeNegotiation::LegacyError(self.transition()),
+        }
+    }
+}
+
+impl<S, C> Conn<S, AwaitingGssReply, C> {
+    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, GssHandshake, C> {
         match reply {
             EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
             EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
@@ -340,20 +381,10 @@ impl<S> Conn<S, AwaitingSslReply, Pristine> {
     }
 }
 
-impl<S> Conn<S, AwaitingGssReply, Pristine> {
-    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, GssHandshake> {
-        match reply {
-            EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
-            EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
-            EncryptionReply::LegacyError => Negotiation::LegacyError(self.transition()),
-        }
-    }
-}
-
-impl<S> Conn<S, TlsHandshake, Pristine> {
+impl<S, C> Conn<S, TlsHandshake, C> {
     /// Records a completed in-place TLS upgrade, changing the transport type.
-    pub fn finish_tls<Tls>(self, upgrade: impl FnOnce(S) -> Tls) -> Conn<Tls, PreStartup> {
-        Conn::new(upgrade(self.into_transport()))
+    pub fn finish_tls<Tls>(self, upgrade: impl FnOnce(S) -> Tls) -> Conn<Tls, PreStartup, C> {
+        self.map_transport(upgrade).transition()
     }
 }
 
@@ -480,6 +511,42 @@ mod tests {
                 verification: CertificateVerification::CertificateAuthorityAndHost,
             }
         );
+    }
+
+    #[test]
+    fn sslmode_rejection_is_plaintext_only_when_policy_allows_it() {
+        let (pending, _) = Conn::new(()).ssl_request();
+        let SslModeNegotiation::Plaintext(plaintext) =
+            pending.apply_ssl_reply(EncryptionReply::Rejected, SslMode::Prefer)
+        else {
+            panic!("prefer should permit a plaintext fallback")
+        };
+        plaintext.into_transport();
+
+        let (pending, _) = Conn::new(()).ssl_request();
+        let SslModeNegotiation::RequiredRejected { conn, mode } =
+            pending.apply_ssl_reply(EncryptionReply::Rejected, SslMode::VerifyFull)
+        else {
+            panic!("verify-full must reject a server without TLS")
+        };
+        assert_eq!(mode, SslMode::VerifyFull);
+        conn.into_transport();
+    }
+
+    #[test]
+    fn encryption_negotiation_and_upgrade_preserve_cleanliness() {
+        fn require_dirty<S>(conn: Conn<S, PreStartup, crate::Dirty>) {
+            conn.into_transport();
+        }
+
+        let pending: Conn<(), AwaitingSslReply, crate::Dirty> = Conn::new(()).transition();
+        let Negotiation::Accepted(handshake) = pending.receive_reply(EncryptionReply::Accepted)
+        else {
+            panic!("expected the TLS handshake branch")
+        };
+        let upgraded = handshake.finish_tls(|()| 42_u8);
+
+        require_dirty(upgraded);
     }
 
     #[test]

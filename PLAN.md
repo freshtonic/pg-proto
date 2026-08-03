@@ -65,7 +65,11 @@ work using that feature is complete.
     and direction lookup, and expose it for differential sequence generation.
   - [x] Add state-aware wire-message projection hooks so nested and mixed
     sessions cannot be projected through a context-free event map.
-  - [ ] Generate the codec-message-to-event projection used by typed sessions.
+  - [x] Extend the grammar DSL with direction-specific message types and
+    state-scoped transition patterns, emitting checked message-to-event
+    projectors.
+  - [ ] Apply generated projectors to the PostgreSQL grammars and handwritten
+    compatibility sessions.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through
@@ -139,6 +143,6 @@ work using that feature is complete.
   - [x] Type remaining data-bearing continuations; retain asynchronous notices,
     parameter statuses, and notifications below the session grammar as the
     deliberately filtered byte-stream projection.
-- [ ] Generate shared codec-message-to-event projection from the grammar.
+- [ ] Apply generated codec-message-to-event projection throughout the protocol.
 - [ ] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.

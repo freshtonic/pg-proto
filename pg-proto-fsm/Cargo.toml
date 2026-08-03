@@ -19,4 +19,4 @@ pedantic = "warn"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 railroad = { version = "0.3.8", default-features = false }
-syn = "3.0.3"
+syn = { version = "3.0.3", features = ["full"] }

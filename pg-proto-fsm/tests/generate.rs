@@ -1,18 +1,32 @@
 use pg_proto_fsm::protocol;
 
+enum TestInternal {
+    Query(u8),
+    Parse,
+    Sync,
+}
+
+enum TestExternal {
+    Complete,
+}
+
 protocol! {
     pub mod query {
         initial Ready;
+        messages {
+            internal: crate::TestInternal,
+            external: crate::TestExternal,
+        }
         Ready internal {
-            Query(query: u8) => Simple [Dirty],
-            Parse(parse) => Building,
+            Query(query: u8) => Simple [Dirty] <= crate::TestInternal::Query(_),
+            Parse(parse) => Building <= crate::TestInternal::Parse,
         }
         Simple external {
-            Complete(complete) => Ready,
+            Complete(complete) => Ready <= crate::TestExternal::Complete,
         }
         Building internal {
-            Parse(parse) => Building,
-            Sync(sync) => Ready,
+            Parse(parse) => Building <= crate::TestInternal::Parse,
+            Sync(sync) => Ready <= crate::TestInternal::Sync,
         }
     }
 }
@@ -240,4 +254,29 @@ fn message_projection_receives_the_current_protocol_state() {
         })
     );
     assert_eq!(runtime.state(), query::RuntimeState::Building);
+}
+
+#[test]
+fn grammar_emits_directional_state_aware_message_projection() {
+    let message = TestInternal::Query(42);
+    let TestInternal::Query(value) = &message else {
+        unreachable!()
+    };
+    assert_eq!(*value, 42);
+    assert_eq!(
+        query::project_internal(query::RuntimeState::Ready, &message),
+        Some(query::Event::Query)
+    );
+    assert_eq!(
+        query::project_internal(query::RuntimeState::Building, &TestInternal::Parse),
+        Some(query::Event::Parse)
+    );
+    assert_eq!(
+        query::project_internal(query::RuntimeState::Simple, &TestInternal::Sync),
+        None
+    );
+    assert_eq!(
+        query::project_external(query::RuntimeState::Simple, &TestExternal::Complete),
+        Some(query::Event::Complete)
+    );
 }

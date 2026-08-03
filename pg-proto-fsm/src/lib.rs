@@ -9,20 +9,27 @@ use railroad::{
     VerticalGrid,
 };
 use syn::{
-    Ident, Result, Token, Type, Visibility, braced,
+    Ident, Pat, Result, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
 
 mod keyword {
     syn::custom_keyword!(initial);
+    syn::custom_keyword!(messages);
 }
 
 struct Protocol {
     visibility: Visibility,
     module: Ident,
     initial: Ident,
+    messages: Option<MessageTypes>,
     states: Vec<State>,
+}
+
+struct MessageTypes {
+    internal: Type,
+    external: Type,
 }
 
 struct State {
@@ -45,6 +52,7 @@ struct Transition {
     payload: Option<Type>,
     target: Ident,
     cleanliness: Option<Ident>,
+    projection: Option<Pat>,
 }
 
 impl Parse for Protocol {
@@ -57,6 +65,30 @@ impl Parse for Protocol {
         content.parse::<keyword::initial>()?;
         let initial = content.parse()?;
         content.parse::<Token![;]>()?;
+        let messages = if content.peek(keyword::messages) {
+            content.parse::<keyword::messages>()?;
+            let message_content;
+            braced!(message_content in content);
+            let internal_name: Ident = message_content.parse()?;
+            if internal_name != "internal" {
+                return Err(syn::Error::new(internal_name.span(), "expected `internal`"));
+            }
+            message_content.parse::<Token![:]>()?;
+            let internal = message_content.parse()?;
+            message_content.parse::<Token![,]>()?;
+            let external_name: Ident = message_content.parse()?;
+            if external_name != "external" {
+                return Err(syn::Error::new(external_name.span(), "expected `external`"));
+            }
+            message_content.parse::<Token![:]>()?;
+            let external = message_content.parse()?;
+            if message_content.peek(Token![,]) {
+                message_content.parse::<Token![,]>()?;
+            }
+            Some(MessageTypes { internal, external })
+        } else {
+            None
+        };
         let mut states = Vec::new();
         while !content.is_empty() {
             states.push(content.parse()?);
@@ -65,6 +97,7 @@ impl Parse for Protocol {
             visibility,
             module,
             initial,
+            messages,
             states,
         })
     }
@@ -128,6 +161,12 @@ impl Parse for Transition {
         } else {
             None
         };
+        let projection = if input.peek(Token![<=]) {
+            input.parse::<Token![<=]>()?;
+            Some(Pat::parse_single(input)?)
+        } else {
+            None
+        };
         Ok(Self {
             choice,
             event,
@@ -135,6 +174,7 @@ impl Parse for Transition {
             payload,
             target,
             cleanliness,
+            projection,
         })
     }
 }
@@ -159,6 +199,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
         visibility,
         module,
         initial,
+        messages,
         states,
     } = protocol;
     let state_names = states.iter().map(|state| &state.name).collect::<Vec<_>>();
@@ -208,6 +249,59 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             ChoiceKind::Mixed => quote!(ChoiceKind::Mixed),
         };
         quote!(RuntimeState::#name => #choice)
+    });
+    let projection_functions = messages.as_ref().map(|messages| {
+        let internal_type = &messages.internal;
+        let external_type = &messages.external;
+        let internal_arms = states.iter().flat_map(|state| {
+            let source = &state.name;
+            state.transitions.iter().filter_map(move |transition| {
+                let choice = transition.choice.unwrap_or(state.choice);
+                (matches!(choice, ChoiceKind::Internal))
+                    .then_some(transition.projection.as_ref())
+                    .flatten()
+                    .map(|pattern| {
+                        let event = &transition.event;
+                        quote!((RuntimeState::#source, #pattern) => Some(Event::#event))
+                    })
+            })
+        });
+        let external_arms = states.iter().flat_map(|state| {
+            let source = &state.name;
+            state.transitions.iter().filter_map(move |transition| {
+                let choice = transition.choice.unwrap_or(state.choice);
+                (matches!(choice, ChoiceKind::External))
+                    .then_some(transition.projection.as_ref())
+                    .flatten()
+                    .map(|pattern| {
+                        let event = &transition.event;
+                        quote!((RuntimeState::#source, #pattern) => Some(Event::#event))
+                    })
+            })
+        });
+        quote! {
+            #[must_use]
+            pub fn project_internal(
+                state: RuntimeState,
+                message: &#internal_type,
+            ) -> Option<Event> {
+                match (state, message) {
+                    #(#internal_arms,)*
+                    _ => None,
+                }
+            }
+
+            #[must_use]
+            pub fn project_external(
+                state: RuntimeState,
+                message: &#external_type,
+            ) -> Option<Event> {
+                match (state, message) {
+                    #(#external_arms,)*
+                    _ => None,
+                }
+            }
+        }
     });
     let typestate_impls = states.iter().map(|state| {
         let source = &state.name;
@@ -389,6 +483,8 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             pub const TRANSITIONS: &[RuntimeTransition] = &[#(#transition_descriptors),*];
+
+            #projection_functions
 
             #[must_use]
             pub fn transition(
@@ -590,6 +686,18 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
 }
 
 fn validate(protocol: &Protocol) -> Result<()> {
+    if protocol.messages.is_none()
+        && let Some(transition) = protocol
+            .states
+            .iter()
+            .flat_map(|state| &state.transitions)
+            .find(|transition| transition.projection.is_some())
+    {
+        return Err(syn::Error::new(
+            transition.event.span(),
+            "transition projection requires a `messages` declaration",
+        ));
+    }
     let states = protocol
         .states
         .iter()

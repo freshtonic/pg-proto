@@ -117,13 +117,21 @@ protocol! {
             Cleartext(cleartext) => PasswordResponse,
             Md5(md5) => PasswordResponse,
             Sasl(sasl) => SaslInitial,
-            Gss(gss) => Auth,
-            Sspi(sspi) => Auth,
-            KerberosV5(kerberos_v5) => Auth,
+            Gss(gss) => TokenResponse,
+            Sspi(sspi) => TokenResponse,
+            KerberosV5(kerberos_v5) => TokenResponse,
             Error(error) => Terminated,
         }
         PasswordResponse internal {
             Password(password) => AwaitingAuthOk,
+        }
+        TokenResponse internal {
+            Response(response) => TokenChallenge,
+        }
+        TokenChallenge external {
+            Continue(continue_token) => TokenResponse,
+            Ok(ok) => AwaitingStartupReady,
+            Error(error) => Terminated,
         }
         SaslInitial internal {
             Initial(initial) => Sasl,
@@ -287,6 +295,30 @@ mod tests {
             authentication::Event::Response,
             authentication::Event::Final,
             authentication::Event::Verified,
+            authentication::Event::Ok,
+            authentication::Event::Ready,
+        ] {
+            runtime.step(event).unwrap();
+        }
+        assert_eq!(runtime.state(), authentication::RuntimeState::Ready);
+    }
+
+    #[test]
+    fn generated_token_authentication_is_recursive() {
+        let _typed = authentication::Session::new()
+            .gss()
+            .response()
+            .continue_token()
+            .response()
+            .ok()
+            .ready();
+
+        let mut runtime = authentication::RuntimeFsm::new();
+        for event in [
+            authentication::Event::Gss,
+            authentication::Event::Response,
+            authentication::Event::Continue,
+            authentication::Event::Response,
             authentication::Event::Ok,
             authentication::Event::Ready,
         ] {

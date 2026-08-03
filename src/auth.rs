@@ -27,6 +27,12 @@ pub enum SaslChallenge {}
 pub enum SaslFinal {}
 
 #[derive(Debug)]
+pub enum TokenResponse {}
+
+#[derive(Debug)]
+pub enum TokenChallenge {}
+
+#[derive(Debug)]
 pub enum AwaitingAuthOk {}
 
 #[derive(Debug)]
@@ -61,9 +67,9 @@ pub enum AuthOffer<S> {
         conn: Conn<S, SaslInitial>,
         mechanisms: Vec<Bytes>,
     },
-    Gss(Conn<S, Auth>),
-    Sspi(Conn<S, Auth>),
-    KerberosV5(Conn<S, Auth>),
+    Gss(Conn<S, TokenResponse>),
+    Sspi(Conn<S, TokenResponse>),
+    KerberosV5(Conn<S, TokenResponse>),
 }
 
 #[derive(Debug)]
@@ -97,6 +103,19 @@ pub enum SaslEvent<S> {
 
 #[derive(Debug)]
 pub enum AuthCompletion<S> {
+    Ok(Conn<S, AwaitingStartupReady>),
+    Error {
+        conn: Conn<S, Terminated>,
+        error: codec::DiagnosticResponse,
+    },
+}
+
+#[derive(Debug)]
+pub enum TokenAuthEvent<S> {
+    Continue {
+        conn: Conn<S, TokenResponse>,
+        token: Bytes,
+    },
     Ok(Conn<S, AwaitingStartupReady>),
     Error {
         conn: Conn<S, Terminated>,
@@ -172,15 +191,57 @@ impl<S> Conn<S, Auth, Pristine> {
                 conn: self.transition(),
                 mechanisms,
             }),
-            codec::Authentication::Gss => Ok(AuthOffer::Gss(self)),
-            codec::Authentication::Sspi => Ok(AuthOffer::Sspi(self)),
-            codec::Authentication::KerberosV5 => Ok(AuthOffer::KerberosV5(self)),
+            codec::Authentication::Gss => Ok(AuthOffer::Gss(self.transition())),
+            codec::Authentication::Sspi => Ok(AuthOffer::Sspi(self.transition())),
+            codec::Authentication::KerberosV5 => Ok(AuthOffer::KerberosV5(self.transition())),
             codec::Authentication::GssContinue(_)
             | codec::Authentication::SaslContinue(_)
             | codec::Authentication::SaslFinal(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "authentication continuation before mechanism selection",
             )),
+        }
+    }
+}
+
+impl<S> Conn<S, TokenResponse, Pristine> {
+    /// Sends a GSS, SSPI, or Kerberos token and waits for continuation or success.
+    pub fn respond(self, token: Bytes) -> (Conn<S, TokenChallenge>, codec::Frame) {
+        (
+            self.transition(),
+            codec::Frame {
+                tag: b'p',
+                body: token,
+            },
+        )
+    }
+}
+
+impl<S> Conn<S, TokenChallenge, Pristine> {
+    /// Projects recursive GSS continuation, successful authentication, or failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the live connection and message for an illegal response.
+    pub fn offer(
+        self,
+        message: codec::BackendMessage,
+    ) -> Result<TokenAuthEvent<S>, (Self, codec::BackendMessage)> {
+        match message {
+            codec::BackendMessage::Authentication(codec::Authentication::GssContinue(token)) => {
+                Ok(TokenAuthEvent::Continue {
+                    conn: self.transition(),
+                    token,
+                })
+            }
+            codec::BackendMessage::Authentication(codec::Authentication::Ok) => {
+                Ok(TokenAuthEvent::Ok(self.transition()))
+            }
+            codec::BackendMessage::ErrorResponse(error) => Ok(TokenAuthEvent::Error {
+                conn: self.transition(),
+                error,
+            }),
+            message => Err((self, message)),
         }
     }
 }
@@ -411,6 +472,36 @@ mod tests {
         };
         assert_eq!(server_final, Bytes::from_static(b"verified"));
         conn.verified().into_transport();
+    }
+
+    #[test]
+    fn gss_continuation_is_a_recursive_token_exchange() {
+        let auth: Conn<(), Auth> = Conn::new(()).transition();
+        let AuthOffer::Gss(response) = auth.offer(codec::Authentication::Gss).unwrap() else {
+            panic!("GSS request projected to the wrong branch")
+        };
+        let (waiting, frame) = response.respond(Bytes::from_static(b"client-token-1"));
+        assert_eq!(frame.body, Bytes::from_static(b"client-token-1"));
+
+        let TokenAuthEvent::Continue { conn, token } = waiting
+            .offer(codec::BackendMessage::Authentication(
+                codec::Authentication::GssContinue(Bytes::from_static(b"server-token")),
+            ))
+            .unwrap()
+        else {
+            panic!("GSS continuation projected to the wrong branch")
+        };
+        assert_eq!(token, Bytes::from_static(b"server-token"));
+        let (waiting, _) = conn.respond(Bytes::from_static(b"client-token-2"));
+        let TokenAuthEvent::Ok(awaiting_ready) = waiting
+            .offer(codec::BackendMessage::Authentication(
+                codec::Authentication::Ok,
+            ))
+            .unwrap()
+        else {
+            panic!("authentication success projected to the wrong branch")
+        };
+        awaiting_ready.into_transport();
     }
 
     #[test]

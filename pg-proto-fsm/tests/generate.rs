@@ -46,6 +46,24 @@ fn typestate_and_runtime_fsm_follow_the_same_grammar() {
 }
 
 #[test]
+fn generated_typed_sessions_carry_transport_and_cleanliness() {
+    #[derive(Debug)]
+    struct Pristine;
+
+    let session: query::TypedSession<Vec<u8>, query::Ready, Pristine> =
+        query::TypedSession::with_transport(vec![1, 2, 3])
+            .query()
+            .complete();
+    assert_eq!(session.into_transport(), [1, 2, 3]);
+
+    let dual: query::DualTypedSession<Vec<u8>, query::Ready, Pristine> =
+        query::DualTypedSession::with_transport(vec![4, 5])
+            .query()
+            .complete();
+    assert_eq!(dual.into_transport(), [4, 5]);
+}
+
+#[test]
 fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.starts_with("<svg"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Building"));

@@ -215,6 +215,48 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
         }
     });
+    let typed_session_impls = states.iter().map(|state| {
+        let source = &state.name;
+        let methods = state.transitions.iter().map(|transition| {
+            let method = &transition.method;
+            let target = &transition.target;
+            quote! {
+                #[must_use]
+                pub fn #method(self) -> TypedSession<Transport, #target, Cleanliness> {
+                    TypedSession {
+                        transport: self.transport,
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+            }
+        });
+        quote! {
+            impl<Transport, Cleanliness> TypedSession<Transport, #source, Cleanliness> {
+                #(#methods)*
+            }
+        }
+    });
+    let dual_typed_session_impls = states.iter().map(|state| {
+        let source = &state.name;
+        let methods = state.transitions.iter().map(|transition| {
+            let method = &transition.method;
+            let target = &transition.target;
+            quote! {
+                #[must_use]
+                pub fn #method(self) -> DualTypedSession<Transport, #target, Cleanliness> {
+                    DualTypedSession {
+                        transport: self.transport,
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+            }
+        });
+        quote! {
+            impl<Transport, Cleanliness> DualTypedSession<Transport, #source, Cleanliness> {
+                #(#methods)*
+            }
+        }
+    });
     let svg = railroad_svg(&states);
     let diagram_name = format_ident!("{}_RAILROAD_SVG", module.to_string().to_uppercase());
 
@@ -318,6 +360,20 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 _phase: ::core::marker::PhantomData<Phase>,
             }
 
+            #[must_use = "dropping a generated typed session abandons its protocol state"]
+            #[derive(Debug)]
+            pub struct TypedSession<Transport, Phase, Cleanliness = ()> {
+                transport: Transport,
+                _state: ::core::marker::PhantomData<(Phase, Cleanliness)>,
+            }
+
+            #[must_use = "dropping a generated dual session abandons its protocol state"]
+            #[derive(Debug)]
+            pub struct DualTypedSession<Transport, Phase, Cleanliness = ()> {
+                transport: Transport,
+                _state: ::core::marker::PhantomData<(Phase, Cleanliness)>,
+            }
+
             impl Session<#initial> {
                 #[must_use]
                 pub const fn new() -> Self {
@@ -332,8 +388,38 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             }
 
+            impl<Transport, Cleanliness> TypedSession<Transport, #initial, Cleanliness> {
+                #[must_use]
+                pub const fn with_transport(transport: Transport) -> Self {
+                    Self { transport, _state: ::core::marker::PhantomData }
+                }
+            }
+
+            impl<Transport, Cleanliness> DualTypedSession<Transport, #initial, Cleanliness> {
+                #[must_use]
+                pub const fn with_transport(transport: Transport) -> Self {
+                    Self { transport, _state: ::core::marker::PhantomData }
+                }
+            }
+
+            impl<Transport, Phase, Cleanliness> TypedSession<Transport, Phase, Cleanliness> {
+                #[must_use]
+                pub fn into_transport(self) -> Transport {
+                    self.transport
+                }
+            }
+
+            impl<Transport, Phase, Cleanliness> DualTypedSession<Transport, Phase, Cleanliness> {
+                #[must_use]
+                pub fn into_transport(self) -> Transport {
+                    self.transport
+                }
+            }
+
             #(#typestate_impls)*
             #(#dual_typestate_impls)*
+            #(#typed_session_impls)*
+            #(#dual_typed_session_impls)*
 
             pub const #diagram_name: &str = #svg;
         }

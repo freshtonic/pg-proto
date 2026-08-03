@@ -543,10 +543,15 @@ mod tests {
 
     #[test]
     fn scram_server_engine_completes_the_typed_authentication_session() {
+        use crate::grammar::server_authentication::{Event, RuntimeFsm, RuntimeState};
+
+        let mut generated = RuntimeFsm::new();
+        generated.step(Event::Begin).unwrap();
         let (initial_state, offer_frame) = validated_startup()
             .begin_server_auth()
             .request_sasl(vec![Bytes::from_static(SCRAM_SHA_256)])
             .unwrap();
+        generated.step(Event::Sasl).unwrap();
         assert_eq!(offer_frame.tag, b'R');
 
         let mut client = ScramSha256::new(b"secret", ChannelBinding::unsupported());
@@ -558,6 +563,7 @@ mod tests {
         let (sasl, initial) = initial_state
             .receive_initial(FrontendMessage::PasswordResponse(initial_body.freeze()))
             .unwrap();
+        generated.step(Event::Initial).unwrap();
 
         let verifier = ScramServer::with_parameters(
             b"secret",
@@ -570,6 +576,7 @@ mod tests {
             .start(&initial.mechanism, initial.response.as_deref().unwrap())
             .unwrap();
         let (sasl, challenge_frame) = sasl.continue_with(challenge.clone()).unwrap();
+        generated.step(Event::Continue).unwrap();
         assert_eq!(challenge_frame.tag, b'R');
         client.update(&challenge).unwrap();
 
@@ -578,12 +585,16 @@ mod tests {
                 client.message(),
             )))
             .unwrap();
+        generated.step(Event::Response).unwrap();
         let server_final = exchange.finish(&response).unwrap();
         client.finish(&server_final).unwrap();
         let (auth, final_frame) = sasl.finish(server_final).unwrap();
+        generated.step(Event::Final).unwrap();
         assert_eq!(final_frame.tag, b'R');
         let (startup_ready, ok) = auth.authentication_ok().unwrap();
+        generated.step(Event::Ok).unwrap();
         assert_eq!(ok.tag, b'R');
+        assert_eq!(generated.state(), RuntimeState::StartupReady);
         startup_ready.into_transport();
     }
 }

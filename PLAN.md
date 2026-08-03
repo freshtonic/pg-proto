@@ -94,8 +94,8 @@ work using that feature is complete.
       for both roles.
     - [x] Route client-side authentication mechanism, recursive token/SASL, and
       completion classification through generated projection.
-    - [ ] Route server-side authentication response classification through
-      generated projection.
+    - [x] Route server-side password, SASL-initial/continuation, and token
+      response classification through generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

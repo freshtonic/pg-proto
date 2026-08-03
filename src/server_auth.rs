@@ -11,6 +11,7 @@ use crate::{
         Authentication, BackendMessage, DiagnosticResponse, Frame, FrontendMessage,
         NegotiateProtocolVersion, TransactionStatus,
     },
+    grammar::server_authentication as auth_grammar,
     pre_startup::{Startup, Terminated},
     startup::{ProtocolVersion, StartupMessage},
 };
@@ -208,12 +209,17 @@ impl<S, C> Conn<S, ServerPassword, C> {
     ///
     /// Returns the unchanged state and message if it is not a valid password response.
     pub fn receive_password(self, message: FrontendMessage) -> PasswordProjection<S, C> {
-        match message {
-            FrontendMessage::PasswordResponse(body) => match password_body(body) {
-                Ok(password) => Ok((self.transition(), password)),
-                Err(body) => Err(Box::new((self, FrontendMessage::PasswordResponse(body)))),
-            },
-            other => Err(Box::new((self, other))),
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::PasswordResponse, &message),
+            message,
+        ) {
+            (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(body)) => {
+                match password_body(body) {
+                    Ok(password) => Ok((self.transition(), password)),
+                    Err(body) => Err(Box::new((self, FrontendMessage::PasswordResponse(body)))),
+                }
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 }
@@ -225,12 +231,17 @@ impl<S, C> Conn<S, ServerSaslInitial, C> {
     ///
     /// Returns the unchanged state and message if the SASL initial response is malformed.
     pub fn receive_initial(self, message: FrontendMessage) -> SaslInitialProjection<S, C> {
-        match message {
-            FrontendMessage::PasswordResponse(body) => match sasl_initial(body) {
-                Ok(initial) => Ok((self.transition(), initial)),
-                Err(body) => Err(Box::new((self, FrontendMessage::PasswordResponse(body)))),
-            },
-            other => Err(Box::new((self, other))),
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::SaslInitial, &message),
+            message,
+        ) {
+            (Some(auth_grammar::Event::Initial), FrontendMessage::PasswordResponse(body)) => {
+                match sasl_initial(body) {
+                    Ok(initial) => Ok((self.transition(), initial)),
+                    Err(body) => Err(Box::new((self, FrontendMessage::PasswordResponse(body)))),
+                }
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 }
@@ -245,9 +256,14 @@ impl<S, C> Conn<S, ServerSasl, C> {
         self,
         message: FrontendMessage,
     ) -> ServerProjection<(Self, Bytes), S, ServerSasl, C> {
-        match message {
-            FrontendMessage::PasswordResponse(response) => Ok((self, response)),
-            other => Err(Box::new((self, other))),
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::SaslResponse, &message),
+            message,
+        ) {
+            (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(response)) => {
+                Ok((self, response))
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 
@@ -286,9 +302,14 @@ impl<S, C> Conn<S, ServerAuthResponse, C> {
         self,
         message: FrontendMessage,
     ) -> ServerProjection<(Self, Bytes), S, ServerAuthResponse, C> {
-        match message {
-            FrontendMessage::PasswordResponse(response) => Ok((self, response)),
-            other => Err(Box::new((self, other))),
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::TokenResponse, &message),
+            message,
+        ) {
+            (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(response)) => {
+                Ok((self, response))
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 

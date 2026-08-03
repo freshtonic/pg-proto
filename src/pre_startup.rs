@@ -10,6 +10,9 @@ const SSL_REQUEST_CODE: u32 = 80_877_103;
 const GSSENC_REQUEST_CODE: u32 = 80_877_104;
 const CANCEL_REQUEST_CODE: u32 = 80_877_102;
 
+/// `PostgreSQL`'s maximum accepted untagged startup packet size.
+pub const DEFAULT_MAX_PRE_STARTUP_PACKET_LEN: usize = 10_000;
+
 #[derive(Debug)]
 pub enum PreStartup {}
 
@@ -106,6 +109,27 @@ impl PreStartupMessage {
 ///
 /// Returns an error for invalid lengths, special-request shapes, or startup data.
 pub fn decode_pre_startup(input: &mut BytesMut) -> std::io::Result<Option<PreStartupMessage>> {
+    decode_pre_startup_with_limit(input, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN)
+}
+
+/// Incrementally decodes one raw pre-startup packet with an allocation bound.
+///
+/// The declared length is checked before reserving space for the remainder of
+/// a partial packet.
+///
+/// # Errors
+///
+/// Returns an error for an invalid limit, an oversized packet, invalid lengths,
+/// special-request shapes, or startup data.
+pub fn decode_pre_startup_with_limit(
+    input: &mut BytesMut,
+    max_packet_len: usize,
+) -> std::io::Result<Option<PreStartupMessage>> {
+    if !(8..=i32::MAX as usize).contains(&max_packet_len) {
+        return Err(invalid(
+            "pre-startup packet limit must be between 8 and i32::MAX bytes",
+        ));
+    }
     if input.len() < 4 {
         input.reserve(4 - input.len());
         return Ok(None);
@@ -114,6 +138,12 @@ pub fn decode_pre_startup(input: &mut BytesMut) -> std::io::Result<Option<PreSta
         .map_err(|_| invalid("pre-startup packet length overflow"))?;
     if length < 8 {
         return Err(invalid("pre-startup packet is shorter than 8 bytes"));
+    }
+    if length > i32::MAX as usize {
+        return Err(invalid("pre-startup packet length exceeds i32::MAX"));
+    }
+    if length > max_packet_len {
+        return Err(invalid("pre-startup packet exceeds configured limit"));
     }
     if input.len() < length {
         input.reserve(length - input.len());
@@ -581,5 +611,30 @@ mod tests {
             );
             assert!(input.is_empty());
         }
+    }
+
+    #[test]
+    fn rejects_oversized_pre_startup_before_reserving_body() {
+        let mut input = BytesMut::from(&10_001_u32.to_be_bytes()[..]);
+        let capacity = input.capacity();
+
+        let error = decode_pre_startup(&mut input).expect_err("packet exceeds the default limit");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(input.len(), 4);
+        assert_eq!(input.capacity(), capacity);
+    }
+
+    #[test]
+    fn validates_custom_pre_startup_limit() {
+        let packet = PreStartupMessage::SslRequest
+            .to_packet()
+            .expect("SSL request is encodable");
+
+        assert!(decode_pre_startup_with_limit(&mut BytesMut::from(&packet[..]), 7).is_err());
+        assert!(
+            decode_pre_startup_with_limit(&mut BytesMut::from(&packet[..]), i32::MAX as usize + 1)
+                .is_err()
+        );
     }
 }

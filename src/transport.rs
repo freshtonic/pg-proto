@@ -16,9 +16,9 @@ use crate::{
     codec::{Backend, BackendMessage, Direction, Frame, Frontend, FrontendMessage, PgCodec},
     demux::{CancelKey, Demux, Notification, ParameterStatus, SessionItem, TaggedNotice},
     pre_startup::{
-        AwaitingSslReply, EncryptionReply, Negotiation, PreStartup, PreStartupMessage,
-        ServerSslDecision, SslMode, SslModeNegotiation, TlsHandshake, decode_pre_startup,
-        ssl_request_packet,
+        AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
+        PreStartup, PreStartupMessage, ServerSslDecision, SslMode, SslModeNegotiation,
+        TlsHandshake, decode_pre_startup_with_limit, ssl_request_packet,
     },
     tls::{ClientTls, ServerTls},
 };
@@ -30,6 +30,7 @@ pub struct Buffered<S, D = Backend> {
     outbound: BytesMut,
     inbound: BytesMut,
     inbound_codec: PgCodec<D>,
+    max_pre_startup_packet_len: usize,
     demux: Demux,
 }
 
@@ -40,6 +41,7 @@ impl<S> Buffered<S, Backend> {
             outbound: BytesMut::new(),
             inbound: BytesMut::new(),
             inbound_codec: PgCodec::default(),
+            max_pre_startup_packet_len: DEFAULT_MAX_PRE_STARTUP_PACKET_LEN,
             demux: Demux::default(),
         }
     }
@@ -55,6 +57,7 @@ impl<S> Buffered<S, Backend> {
             outbound: BytesMut::new(),
             inbound: BytesMut::new(),
             inbound_codec: PgCodec::with_max_frame_len(max_frame_len)?,
+            max_pre_startup_packet_len: DEFAULT_MAX_PRE_STARTUP_PACKET_LEN,
             demux: Demux::default(),
         })
     }
@@ -67,6 +70,7 @@ impl<S> Buffered<S, Frontend> {
             outbound: BytesMut::new(),
             inbound: BytesMut::new(),
             inbound_codec: PgCodec::default(),
+            max_pre_startup_packet_len: DEFAULT_MAX_PRE_STARTUP_PACKET_LEN,
             demux: Demux::default(),
         }
     }
@@ -77,11 +81,31 @@ impl<S> Buffered<S, Frontend> {
     ///
     /// Returns an error when the limit is outside `PostgreSQL`'s frame range.
     pub fn with_max_frame_len_frontend(io: S, max_frame_len: usize) -> io::Result<Self> {
+        Self::with_limits_frontend(io, max_frame_len, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN)
+    }
+
+    /// Creates a frontend-facing transport with bounded tagged and pre-startup packets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either limit is outside `PostgreSQL`'s framing range.
+    pub fn with_limits_frontend(
+        io: S,
+        max_frame_len: usize,
+        max_pre_startup_packet_len: usize,
+    ) -> io::Result<Self> {
+        if !(8..=i32::MAX as usize).contains(&max_pre_startup_packet_len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pre-startup packet limit must be between 8 and i32::MAX bytes",
+            ));
+        }
         Ok(Self {
             io,
             outbound: BytesMut::new(),
             inbound: BytesMut::new(),
             inbound_codec: PgCodec::with_max_frame_len(max_frame_len)?,
+            max_pre_startup_packet_len,
             demux: Demux::default(),
         })
     }
@@ -140,6 +164,7 @@ where
             outbound: self.outbound,
             inbound: self.inbound,
             inbound_codec: self.inbound_codec,
+            max_pre_startup_packet_len: self.max_pre_startup_packet_len,
             demux: self.demux,
         })
     }
@@ -160,6 +185,7 @@ where
             outbound: self.outbound,
             inbound: self.inbound,
             inbound_codec: self.inbound_codec,
+            max_pre_startup_packet_len: self.max_pre_startup_packet_len,
             demux: self.demux,
         })
     }
@@ -233,7 +259,9 @@ impl<S: AsyncRead + Unpin> Buffered<S, Frontend> {
     /// Returns malformed pre-startup data and underlying transport read errors.
     pub async fn receive_pre_startup(&mut self) -> io::Result<PreStartupMessage> {
         loop {
-            if let Some(message) = decode_pre_startup(&mut self.inbound)? {
+            if let Some(message) =
+                decode_pre_startup_with_limit(&mut self.inbound, self.max_pre_startup_packet_len)?
+            {
                 return Ok(message);
             }
             if self.io.read_buf(&mut self.inbound).await? == 0 {
@@ -759,5 +787,23 @@ mod tests {
             panic!("unexpected pre-startup branch")
         };
         let _transport = conn.into_transport();
+    }
+
+    #[tokio::test]
+    async fn client_facing_transport_applies_its_pre_startup_limit() {
+        let (proxy, mut client) = tokio::io::duplex(32);
+        client
+            .write_all(&17_u32.to_be_bytes())
+            .await
+            .expect("writable client");
+
+        let mut transport =
+            Buffered::<_, Frontend>::with_limits_frontend(proxy, 64, 16).expect("valid limits");
+        let error = transport
+            .receive_pre_startup()
+            .await
+            .expect_err("declared packet exceeds the configured limit");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

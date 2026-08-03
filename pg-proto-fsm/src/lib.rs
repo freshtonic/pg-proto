@@ -439,8 +439,19 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
     });
     let svg = railroad_svg(&states);
     let diagram_name = format_ident!("{}_RAILROAD_SVG", module.to_string().to_uppercase());
+    let module_doc = format!(
+        "Generated `{module}` protocol grammar.\n\n\
+         ## Railroad diagram\n\n\
+         <div class=\"pg-proto-railroad\" style=\"overflow-x: auto\">\n\
+         {svg}\n\
+         </div>\n\n\
+         `⊕` denotes an internal choice made by this role; `&` denotes an \
+         external choice offered by its peer. Repeated rails are protocol \
+         self-loops and bracketed labels are cleanliness effects."
+    );
 
     Ok(quote! {
+        #[doc = #module_doc]
         #visibility mod #module {
             #(
                 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -680,6 +691,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             #(#typed_session_impls)*
             #(#dual_typed_session_impls)*
 
+            /// Raw SVG embedded in this module's railroad-diagram documentation.
             pub const #diagram_name: &str = #svg;
         }
     })

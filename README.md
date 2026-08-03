@@ -19,7 +19,8 @@ The crate currently includes:
 - exact phase/cleanliness erasure with checked re-entry at storage boundaries;
 - ordered `ParameterStatus` and notification sinks for proxy forwarding;
 - a grammar proc macro which emits transport-carrying two-index typestates, a
-  runtime FSM, and railroad SVG with choice, loop, and cleanliness effects;
+  runtime FSM, and railroad SVG with choice, loop, and cleanliness effects,
+  embedded on each generated role's rustdoc page;
 - compile-fail tests for illegal protocol transitions; and
 - Testcontainers coverage against the official PostgreSQL 18 image.
 

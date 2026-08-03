@@ -58,6 +58,7 @@ work using that feature is complete.
 - [x] Explicit cleanliness effects and transport replacement.
 - [x] Runtime FSM with per-transition internal/external direction.
 - [x] Railroad SVG with sequence, choice, recursion, and cleanliness effects.
+- [x] Embed each generated role's railroad SVG on its rustdoc module page.
 - [x] Client/server pre-startup, authentication, query, reset, error, COPY, and
   replication grammar coverage.
 - [x] Attach typed message payloads and fallible transition results to generated

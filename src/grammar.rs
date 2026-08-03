@@ -1,4 +1,8 @@
-//! Generated frontend query grammar and differential-test runtime FSM.
+//! Generated `PostgreSQL` grammars and differential-test runtime FSMs.
+//!
+//! Each generated role module embeds its railroad diagram directly in its
+//! rustdoc landing page. Open a module such as [`frontend`] or [`backend`] to
+//! review the grammar alongside its generated transition API.
 
 use pg_proto_fsm::protocol;
 

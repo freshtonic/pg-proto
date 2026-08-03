@@ -27,6 +27,25 @@ The frontend and backend roles deliberately do not share an authentication
 mechanism. A proxy can terminate client authentication with one policy while it
 independently authenticates to the upstream server with another.
 
+## Library and application boundary
+
+`pg-proto` owns wire encoding, protocol ordering, transport upgrades, typed
+resources, and observable cleanliness evidence. A proxy built with it owns
+listeners, upstream selection and pooling, credentials, authorisation, SQL or
+row transformation, cancellation-key storage, buffering policy, telemetry, and
+failure presentation. [`Intermediary`] merely retains two independently typed
+sessions and lends both to application callbacks; it neither forwards nor
+modifies a message implicitly.
+
+The runnable [`proxy_skeleton` example] shows the composition points for message
+policy, cancellation storage, and pool cleanliness. The more detailed
+[`rewriting_intermediary` example] reconstructs modified `Parse`, `Bind`,
+`Describe`, and `RowDescription` frames.
+
+[`Intermediary`]: crate::intermediary::Intermediary
+[`proxy_skeleton` example]: examples/proxy_skeleton.rs
+[`rewriting_intermediary` example]: examples/rewriting_intermediary.rs
+
 ## Inspecting and rewriting messages
 
 The wire transport first returns a fully typed message without advancing the
@@ -126,5 +145,7 @@ railroad SVG. Generated transitions preserve or replace the orthogonal
 cleanliness index explicitly, and transport mapping represents in-place TLS
 upgrades without weakening the phase index.
 
-Multiparty proxy verification remains Layer 3 work after the generated roles are
-wired directly to message payloads and proxy policy.
+Formal multiparty verification remains optional research work. Building a proxy
+does not: the neutral composition API and acceptance harness verify that
+downstream policy can combine the two generated roles without moving application
+behaviour into this crate.

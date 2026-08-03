@@ -136,7 +136,7 @@ neutral composition harnesses and examples.
   remains downstream.
 - [x] Add a neutral end-to-end intermediary harness covering asymmetric auth/TLS,
   message rewriting, cancellation, COPY, replication, and connection reuse.
-- [ ] Document the application boundary and provide a proxy-construction example
+- [x] Document the application boundary and provide a proxy-construction example
   showing where downstream policy plugs in.
 
 ## 6. Verification and release gates

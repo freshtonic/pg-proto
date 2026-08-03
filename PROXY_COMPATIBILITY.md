@@ -23,15 +23,15 @@ messages, transaction state, and connection cleanup.
 | Complete structured extended-query messages | Proxy rewrites SQL, parameter OIDs and values, format codes, result metadata, and names | Implemented for Parse, Bind, Describe, Execute, Close, ParameterDescription, RowDescription, and DataRow |
 | Mutable, reconstructable interception | Rewriters must inspect, replace, reject, or forward a message without losing unknown values | Implemented through typed codec values and fallible generated transition handlers |
 | Extended pipelining and error drain | Both audited implementations buffer arbitrary extended messages and discard through Sync after errors | Implemented in generated and compatibility typestates |
-| Prepared-statement and portal namespaces | pgcat rewrites names and restores prepared statements on another pooled server | Implemented as connection-branded resources; downstream ownership hooks still need a stable composition façade |
+| Prepared-statement and portal namespaces | pgcat rewrites names and restores prepared statements on another pooled server | Implemented as connection-branded resources with client-to-upstream lookup |
 | Simple query and function call | Simple SQL is inspected; deprecated function calls must remain forwardable if encountered | Implemented as typed sessions and reconstructable messages |
 | COPY IN, OUT, and BOTH | pgcat forwards COPY data and prevents pool release while COPY is active | Implemented as nested sessions, including half-close tracking and replication projection |
 | Transaction status evidence | pgcat releases transaction-pooled connections only after idle ReadyForQuery | Implemented and fed into cleanliness evidence |
 | ParameterStatus and startup baseline | Session settings affect SQL interpretation and pool safety | Implemented in the demultiplexer with ordered forwarding data and baseline comparison |
 | Notices and notifications | They can arrive independently and must remain ordered for forwarding | Implemented below typestate with positional notice tagging and ordered queues |
-| Backend cancellation keys | A proxy must expose its own client key while retaining the current upstream key | Observation and a reference map exist; a policy-neutral trait/hook is still required |
-| Pool cleanliness evidence | pgcat tracks transactions, SET, PREPARE, COPY, and prepared cache state | Transaction, parameter, portal, and reset evidence exist; extensible downstream taint reasons are still required for LISTEN and advisory-lock policy |
-| Opaque forwarding escape hatch | Unknown or uninspected traffic must be forwardable without monomorphising every state | Exact state erasure and checked re-entry are implemented; neutral two-sided composition remains required |
+| Backend cancellation keys | A proxy must expose its own client key while retaining the current upstream key | Implemented through policy-neutral mint/registry traits and an optional in-memory map |
+| Pool cleanliness evidence | pgcat tracks transactions, SET, PREPARE, COPY, and prepared cache state | Implemented as extensible evidence consumed by application-owned pool policy |
+| Opaque forwarding escape hatch | Unknown or uninspected traffic must be forwardable without monomorphising every state | Exact state erasure, checked re-entry, and neutral two-sided composition are implemented |
 | Output batching and backpressure | Current Proxy buffers rows and pgcat buffers extended/COPY messages | Cancellation-safe push/flush exists; the composition façade must permit downstream buffering without hiding command boundaries |
 
 ## Behaviour that remains downstream
@@ -64,15 +64,7 @@ points those policies consume.
   in the audited message alphabets. Their filtered projection must retain an
   ordered forwarding path even though they do not advance typestate.
 
-## Remaining library work derived from the audit
+## Library work derived from the audit
 
-1. Add a neutral two-sided intermediary composition façade.
-2. Replace cancellation-map coupling with a policy trait plus an optional
-   reference implementation.
-3. Make cleanliness taint reasons extensible and observable by downstream code.
-4. Demonstrate independent downstream/upstream authentication and TLS in one
-   neutral harness.
-5. Demonstrate typed SQL, Bind, and result rewriting without CipherStash logic.
-6. Demonstrate ordered asynchronous forwarding, cancellation translation, COPY,
-   replication, and safe connection reuse through that façade.
-
+All six requirements identified by the audit are implemented and exercised by
+the neutral intermediary harness and runnable examples.

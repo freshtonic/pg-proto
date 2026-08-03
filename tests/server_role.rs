@@ -2,6 +2,7 @@ use bytes::Bytes;
 use pg_proto::{
     Conn,
     codec::{BackendMessage, DataRow, FieldDescription, RowDescription, TransactionStatus},
+    credentials::{verify_cleartext, verify_md5_response},
     pre_startup::PreStartupOffer,
     scram::{SCRAM_SHA_256, ScramServer, ServerChannelBinding},
     server_session::{ServerReadyOffer, ServerReadyState},
@@ -42,6 +43,110 @@ async fn typed_server_scram_authenticates_an_independent_client() {
     drop(client);
     server.await.unwrap().unwrap();
     let _ = driver.await;
+}
+
+#[derive(Clone, Copy)]
+enum PasswordMethod {
+    Cleartext,
+    Md5([u8; 4]),
+}
+
+#[tokio::test]
+async fn typed_server_cleartext_authenticates_an_independent_client() {
+    independent_password_exchange(PasswordMethod::Cleartext).await;
+}
+
+#[tokio::test]
+async fn typed_server_md5_authenticates_an_independent_client() {
+    independent_password_exchange(PasswordMethod::Md5(*b"salt")).await;
+}
+
+async fn independent_password_exchange(method: PasswordMethod) {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(serve_password_startup(server_io, method));
+    let mut config = tokio_postgres::Config::new();
+    config.user("proxy_test").password("secret");
+    let (client, connection) = config.connect_raw(client_io, NoTls).await.unwrap();
+    let driver = tokio::spawn(connection);
+
+    drop(client);
+    server.await.unwrap().unwrap();
+    let _ = driver.await;
+}
+
+async fn serve_password_startup<S>(stream: S, method: PasswordMethod) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut pre_startup = Conn::new(Buffered::new_frontend(stream));
+    let (startup, message) = loop {
+        let message = pre_startup.receive_pre_startup_wire().await?;
+        match pre_startup.offer_pre_startup(message) {
+            PreStartupOffer::Ssl(decision) => {
+                pre_startup = decision.decline_ssl();
+                pre_startup.flush().await?;
+            }
+            PreStartupOffer::Startup { conn, message } => break (conn, message),
+            offer => {
+                abort_pre_startup_offer(offer);
+                return Err(std::io::Error::other("unexpected pre-startup branch"));
+            }
+        }
+    };
+    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, message, .. } =
+        startup.validate_protocol(message, pg_proto::startup::ProtocolVersion::V3_2)
+    else {
+        return Err(std::io::Error::other("unsupported startup protocol"));
+    };
+    let username = message
+        .parameters
+        .get(b"user".as_slice())
+        .ok_or_else(|| std::io::Error::other("startup omitted user"))?;
+    let auth = conn.begin_server_auth();
+    let (mut password_state, request) = match method {
+        PasswordMethod::Cleartext => auth.request_cleartext()?,
+        PasswordMethod::Md5(salt) => auth.request_md5(salt)?,
+    };
+    password_state.push_frame(request)?;
+    password_state.flush().await?;
+    let response = password_state.receive_frontend_wire().await?;
+    let (auth, response) = password_state
+        .receive_password(response)
+        .map_err(|rejected| {
+            let (conn, _) = *rejected;
+            let _transport = conn.into_transport();
+            std::io::Error::other("invalid password response")
+        })?;
+    let verified = match method {
+        PasswordMethod::Cleartext => verify_cleartext(&response, b"secret"),
+        PasswordMethod::Md5(salt) => verify_md5_response(&response, username, b"secret", salt),
+    };
+    if !verified {
+        let _transport = auth.into_transport();
+        return Err(std::io::Error::other("password verification failed"));
+    }
+    complete_server_startup(auth).await
+}
+
+async fn complete_server_startup<S>(
+    auth: Conn<Buffered<S, pg_proto::codec::Frontend>, pg_proto::server_auth::ServerAuth>,
+) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut startup_ready, ok_frame) = auth.authentication_ok()?;
+    startup_ready.push_frame(ok_frame)?;
+    let (next, parameter) = startup_ready.parameter_status(
+        Bytes::from_static(b"client_encoding"),
+        Bytes::from_static(b"UTF8"),
+    )?;
+    startup_ready = next;
+    startup_ready.push_frame(parameter)?;
+    let (mut ready, ready_frame) = startup_ready.ready()?;
+    ready.push_frame(ready_frame)?;
+    ready.flush().await?;
+    let _transport = ready.into_transport();
+    Ok(())
 }
 
 async fn serve_scram_startup<S>(stream: S) -> std::io::Result<()>

@@ -15,8 +15,11 @@ The crate currently includes:
 - client and server simple, extended, error-draining, and COPY sessions;
 - transaction and parameter cleanliness evidence for pool release;
 - conservative query/resource tainting with explicit stateless-query escape hatches;
+- connection-branded prepared statements and portals with checked name rewriting;
+- exact phase/cleanliness erasure with checked re-entry at storage boundaries;
 - ordered `ParameterStatus` and notification sinks for proxy forwarding;
-- a grammar proc macro which emits typestates, a runtime FSM, and railroad SVG;
+- a grammar proc macro which emits transport-carrying two-index typestates, a
+  runtime FSM, and railroad SVG with choice, loop, and cleanliness effects;
 - compile-fail tests for illegal protocol transitions; and
 - Testcontainers coverage against the official PostgreSQL 18 image.
 
@@ -116,8 +119,12 @@ when a Docker-compatible runtime is available:
 cargo test --test postgres_container -- --ignored
 ```
 
-Layer 2 has a working foundation: one grammar declaration generates typestate
-transitions, a runtime FSM for differential testing, and railroad SVG. The next
-construction work is expanding that generated grammar over the complete handwritten
-client and server roles. Multiparty proxy verification remains after the generated
-two-party roles are solid.
+Layer 2 covers the client and server pre-startup, authentication, query, reset,
+error-draining, and COPY grammars. One declaration emits transport-carrying
+typestate and dual APIs, an executable runtime FSM for differential testing, and
+railroad SVG. Generated transitions preserve or replace the orthogonal
+cleanliness index explicitly, and transport mapping represents in-place TLS
+upgrades without weakening the phase index.
+
+Multiparty proxy verification remains Layer 3 work after the generated roles are
+wired directly to message payloads and proxy policy.

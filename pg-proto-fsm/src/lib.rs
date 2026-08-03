@@ -24,7 +24,14 @@ struct Protocol {
 
 struct State {
     name: Ident,
+    choice: ChoiceKind,
     transitions: Vec<Transition>,
+}
+
+#[derive(Clone, Copy)]
+enum ChoiceKind {
+    Internal,
+    External,
 }
 
 struct Transition {
@@ -59,13 +66,28 @@ impl Parse for Protocol {
 impl Parse for State {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let name = input.parse()?;
+        let choice_name: Ident = input.parse()?;
+        let choice = match choice_name.to_string().as_str() {
+            "internal" => ChoiceKind::Internal,
+            "external" => ChoiceKind::External,
+            _ => {
+                return Err(syn::Error::new(
+                    choice_name.span(),
+                    "expected `internal` or `external` choice",
+                ));
+            }
+        };
         let content;
         braced!(content in input);
         let transitions = content
             .parse_terminated(Transition::parse, Token![,])?
             .into_iter()
             .collect();
-        Ok(Self { name, transitions })
+        Ok(Self {
+            name,
+            choice,
+            transitions,
+        })
     }
 }
 
@@ -96,6 +118,7 @@ pub fn protocol(input: TokenStream) -> TokenStream {
         .into()
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
     validate(&protocol)?;
     let Protocol {
@@ -122,6 +145,14 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             let target = &transition.target;
             quote!((RuntimeState::#source, Event::#event) => RuntimeState::#target)
         })
+    });
+    let choice_arms = states.iter().map(|state| {
+        let name = &state.name;
+        let choice = match state.choice {
+            ChoiceKind::Internal => quote!(ChoiceKind::Internal),
+            ChoiceKind::External => quote!(ChoiceKind::External),
+        };
+        quote!(RuntimeState::#name => #choice)
     });
     let typestate_impls = states.iter().map(|state| {
         let source = &state.name;
@@ -158,6 +189,19 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             pub enum Event { #(#events),* }
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            pub enum ChoiceKind { Internal, External }
+
+            impl ChoiceKind {
+                #[must_use]
+                pub const fn dual(self) -> Self {
+                    match self {
+                        Self::Internal => Self::External,
+                        Self::External => Self::Internal,
+                    }
+                }
+            }
+
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct TransitionError {
                 pub state: RuntimeState,
                 pub event: Event,
@@ -177,6 +221,16 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 #[must_use]
                 pub const fn state(&self) -> RuntimeState {
                     self.state
+                }
+
+                #[must_use]
+                pub const fn choice(&self) -> ChoiceKind {
+                    match self.state { #(#choice_arms),* }
+                }
+
+                #[must_use]
+                pub const fn dual_choice(&self) -> ChoiceKind {
+                    self.choice().dual()
                 }
 
                 pub fn step(&mut self, event: Event) -> Result<(), TransitionError> {
@@ -249,8 +303,12 @@ fn railroad_svg(states: &[State]) -> String {
         .iter()
         .flat_map(|state| {
             state.transitions.iter().map(|transition| {
+                let choice = match state.choice {
+                    ChoiceKind::Internal => "⊕",
+                    ChoiceKind::External => "&",
+                };
                 Box::new(Sequence::new(vec![
-                    Box::new(NonTerminal::new(state.name.to_string())) as Box<dyn Node>,
+                    Box::new(NonTerminal::new(format!("{} {choice}", state.name))) as Box<dyn Node>,
                     Box::new(Terminal::new(transition.event.to_string())),
                     Box::new(NonTerminal::new(transition.target.to_string())),
                 ])) as Box<dyn Node>

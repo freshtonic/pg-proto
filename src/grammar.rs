@@ -5,11 +5,11 @@ use pg_proto_fsm::protocol;
 protocol! {
     pub mod frontend {
         initial Ready;
-        Ready {
+        Ready internal {
             Query(query) => Simple,
             BeginExtended(begin_extended) => Building,
         }
-        Simple {
+        Simple external {
             Continue(continue_response) => Simple,
             CopyIn(enter_copy_in) => CopyIn,
             CopyOut(enter_copy_out) => CopyOut,
@@ -17,7 +17,7 @@ protocol! {
             Ready(ready) => Ready,
             Error(error) => Draining,
         }
-        Building {
+        Building internal {
             Parse(parse) => Building,
             Describe(describe) => Building,
             Bind(bind) => BoundBuilding,
@@ -25,7 +25,7 @@ protocol! {
             Flush(flush) => Building,
             Sync(sync) => AwaitingReady,
         }
-        BoundBuilding {
+        BoundBuilding internal {
             Parse(parse) => BoundBuilding,
             Describe(describe) => BoundBuilding,
             Bind(bind) => BoundBuilding,
@@ -34,28 +34,28 @@ protocol! {
             Flush(flush) => BoundBuilding,
             Sync(sync) => AwaitingReady,
         }
-        AwaitingReady {
+        AwaitingReady external {
             Continue(continue_response) => AwaitingReady,
             Ready(ready) => Ready,
             Error(error) => Draining,
         }
-        CopyIn {
+        CopyIn internal {
             CopyData(copy_data) => CopyIn,
             CopyDone(copy_done) => AwaitingReady,
             CopyFail(copy_fail) => AwaitingReady,
         }
-        CopyOut {
+        CopyOut external {
             CopyData(copy_data) => CopyOut,
             CopyDone(copy_done) => AwaitingReady,
             Error(error) => Draining,
         }
-        CopyBoth {
+        CopyBoth internal {
             SendCopyData(send_copy_data) => CopyBoth,
             ReceiveCopyData(receive_copy_data) => CopyBoth,
             CopyDone(copy_done) => AwaitingReady,
             Error(error) => Draining,
         }
-        Draining {
+        Draining external {
             Continue(continue_response) => Draining,
             Ready(ready) => Ready,
         }
@@ -65,37 +65,37 @@ protocol! {
 protocol! {
     pub mod pre_startup {
         initial PreStartup;
-        PreStartup {
+        PreStartup internal {
             SslRequest(ssl_request) => AwaitingSslReply,
             GssRequest(gss_request) => AwaitingGssReply,
             Cancel(cancel) => Terminated,
             Startup(startup) => Auth,
         }
-        AwaitingSslReply {
+        AwaitingSslReply external {
             Accept(accept) => TlsHandshake,
             Reject(reject) => PreStartup,
             LegacyError(legacy_error) => Terminated,
         }
-        AwaitingGssReply {
+        AwaitingGssReply external {
             Accept(accept) => GssHandshake,
             Reject(reject) => PreStartup,
             LegacyError(legacy_error) => Terminated,
         }
-        TlsHandshake {
+        TlsHandshake internal {
             HandshakeComplete(complete) => PreStartup,
         }
-        GssHandshake {
+        GssHandshake internal {
             HandshakeComplete(complete) => PreStartup,
         }
-        Auth {}
-        Terminated {}
+        Auth external {}
+        Terminated external {}
     }
 }
 
 protocol! {
     pub mod authentication {
         initial Auth;
-        Auth {
+        Auth external {
             Ok(ok) => AwaitingStartupReady,
             Cleartext(cleartext) => PasswordResponse,
             Md5(md5) => PasswordResponse,
@@ -104,23 +104,23 @@ protocol! {
             Sspi(sspi) => Auth,
             KerberosV5(kerberos_v5) => Auth,
         }
-        PasswordResponse {
+        PasswordResponse internal {
             Password(password) => AwaitingAuthOk,
         }
-        SaslInitial {
+        SaslInitial internal {
             Initial(initial) => Sasl,
         }
-        Sasl {
+        Sasl external {
             Continue(continue_response) => Sasl,
             Final(final_response) => AwaitingAuthOk,
         }
-        AwaitingAuthOk {
+        AwaitingAuthOk external {
             Ok(ok) => AwaitingStartupReady,
         }
-        AwaitingStartupReady {
+        AwaitingStartupReady external {
             Ready(ready) => Ready,
         }
-        Ready {}
+        Ready external {}
     }
 }
 

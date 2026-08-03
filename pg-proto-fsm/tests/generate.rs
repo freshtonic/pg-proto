@@ -3,14 +3,14 @@ use pg_proto_fsm::protocol;
 protocol! {
     pub mod query {
         initial Ready;
-        Ready {
+        Ready internal {
             Query(query) => Simple,
             Parse(parse) => Building,
         }
-        Simple {
+        Simple external {
             Complete(complete) => Ready,
         }
-        Building {
+        Building internal {
             Parse(parse) => Building,
             Sync(sync) => Ready,
         }
@@ -24,6 +24,8 @@ fn typestate_and_runtime_fsm_follow_the_same_grammar() {
     let mut runtime = query::RuntimeFsm::new();
     runtime.step(query::Event::Query).unwrap();
     assert_eq!(runtime.state(), query::RuntimeState::Simple);
+    assert_eq!(runtime.choice(), query::ChoiceKind::External);
+    assert_eq!(runtime.dual_choice(), query::ChoiceKind::Internal);
     runtime.step(query::Event::Complete).unwrap();
     assert_eq!(runtime.state(), query::RuntimeState::Ready);
     assert!(runtime.step(query::Event::Sync).is_err());

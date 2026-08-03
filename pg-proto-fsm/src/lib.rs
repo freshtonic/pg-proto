@@ -280,6 +280,15 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     match (self.state, event) { #(#event_choice_arms,)* _ => None }
                 }
 
+                /// Returns the direction of one legal event for the dual role.
+                #[must_use]
+                pub const fn dual_event_choice(&self, event: Event) -> Option<ChoiceKind> {
+                    match self.event_choice(event) {
+                        Some(choice) => Some(choice.dual()),
+                        None => None,
+                    }
+                }
+
                 pub fn step(&mut self, event: Event) -> Result<(), TransitionError> {
                     self.state = match (self.state, event) {
                         #(#transition_arms,)*

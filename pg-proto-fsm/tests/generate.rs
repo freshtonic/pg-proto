@@ -64,6 +64,14 @@ fn mixed_states_retain_each_transition_direction() {
         runtime.event_choice(duplex::Event::Receive),
         Some(duplex::ChoiceKind::External)
     );
+    assert_eq!(
+        runtime.dual_event_choice(duplex::Event::Send),
+        Some(duplex::ChoiceKind::External)
+    );
+    assert_eq!(
+        runtime.dual_event_choice(duplex::Event::Receive),
+        Some(duplex::ChoiceKind::Internal)
+    );
     runtime.step(duplex::Event::Send).unwrap();
     runtime.step(duplex::Event::Receive).unwrap();
     runtime.step(duplex::Event::Close).unwrap();

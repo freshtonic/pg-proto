@@ -9,7 +9,7 @@ use pg_proto::{
         NegotiateProtocolVersion, Parse,
     },
     demux::SessionItem,
-    pre_startup::Startup,
+    pre_startup::{Negotiation, Startup},
     session::{
         AwaitingReadyTransition, CopyOutTransition, DrainingTransition, ReadyState,
         SimpleTransition,
@@ -19,11 +19,17 @@ use pg_proto::{
 };
 use postgres_protocol::authentication::{
     md5_hash,
-    sasl::{ChannelBinding, SCRAM_SHA_256, ScramSha256},
+    sasl::{ChannelBinding, SCRAM_SHA_256, SCRAM_SHA_256_PLUS, ScramSha256},
 };
+use rcgen::generate_simple_self_signed;
+use rustls::{
+    ClientConfig, RootCertStore,
+    pki_types::{CertificateDer, ServerName},
+};
+use std::sync::Arc;
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{ImageExt, runners::AsyncRunner},
+    testcontainers::{CopyTargetOptions, ImageExt, runners::AsyncRunner},
 };
 
 /// Exercises our bytes directly against the official `PostgreSQL` image. Kept
@@ -216,6 +222,122 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
     let awaiting_ready = awaiting_ok.authentication_ok();
     let ready = finish_startup(awaiting_ready).await?;
     let _transport = ready.into_transport();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+#[allow(clippy::too_many_lines)]
+async fn scram_sha_256_plus_over_typed_tls_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let generated = generate_simple_self_signed(["localhost".into()])?;
+    let certificate_pem = generated.cert.pem();
+    let private_key_pem = generated.signing_key.serialize_pem();
+    let certificate = CertificateDer::from(generated.cert.der().to_vec());
+    let postgres = Postgres::default()
+        .with_tag("18-alpine")
+        .with_user("postgres:root")
+        .with_copy_to(
+            CopyTargetOptions::new("/tmp/server.crt").with_mode(0o644),
+            certificate_pem.into_bytes(),
+        )
+        .with_copy_to(
+            CopyTargetOptions::new("/tmp/server.key").with_mode(0o640),
+            private_key_pem.into_bytes(),
+        )
+        .with_cmd([
+            "postgres",
+            "-c",
+            "ssl=on",
+            "-c",
+            "ssl_cert_file=/tmp/server.crt",
+            "-c",
+            "ssl_key_file=/tmp/server.key",
+        ])
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    let mut roots = RootCertStore::empty();
+    roots.add(certificate)?;
+    let client_config = Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+
+    let mut awaiting_reply = Conn::new(Buffered::new(stream)).request_ssl();
+    awaiting_reply.flush().await?;
+    let Negotiation::Accepted(handshake) = awaiting_reply.receive_ssl_reply().await? else {
+        panic!("PostgreSQL rejected SSLRequest")
+    };
+    let pre_startup = handshake
+        .connect_tls(ServerName::try_from("localhost")?, client_config)
+        .await?;
+    let message = StartupMessage {
+        version: ProtocolVersion::V3_2,
+        parameters: BTreeMap::from([
+            (Bytes::from_static(b"user"), Bytes::from_static(b"postgres")),
+            (
+                Bytes::from_static(b"database"),
+                Bytes::from_static(b"postgres"),
+            ),
+        ]),
+    };
+    let (mut startup, packet) = pre_startup.startup(&message)?;
+    startup.push_startup_packet(&packet);
+    startup.flush().await?;
+    let mut auth = startup.authentication();
+
+    let (sasl_initial, mechanisms) = loop {
+        if let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+            auth.receive().await?
+        {
+            match auth.offer(authentication)? {
+                AuthOffer::Sasl { conn, mechanisms } => break (conn, mechanisms),
+                _ => panic!("PostgreSQL did not offer SASL over TLS"),
+            }
+        }
+    };
+    assert!(mechanisms.contains(&Bytes::from_static(SCRAM_SHA_256_PLUS.as_bytes())));
+    let binding = sasl_initial.tls_server_end_point().to_vec();
+    let mut scram = ScramSha256::new(b"postgres", ChannelBinding::tls_server_end_point(binding));
+    let (mut sasl, initial) = sasl_initial.scram_sha_256_plus(scram.message())?;
+    sasl.push_frame(initial)?;
+    sasl.flush().await?;
+
+    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslContinue(
+        server_first,
+    ))) = sasl.receive().await?
+    else {
+        panic!("PostgreSQL did not continue SCRAM-PLUS")
+    };
+    scram.update(&server_first)?;
+    let (mut sasl, response) = sasl.continue_with(Bytes::copy_from_slice(scram.message()));
+    sasl.push_frame(response)?;
+    sasl.flush().await?;
+    let SessionItem::Message(BackendMessage::Authentication(Authentication::SaslFinal(
+        server_final,
+    ))) = sasl.receive().await?
+    else {
+        panic!("PostgreSQL did not finish SCRAM-PLUS")
+    };
+    scram.finish(&server_final)?;
+    let mut awaiting_ok = sasl.server_final(server_final);
+    let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
+        awaiting_ok.receive().await?
+    else {
+        panic!("PostgreSQL did not confirm SCRAM-PLUS authentication")
+    };
+    let mut awaiting_ready = awaiting_ok.authentication_ok();
+    let ready = loop {
+        let item = awaiting_ready.receive().await?;
+        match awaiting_ready.offer_ready(item) {
+            Ok(ready) => break ready,
+            Err((next, _)) => awaiting_ready = next,
+        }
+    };
+    ready.into_transport();
     Ok(())
 }
 

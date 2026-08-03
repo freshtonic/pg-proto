@@ -134,7 +134,7 @@ neutral composition harnesses and examples.
 - [x] Expose cleanliness evidence and policy hooks for transactions, GUC changes,
   LISTEN/NOTIFY, advisory locks, portals, and prepared statements; pool policy
   remains downstream.
-- [ ] Add a neutral end-to-end intermediary harness covering asymmetric auth/TLS,
+- [x] Add a neutral end-to-end intermediary harness covering asymmetric auth/TLS,
   message rewriting, cancellation, COPY, replication, and connection reuse.
 - [ ] Document the application boundary and provide a proxy-construction example
   showing where downstream policy plugs in.

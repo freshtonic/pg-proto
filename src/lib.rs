@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod cancel;
+pub mod cleanliness;
 pub mod codec;
 pub mod credentials;
 pub mod demux;

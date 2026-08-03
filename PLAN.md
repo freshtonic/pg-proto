@@ -131,7 +131,7 @@ neutral composition harnesses and examples.
   embedding a production registry or cancellation policy.
 - [x] Expose ordered forwarding hooks for notices, notifications, parameter
   statuses, and command attribution without prescribing their destination.
-- [ ] Expose cleanliness evidence and policy hooks for transactions, GUC changes,
+- [x] Expose cleanliness evidence and policy hooks for transactions, GUC changes,
   LISTEN/NOTIFY, advisory locks, portals, and prepared statements; pool policy
   remains downstream.
 - [ ] Add a neutral end-to-end intermediary harness covering asymmetric auth/TLS,

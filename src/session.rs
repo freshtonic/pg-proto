@@ -66,6 +66,20 @@ pub enum DrainingTransition<S, C> {
 }
 
 #[derive(Debug)]
+pub enum CopyOutTransition<S, C> {
+    Data(Conn<S, CopyOut, C>, Bytes),
+    Done(Conn<S, AwaitingReady, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum CopyBothReceive<S, C> {
+    Data(Conn<S, CopyBoth, C>, Bytes),
+    Done(Conn<S, AwaitingReady, C>),
+    Error(Conn<S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
 pub enum ReadyState<S, C> {
     Clean(Conn<S, Ready, C>),
     Dirty {
@@ -278,12 +292,24 @@ impl<S, C> Conn<S, CopyIn, C> {
 }
 
 impl<S, C> Conn<S, CopyOut, C> {
-    pub fn receive_copy_data(self, _data: Bytes) -> Self {
-        self
-    }
-
-    pub fn copy_done(self) -> Conn<S, AwaitingReady, C> {
-        self.transition()
+    /// Advances COPY OUT using backend evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and item when it is illegal in COPY OUT.
+    pub fn offer(self, item: SessionItem) -> Result<CopyOutTransition<S, C>, (Self, SessionItem)> {
+        match item {
+            SessionItem::Message(BackendMessage::CopyData(data)) => {
+                Ok(CopyOutTransition::Data(self, data))
+            }
+            SessionItem::Message(BackendMessage::CopyDone) => {
+                Ok(CopyOutTransition::Done(self.transition()))
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                Ok(CopyOutTransition::Error(self.transition(), error))
+            }
+            item => Err((self, item)),
+        }
     }
 }
 
@@ -298,12 +324,28 @@ impl<S, C> Conn<S, CopyBoth, C> {
         )
     }
 
-    pub fn receive_copy_data(self, _data: Bytes) -> Self {
-        self
-    }
-
     pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
+    }
+
+    /// Receives the backend half of a bidirectional COPY session.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged connection and item when it is illegal in COPY BOTH.
+    pub fn offer(self, item: SessionItem) -> Result<CopyBothReceive<S, C>, (Self, SessionItem)> {
+        match item {
+            SessionItem::Message(BackendMessage::CopyData(data)) => {
+                Ok(CopyBothReceive::Data(self, data))
+            }
+            SessionItem::Message(BackendMessage::CopyDone) => {
+                Ok(CopyBothReceive::Done(self.transition()))
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                Ok(CopyBothReceive::Error(self.transition(), error))
+            }
+            item => Err((self, item)),
+        }
     }
 }
 

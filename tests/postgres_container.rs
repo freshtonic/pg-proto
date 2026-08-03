@@ -10,7 +10,10 @@ use pg_proto::{
     },
     demux::SessionItem,
     pre_startup::Startup,
-    session::{AwaitingReadyTransition, DrainingTransition, ReadyState, SimpleTransition},
+    session::{
+        AwaitingReadyTransition, CopyOutTransition, DrainingTransition, ReadyState,
+        SimpleTransition,
+    },
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
@@ -435,6 +438,66 @@ async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn E
             DrainingTransition::Ready(ReadyState::Clean(ready)) => break ready,
             DrainingTransition::Ready(ReadyState::Dirty { .. }) => {
                 return Err("error drain left a dirty connection".into());
+            }
+        }
+    };
+    let _transport = ready.release();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn copy_out_nested_session_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let ready = trust_ready(port).await?;
+    let (mut query, frame) = ready.push_query(b"COPY (SELECT generate_series(1, 2)) TO STDOUT")?;
+    query.push_frame(frame)?;
+    query.flush().await?;
+
+    let mut copy = loop {
+        let item = query.receive().await?;
+        match query.offer(item) {
+            Ok(SimpleTransition::Continue(next, _)) | Err((next, _)) => query = next,
+            Ok(SimpleTransition::CopyOut(copy, response)) => {
+                assert_eq!(response.column_formats, [0]);
+                break copy;
+            }
+            Ok(_) => return Err("COPY OUT did not enter its nested session".into()),
+        }
+    };
+
+    let mut output = Vec::new();
+    let mut awaiting = loop {
+        let item = copy.receive().await?;
+        match copy.offer(item) {
+            Ok(CopyOutTransition::Data(next, data)) => {
+                copy = next;
+                output.extend_from_slice(&data);
+            }
+            Ok(CopyOutTransition::Done(awaiting)) => break awaiting,
+            Ok(CopyOutTransition::Error(_, error)) => {
+                return Err(format!("COPY OUT failed: {error:?}").into());
+            }
+            Err((next, _)) => copy = next,
+        }
+    };
+    assert_eq!(output, b"1\n2\n");
+
+    let ready = loop {
+        let item = awaiting.receive().await?;
+        match awaiting.offer(item) {
+            AwaitingReadyTransition::Continue(next, _) => awaiting = next,
+            AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) => break ready,
+            AwaitingReadyTransition::Ready(ReadyState::Dirty { .. }) => {
+                return Err("COPY OUT left a dirty connection".into());
+            }
+            AwaitingReadyTransition::Error(_, error) => {
+                return Err(format!("COPY OUT completion failed: {error:?}").into());
             }
         }
     };

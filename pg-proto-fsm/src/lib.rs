@@ -9,7 +9,7 @@ use railroad::{
     VerticalGrid,
 };
 use syn::{
-    Ident, Result, Token, Visibility, braced,
+    Ident, Result, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
@@ -42,6 +42,7 @@ struct Transition {
     choice: Option<ChoiceKind>,
     event: Ident,
     method: Ident,
+    payload: Option<Type>,
     target: Ident,
     cleanliness: Option<Ident>,
 }
@@ -109,6 +110,15 @@ impl Parse for Transition {
         let method_content;
         syn::parenthesized!(method_content in input);
         let method = method_content.parse()?;
+        let payload = if method_content.peek(Token![:]) {
+            method_content.parse::<Token![:]>()?;
+            Some(method_content.parse()?)
+        } else {
+            None
+        };
+        if !method_content.is_empty() {
+            return Err(method_content.error("unexpected transition method tokens"));
+        }
         input.parse::<Token![=>]>()?;
         let target = input.parse()?;
         let cleanliness = if input.peek(syn::token::Bracket) {
@@ -122,6 +132,7 @@ impl Parse for Transition {
             choice,
             event,
             method,
+            payload,
             target,
             cleanliness,
         })
@@ -244,12 +255,36 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .cleanliness
                 .as_ref()
                 .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
-            quote! {
-                #[must_use]
-                pub fn #method(self) -> TypedSession<Transport, #target, #cleanliness> {
-                    TypedSession {
-                        transport: self.transport,
-                        _state: ::core::marker::PhantomData,
+            if let Some(payload) = &transition.payload {
+                quote! {
+                    pub fn #method<Output, Error>(
+                        mut self,
+                        payload: #payload,
+                        handle: impl FnOnce(
+                            &mut Transport,
+                            #payload,
+                        ) -> ::core::result::Result<Output, Error>,
+                    ) -> ::core::result::Result<
+                        (TypedSession<Transport, #target, #cleanliness>, Output),
+                        (Self, Error),
+                    > {
+                        match handle(&mut self.transport, payload) {
+                            Ok(output) => Ok((TypedSession {
+                                transport: self.transport,
+                                _state: ::core::marker::PhantomData,
+                            }, output)),
+                            Err(error) => Err((self, error)),
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    #[must_use]
+                    pub fn #method(self) -> TypedSession<Transport, #target, #cleanliness> {
+                        TypedSession {
+                            transport: self.transport,
+                            _state: ::core::marker::PhantomData,
+                        }
                     }
                 }
             }
@@ -269,12 +304,36 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .cleanliness
                 .as_ref()
                 .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
-            quote! {
-                #[must_use]
-                pub fn #method(self) -> DualTypedSession<Transport, #target, #cleanliness> {
-                    DualTypedSession {
-                        transport: self.transport,
-                        _state: ::core::marker::PhantomData,
+            if let Some(payload) = &transition.payload {
+                quote! {
+                    pub fn #method<Output, Error>(
+                        mut self,
+                        payload: #payload,
+                        handle: impl FnOnce(
+                            &mut Transport,
+                            #payload,
+                        ) -> ::core::result::Result<Output, Error>,
+                    ) -> ::core::result::Result<
+                        (DualTypedSession<Transport, #target, #cleanliness>, Output),
+                        (Self, Error),
+                    > {
+                        match handle(&mut self.transport, payload) {
+                            Ok(output) => Ok((DualTypedSession {
+                                transport: self.transport,
+                                _state: ::core::marker::PhantomData,
+                            }, output)),
+                            Err(error) => Err((self, error)),
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    #[must_use]
+                    pub fn #method(self) -> DualTypedSession<Transport, #target, #cleanliness> {
+                        DualTypedSession {
+                            transport: self.transport,
+                            _state: ::core::marker::PhantomData,
+                        }
                     }
                 }
             }
@@ -550,11 +609,15 @@ fn railroad_svg(states: &[State]) -> String {
                         unreachable!("validated mixed transition has a direction")
                     }
                 };
+                let event = match &transition.payload {
+                    Some(payload) => format!("{}: {}", transition.event, quote!(#payload)),
+                    None => transition.event.to_string(),
+                };
                 match &transition.cleanliness {
                     Some(cleanliness) => {
-                        format!("{choice} {} [{cleanliness}]", transition.event)
+                        format!("{choice} {event} [{cleanliness}]")
                     }
-                    None => format!("{choice} {}", transition.event),
+                    None => format!("{choice} {event}"),
                 }
             };
             let self_loops = state

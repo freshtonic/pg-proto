@@ -115,3 +115,6 @@ work using that feature is complete.
   - [x] A simple-query boundary invalidates the unnamed statement only.
 - [ ] Attach typed message payloads and fallible results to generated grammar
   transitions, beginning with frontend extended-query construction.
+  - [x] Add typed payload syntax and state-preserving fallible handlers to the
+    proc macro and railroad output.
+  - [ ] Apply payloads to frontend extended-query transitions.

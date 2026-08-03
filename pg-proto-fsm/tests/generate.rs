@@ -4,7 +4,7 @@ protocol! {
     pub mod query {
         initial Ready;
         Ready internal {
-            Query(query) => Simple [Dirty],
+            Query(query: u8) => Simple [Dirty],
             Parse(parse) => Building,
         }
         Simple external {
@@ -52,15 +52,33 @@ fn generated_typed_sessions_carry_transport_and_cleanliness() {
 
     let session: query::TypedSession<Vec<u8>, query::Ready, Pristine> =
         query::TypedSession::with_transport(vec![1, 2, 3]);
-    let session: query::TypedSession<Vec<u8>, query::Ready, query::Dirty> =
-        session.query().complete();
-    assert_eq!(session.into_transport(), [1, 2, 3]);
+    let (session, previous_len): (
+        query::TypedSession<Vec<u8>, query::Simple, query::Dirty>,
+        usize,
+    ) = session
+        .query(4, |transport, payload| {
+            let previous_len = transport.len();
+            transport.push(payload);
+            Ok::<_, ()>(previous_len)
+        })
+        .unwrap();
+    assert_eq!(previous_len, 3);
+    let session: query::TypedSession<Vec<u8>, query::Ready, query::Dirty> = session.complete();
+    assert_eq!(session.into_transport(), [1, 2, 3, 4]);
 
     let dual: query::DualTypedSession<Vec<u8>, query::Ready, Pristine> =
         query::DualTypedSession::with_transport(vec![4, 5]);
-    let dual: query::DualTypedSession<Vec<u8>, query::Ready, query::Dirty> =
-        dual.query().complete();
-    assert_eq!(dual.into_transport(), [4, 5]);
+    let (dual, ()): (
+        query::DualTypedSession<Vec<u8>, query::Simple, query::Dirty>,
+        (),
+    ) = dual
+        .query(6, |transport, payload| {
+            transport.push(payload);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    let dual: query::DualTypedSession<Vec<u8>, query::Ready, query::Dirty> = dual.complete();
+    assert_eq!(dual.into_transport(), [4, 5, 6]);
 }
 
 #[test]
@@ -81,7 +99,20 @@ fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.contains("Sync"));
     assert!(query::QUERY_RAILROAD_SVG.contains("class=\"repeat\""));
     assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Parse"));
-    assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Query [Dirty]"));
+    assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Query: u8 [Dirty]"));
+}
+
+#[test]
+fn fallible_payload_handler_preserves_state_on_error() {
+    struct Clean;
+
+    let ready: query::TypedSession<Vec<u8>, query::Ready, Clean> =
+        query::TypedSession::with_transport(vec![1]);
+    let (ready, error) = ready
+        .query(2, |_transport, _payload| Err::<(), _>("rejected"))
+        .unwrap_err();
+    assert_eq!(error, "rejected");
+    assert_eq!(ready.into_transport(), [1]);
 }
 
 #[test]

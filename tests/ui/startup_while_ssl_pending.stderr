@@ -1,7 +1,7 @@
-error[E0599]: no method named `startup` found for struct `Conn<(), AwaitingSslReply>` in the current scope
+error[E0599]: no method named `startup` found for struct `Conn<(), pg_proto::pre_startup::AwaitingSslReply>` in the current scope
   --> tests/ui/startup_while_ssl_pending.rs:11:21
    |
 11 |     let _ = pending.startup(&message);
-   |                     ^^^^^^^ method not found in `Conn<(), AwaitingSslReply>`
+   |                     ^^^^^^^ method not found in `Conn<(), pg_proto::pre_startup::AwaitingSslReply>`
    |
-   = note: the method was found for `Conn<S, PreStartup>`
+   = note: the method was found for `Conn<S, pg_proto::pre_startup::PreStartup>`

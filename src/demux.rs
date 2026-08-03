@@ -23,6 +23,13 @@ pub struct Notification {
     pub payload: Bytes,
 }
 
+/// One ordered `ParameterStatus` update retained for proxy forwarding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParameterStatus {
+    pub name: Bytes,
+    pub value: Bytes,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CancelKey {
     pub process_id: u32,
@@ -50,6 +57,7 @@ pub struct Demux {
     command: CommandIndex,
     pending_notices: Vec<TaggedNotice>,
     notifications: VecDeque<Notification>,
+    parameter_statuses: VecDeque<ParameterStatus>,
     parameters: BTreeMap<Bytes, Bytes>,
     startup_parameters: Option<BTreeMap<Bytes, Bytes>>,
     parameters_changed: bool,
@@ -72,7 +80,9 @@ impl Demux {
                 None
             }
             BackendMessage::ParameterStatus { name, value } => {
-                self.parameters.insert(name, value);
+                self.parameters.insert(name.clone(), value.clone());
+                self.parameter_statuses
+                    .push_back(ParameterStatus { name, value });
                 if let Some(startup_parameters) = &self.startup_parameters {
                     self.parameters_changed = self.parameters != *startup_parameters;
                 }
@@ -150,6 +160,11 @@ impl Demux {
     pub fn pop_notification(&mut self) -> Option<Notification> {
         self.notifications.pop_front()
     }
+
+    /// Removes the next ordered status update for forwarding to a client.
+    pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
+        self.parameter_statuses.pop_front()
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +225,44 @@ mod tests {
             value: Bytes::from_static(b"LATIN1"),
         });
         assert!(demux.parameters_changed());
+    }
+
+    #[test]
+    fn parameter_statuses_remain_ordered_for_proxy_forwarding() {
+        let mut demux = Demux::default();
+        for (name, value) in [
+            (b"TimeZone".as_slice(), b"UTC".as_slice()),
+            (b"TimeZone", b"GMT"),
+        ] {
+            assert!(
+                demux
+                    .route(BackendMessage::ParameterStatus {
+                        name: Bytes::copy_from_slice(name),
+                        value: Bytes::copy_from_slice(value),
+                    })
+                    .is_none()
+            );
+        }
+
+        assert_eq!(
+            demux.pop_parameter_status(),
+            Some(ParameterStatus {
+                name: Bytes::from_static(b"TimeZone"),
+                value: Bytes::from_static(b"UTC"),
+            })
+        );
+        assert_eq!(
+            demux.pop_parameter_status(),
+            Some(ParameterStatus {
+                name: Bytes::from_static(b"TimeZone"),
+                value: Bytes::from_static(b"GMT"),
+            })
+        );
+        assert_eq!(demux.pop_parameter_status(), None);
+        assert_eq!(
+            demux.parameters().get(b"TimeZone".as_slice()),
+            Some(&Bytes::from_static(b"GMT"))
+        );
     }
 
     #[test]

@@ -52,6 +52,16 @@ pub enum ResourceError {
 }
 
 impl<'id> ResourceScope<'id> {
+    /// Records a simple-query boundary, which destroys the unnamed statement.
+    pub fn simple_query_boundary(&mut self) {
+        self.statements.remove(b"".as_slice());
+    }
+
+    /// Records transaction end, which destroys the unnamed portal.
+    pub fn transaction_ended(&mut self) {
+        self.portals.remove(b"".as_slice());
+    }
+
     /// Allocates a statement token and reconstructable upstream `Parse` message.
     ///
     /// # Errors
@@ -325,6 +335,51 @@ mod tests {
                     vec![],
                 )
                 .expect("unnamed Bind replaces the prior unnamed portal");
+        });
+    }
+
+    #[test]
+    fn protocol_boundaries_invalidate_unnamed_resource_tokens() {
+        with_resources(|mut resources| {
+            let (statement, _) = resources
+                .prepare(
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::from_static(b"select 1"),
+                    vec![],
+                )
+                .unwrap();
+            let (portal, _) = resources
+                .bind(
+                    &statement,
+                    Bytes::new(),
+                    Bytes::new(),
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .unwrap();
+
+            resources.simple_query_boundary();
+            assert_eq!(
+                resources
+                    .bind(
+                        &statement,
+                        Bytes::from_static(b"p"),
+                        Bytes::from_static(b"p"),
+                        vec![],
+                        vec![],
+                        vec![],
+                    )
+                    .unwrap_err(),
+                ResourceError::UnknownStatement
+            );
+
+            resources.transaction_ended();
+            assert_eq!(
+                resources.close_portal(portal).unwrap_err(),
+                ResourceError::UnknownPortal
+            );
         });
     }
 }

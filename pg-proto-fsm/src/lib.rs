@@ -550,7 +550,12 @@ fn railroad_svg(states: &[State]) -> String {
                         unreachable!("validated mixed transition has a direction")
                     }
                 };
-                format!("{choice} {}", transition.event)
+                match &transition.cleanliness {
+                    Some(cleanliness) => {
+                        format!("{choice} {} [{cleanliness}]", transition.event)
+                    }
+                    None => format!("{choice} {}", transition.event),
+                }
             };
             let self_loops = state
                 .transitions

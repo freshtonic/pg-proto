@@ -150,7 +150,31 @@ mod tests {
     use bytes::Bytes;
 
     use super::Intermediary;
-    use crate::grammar::{backend, frontend};
+    use crate::{
+        Conn, Pristine,
+        auth::{Auth, AuthOffer, SaslInitial, TlsServerEndPoint},
+        codec::Authentication,
+        grammar::{backend, frontend},
+        server_auth::{ServerAuth, ServerPassword},
+    };
+
+    #[derive(Debug)]
+    struct ClientFacingTls;
+
+    #[derive(Debug)]
+    struct UpstreamTls;
+
+    impl TlsServerEndPoint for ClientFacingTls {
+        fn tls_server_end_point(&self) -> &[u8] {
+            b"client-facing-certificate"
+        }
+    }
+
+    impl TlsServerEndPoint for UpstreamTls {
+        fn tls_server_end_point(&self) -> &[u8] {
+            b"upstream-certificate"
+        }
+    }
 
     #[test]
     fn each_side_transitions_without_coupling_the_other() {
@@ -185,6 +209,44 @@ mod tests {
             backend::TypedSession<(), backend::Simple, backend::Dirty>,
             frontend::TypedSession<(), frontend::Simple, frontend::Dirty>,
         ) = intermediary.into_parts();
+    }
+
+    #[test]
+    fn tls_and_authentication_mechanisms_remain_asymmetric() {
+        let downstream: Conn<ClientFacingTls, ServerAuth, Pristine> =
+            Conn::new(ClientFacingTls).transition();
+        let upstream: Conn<UpstreamTls, Auth, Pristine> = Conn::new(UpstreamTls).transition();
+
+        let (downstream, cleartext_request) = downstream.request_cleartext().unwrap();
+        let AuthOffer::Sasl {
+            conn: upstream,
+            mechanisms,
+        } = upstream
+            .offer(Authentication::Sasl {
+                mechanisms: vec![Bytes::from_static(b"SCRAM-SHA-256-PLUS")],
+            })
+            .unwrap()
+        else {
+            panic!("upstream did not independently select SASL")
+        };
+        assert_eq!(cleartext_request.tag, b'R');
+        assert_eq!(mechanisms, [Bytes::from_static(b"SCRAM-SHA-256-PLUS")]);
+
+        let intermediary: Intermediary<
+            Conn<ClientFacingTls, ServerPassword, Pristine>,
+            Conn<UpstreamTls, SaslInitial, Pristine>,
+        > = Intermediary::new(downstream, upstream);
+        assert_eq!(
+            intermediary.downstream().tls_server_end_point(),
+            b"client-facing-certificate"
+        );
+        assert_eq!(
+            intermediary.upstream().tls_server_end_point(),
+            b"upstream-certificate"
+        );
+        let (downstream, upstream) = intermediary.into_parts();
+        let _downstream_transport = downstream.into_transport();
+        let _upstream_transport = upstream.into_transport();
     }
 
     #[test]

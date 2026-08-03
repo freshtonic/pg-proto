@@ -121,7 +121,7 @@ neutral composition harnesses and examples.
   every discovered obligation without importing application policy.
 - [x] Define a neutral client ↔ intermediary ↔ upstream composition API that
   retains independent typed sessions on both sides.
-- [ ] Prove independent downstream and upstream TLS/authentication mechanisms and
+- [x] Prove independent downstream and upstream TLS/authentication mechanisms and
   credentials can be composed without coupling their state or policy.
 - [x] Expose typed interception/replacement hooks sufficient for arbitrary
   downstream SQL and result rewriting, demonstrated by a non-CipherStash example.

@@ -14,6 +14,9 @@ The crate currently includes:
 - a filtered async-message demultiplexer with positionally tagged notices;
 - client and server simple, extended, error-draining, and COPY sessions;
 - transaction and parameter cleanliness evidence for pool release;
+- conservative query/resource tainting with explicit stateless-query escape hatches;
+- ordered `ParameterStatus` and notification sinks for proxy forwarding;
+- a grammar proc macro which emits typestates, a runtime FSM, and railroad SVG;
 - compile-fail tests for illegal protocol transitions; and
 - Testcontainers coverage against the official PostgreSQL 18 image.
 
@@ -66,6 +69,8 @@ when a Docker-compatible runtime is available:
 cargo test --test postgres_container -- --ignored
 ```
 
-Layer 2—the protocol grammar macro, generated typestates/runtime FSM, and railroad
-SVG—is the next major construction stage. Multiparty proxy verification remains
-after the generated two-party roles are solid.
+Layer 2 has a working foundation: one grammar declaration generates typestate
+transitions, a runtime FSM for differential testing, and railroad SVG. The next
+construction work is expanding that generated grammar over the complete handwritten
+client and server roles. Multiparty proxy verification remains after the generated
+two-party roles are solid.

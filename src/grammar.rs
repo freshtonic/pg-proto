@@ -176,6 +176,7 @@ protocol! {
             Continue(continue_response) => Simple,
             CopyIn(copy_in) => SimpleCopyIn,
             CopyOut(copy_out) => SimpleCopyOut,
+            CopyBoth(copy_both) => SimpleCopyBoth,
             Ready(ready) => Ready,
             Error(error) => SimpleError,
         }
@@ -208,6 +209,7 @@ protocol! {
             Continue(continue_response) => ExecuteResponse,
             CopyIn(copy_in) => ExtendedCopyIn,
             CopyOut(copy_out) => ExtendedCopyOut,
+            CopyBoth(copy_both) => ExtendedCopyBoth,
             CommandComplete(command_complete) => Building,
             PortalSuspended(portal_suspended) => Building,
             Error(error) => ExtendedError,
@@ -270,6 +272,54 @@ protocol! {
         }
         ExtendedCopyOutDone internal {
             CommandComplete(command_complete) => Building,
+        }
+        SimpleCopyBoth mixed {
+            internal SendData(send_data) => SimpleCopyBoth,
+            external ReceiveData(receive_data) => SimpleCopyBoth,
+            internal SendDone(send_done) => SimpleCopyBothServerDone,
+            external ReceiveDone(receive_done) => SimpleCopyBothClientDone,
+            external Fail(fail) => SimpleCopyBothFailed,
+            internal Error(error) => SimpleCopyReady,
+        }
+        SimpleCopyBothClientDone internal {
+            SendData(send_data) => SimpleCopyBothClientDone,
+            SendDone(send_done) => SimpleCopyBothDone,
+            Error(error) => SimpleCopyReady,
+        }
+        SimpleCopyBothServerDone external {
+            ReceiveData(receive_data) => SimpleCopyBothServerDone,
+            ReceiveDone(receive_done) => SimpleCopyBothDone,
+            Fail(fail) => SimpleCopyBothFailed,
+        }
+        SimpleCopyBothDone internal {
+            CommandComplete(command_complete) => SimpleCopyReady,
+        }
+        SimpleCopyBothFailed internal {
+            Error(error) => SimpleCopyReady,
+        }
+        ExtendedCopyBoth mixed {
+            internal SendData(send_data) => ExtendedCopyBoth,
+            external ReceiveData(receive_data) => ExtendedCopyBoth,
+            internal SendDone(send_done) => ExtendedCopyBothServerDone,
+            external ReceiveDone(receive_done) => ExtendedCopyBothClientDone,
+            external Fail(fail) => ExtendedCopyBothFailed,
+            internal Error(error) => ExtendedError,
+        }
+        ExtendedCopyBothClientDone internal {
+            SendData(send_data) => ExtendedCopyBothClientDone,
+            SendDone(send_done) => ExtendedCopyBothDone,
+            Error(error) => ExtendedError,
+        }
+        ExtendedCopyBothServerDone external {
+            ReceiveData(receive_data) => ExtendedCopyBothServerDone,
+            ReceiveDone(receive_done) => ExtendedCopyBothDone,
+            Fail(fail) => ExtendedCopyBothFailed,
+        }
+        ExtendedCopyBothDone internal {
+            CommandComplete(command_complete) => Building,
+        }
+        ExtendedCopyBothFailed internal {
+            Error(error) => ExtendedError,
         }
         Terminated external {}
     }
@@ -372,6 +422,48 @@ mod tests {
         }
         assert_eq!(runtime.state(), backend::RuntimeState::Building);
         runtime.step(backend::Event::Sync).unwrap();
+        runtime.step(backend::Event::Ready).unwrap();
+        assert_eq!(runtime.state(), backend::RuntimeState::Ready);
+    }
+
+    #[test]
+    fn generated_backend_copy_both_tracks_independent_half_closes() {
+        let _server_first = backend::Session::new()
+            .query()
+            .copy_both()
+            .send_data()
+            .receive_data()
+            .send_done()
+            .receive_data()
+            .receive_done()
+            .command_complete()
+            .ready();
+        let _client_first = backend::Session::new()
+            .execute()
+            .copy_both()
+            .receive_done()
+            .send_data()
+            .send_done()
+            .command_complete()
+            .sync()
+            .ready();
+
+        let mut runtime = backend::RuntimeFsm::new();
+        runtime.step(backend::Event::Query).unwrap();
+        runtime.step(backend::Event::CopyBoth).unwrap();
+        assert_eq!(runtime.choice(), backend::ChoiceKind::Mixed);
+        assert_eq!(
+            runtime.event_choice(backend::Event::SendData),
+            Some(backend::ChoiceKind::Internal)
+        );
+        assert_eq!(
+            runtime.event_choice(backend::Event::ReceiveData),
+            Some(backend::ChoiceKind::External)
+        );
+        runtime.step(backend::Event::SendDone).unwrap();
+        assert!(runtime.step(backend::Event::SendData).is_err());
+        runtime.step(backend::Event::ReceiveDone).unwrap();
+        runtime.step(backend::Event::CommandComplete).unwrap();
         runtime.step(backend::Event::Ready).unwrap();
         assert_eq!(runtime.state(), backend::RuntimeState::Ready);
     }

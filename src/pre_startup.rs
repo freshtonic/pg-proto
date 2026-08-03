@@ -54,6 +54,77 @@ impl TryFrom<u8> for EncryptionReply {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidEncryptionReply(pub u8);
 
+/// libpq-compatible TLS negotiation policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SslMode {
+    Disable,
+    Allow,
+    Prefer,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CertificateVerification {
+    None,
+    CertificateAuthority,
+    CertificateAuthorityAndHost,
+}
+
+/// Actions needed to apply an [`SslMode`] across connection attempts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SslStrategy {
+    pub request_on_first_connection: bool,
+    pub retry_with_ssl_after_plaintext_failure: bool,
+    pub allow_server_rejection: bool,
+    pub verification: CertificateVerification,
+}
+
+impl SslMode {
+    #[must_use]
+    pub const fn strategy(self) -> SslStrategy {
+        match self {
+            Self::Disable => SslStrategy {
+                request_on_first_connection: false,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: true,
+                verification: CertificateVerification::None,
+            },
+            Self::Allow => SslStrategy {
+                request_on_first_connection: false,
+                retry_with_ssl_after_plaintext_failure: true,
+                allow_server_rejection: true,
+                verification: CertificateVerification::None,
+            },
+            Self::Prefer => SslStrategy {
+                request_on_first_connection: true,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: true,
+                verification: CertificateVerification::None,
+            },
+            Self::Require => SslStrategy {
+                request_on_first_connection: true,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: false,
+                verification: CertificateVerification::None,
+            },
+            Self::VerifyCa => SslStrategy {
+                request_on_first_connection: true,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: false,
+                verification: CertificateVerification::CertificateAuthority,
+            },
+            Self::VerifyFull => SslStrategy {
+                request_on_first_connection: true,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: false,
+                verification: CertificateVerification::CertificateAuthorityAndHost,
+            },
+        }
+    }
+}
+
 /// A reply whose branches deliberately have different typestates.
 #[derive(Debug)]
 pub enum Negotiation<S, Handshake> {
@@ -180,5 +251,31 @@ mod tests {
             parameters: std::collections::BTreeMap::new(),
         };
         let (_startup, _) = upgraded.startup(&message).expect("valid startup message");
+    }
+
+    #[test]
+    fn sslmode_allow_starts_plaintext_then_reconnects_with_tls() {
+        assert_eq!(
+            SslMode::Allow.strategy(),
+            SslStrategy {
+                request_on_first_connection: false,
+                retry_with_ssl_after_plaintext_failure: true,
+                allow_server_rejection: true,
+                verification: CertificateVerification::None,
+            }
+        );
+    }
+
+    #[test]
+    fn verify_full_requires_tls_ca_and_hostname() {
+        assert_eq!(
+            SslMode::VerifyFull.strategy(),
+            SslStrategy {
+                request_on_first_connection: true,
+                retry_with_ssl_after_plaintext_failure: false,
+                allow_server_rejection: false,
+                verification: CertificateVerification::CertificateAuthorityAndHost,
+            }
+        );
     }
 }

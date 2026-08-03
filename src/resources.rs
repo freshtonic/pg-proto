@@ -1,20 +1,63 @@
 //! Branded prepared-statement and portal resources with proxy name rewriting.
 
-use std::{cell::Cell, collections::HashMap, marker::PhantomData};
+use std::{cell::Cell, collections::HashMap, io, marker::PhantomData};
 
 use bytes::Bytes;
 
-use crate::codec::{Bind, Close, Describe, DescribeTarget, Execute, Parse};
+use crate::{
+    Conn, Dirty,
+    codec::{Bind, Close, Describe, DescribeTarget, Execute, Frame, Parse},
+    session::{BoundBuilding, Building},
+};
 
 /// Runs an operation with a fresh resource brand which cannot escape the closure.
 pub fn with_resources<R>(operation: impl for<'id> FnOnce(ResourceScope<'id>) -> R) -> R {
-    operation(ResourceScope {
-        statements: HashMap::new(),
-        portals: HashMap::new(),
-        next_generation: 0,
-        _brand: PhantomData,
+    operation(ResourceScope::new())
+}
+
+/// Runs an extended-query operation with one brand shared by its connection
+/// and resource namespace.
+pub fn with_connection_resources<S, P, C, R>(
+    conn: Conn<S, P, C>,
+    operation: impl for<'id> FnOnce(ResourceConnection<'id, S, P, C>) -> R,
+) -> R {
+    operation(ResourceConnection {
+        conn,
+        resources: ResourceScope::new(),
     })
 }
+
+/// A connection paired with its generative statement and portal namespace.
+#[derive(Debug)]
+pub struct ResourceConnection<'id, S, P, C> {
+    conn: Conn<S, P, C>,
+    resources: ResourceScope<'id>,
+}
+
+impl<S, P, C> ResourceConnection<'_, S, P, C> {
+    /// Deliberately leaves resource-aware handling while retaining typestate.
+    pub fn into_connection(self) -> Conn<S, P, C> {
+        self.conn
+    }
+}
+
+pub type PrepareResult<'id, S> = Result<
+    (
+        ResourceConnection<'id, S, Building, Dirty>,
+        PreparedStatement<'id>,
+        Frame,
+    ),
+    ResourceProtocolError,
+>;
+
+pub type BindResult<'id, S> = Result<
+    (
+        ResourceConnection<'id, S, BoundBuilding, Dirty>,
+        Portal<'id>,
+        Frame,
+    ),
+    ResourceProtocolError,
+>;
 
 /// Connection-local statement and portal namespaces.
 #[derive(Debug)]
@@ -51,7 +94,34 @@ pub enum ResourceError {
     UnknownPortal,
 }
 
+#[derive(Debug)]
+pub enum ResourceProtocolError {
+    Resource(ResourceError),
+    Wire(io::Error),
+}
+
+impl From<ResourceError> for ResourceProtocolError {
+    fn from(error: ResourceError) -> Self {
+        Self::Resource(error)
+    }
+}
+
+impl From<io::Error> for ResourceProtocolError {
+    fn from(error: io::Error) -> Self {
+        Self::Wire(error)
+    }
+}
+
 impl<'id> ResourceScope<'id> {
+    fn new() -> Self {
+        Self {
+            statements: HashMap::new(),
+            portals: HashMap::new(),
+            next_generation: 0,
+            _brand: PhantomData,
+        }
+    }
+
     /// Records a simple-query boundary, which destroys the unnamed statement.
     pub fn simple_query_boundary(&mut self) {
         self.statements.remove(b"".as_slice());
@@ -173,6 +243,86 @@ impl<'id> ResourceScope<'id> {
             name: portal.upstream_name,
         })
     }
+
+    fn execute(&self, portal: &Portal<'id>, max_rows: i32) -> Result<Execute, ResourceError> {
+        if self.portals.get(&portal.upstream_name) != Some(&portal.generation) {
+            return Err(ResourceError::UnknownPortal);
+        }
+        Ok(portal.execute(max_rows))
+    }
+}
+
+impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
+    /// Creates and sends a branded prepared statement on this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns namespace or wire reconstruction errors.
+    pub fn prepare(
+        self,
+        client_name: Bytes,
+        upstream_name: Bytes,
+        query: Bytes,
+        parameter_types: Vec<u32>,
+    ) -> PrepareResult<'id, S> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let (statement, message) =
+            resources.prepare(client_name, upstream_name, query, parameter_types)?;
+        let (conn, frame) = conn.push_parse(&message)?;
+        Ok((ResourceConnection { conn, resources }, statement, frame))
+    }
+
+    /// Creates and sends a branded portal on this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns namespace or wire reconstruction errors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind(
+        self,
+        statement: &PreparedStatement<'id>,
+        client_name: Bytes,
+        upstream_name: Bytes,
+        parameter_formats: Vec<i16>,
+        parameters: Vec<Option<Bytes>>,
+        result_formats: Vec<i16>,
+    ) -> BindResult<'id, S> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let (portal, message) = resources.bind(
+            statement,
+            client_name,
+            upstream_name,
+            parameter_formats,
+            parameters,
+            result_formats,
+        )?;
+        let (conn, frame) = conn.push_bind(&message)?;
+        Ok((ResourceConnection { conn, resources }, portal, frame))
+    }
+}
+
+impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
+    /// Sends an execute which can name only a live portal from this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale portal or invalid wire value.
+    pub fn execute(
+        self,
+        portal: &Portal<'id>,
+        max_rows: i32,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let message = self.resources.execute(portal, max_rows)?;
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_execute(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
 }
 
 impl ResourceScope<'_> {
@@ -246,6 +396,36 @@ impl Portal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_connection_sends_only_its_own_branded_portals() {
+        let ready: Conn<(), crate::auth::Ready> = Conn::new(()).transition();
+        with_connection_resources(ready.begin_extended(), |connection| {
+            let (connection, statement, parse) = connection
+                .prepare(
+                    Bytes::from_static(b"client_statement"),
+                    Bytes::from_static(b"proxy_statement"),
+                    Bytes::from_static(b"select $1::int4"),
+                    vec![23],
+                )
+                .unwrap();
+            assert_eq!(parse.tag, b'P');
+            let (connection, portal, bind) = connection
+                .bind(
+                    &statement,
+                    Bytes::from_static(b"client_portal"),
+                    Bytes::from_static(b"proxy_portal"),
+                    vec![1],
+                    vec![Some(Bytes::from_static(b"\0\0\0*"))],
+                    vec![1],
+                )
+                .unwrap();
+            assert_eq!(bind.tag, b'B');
+            let (connection, execute) = connection.execute(&portal, 0).unwrap();
+            assert_eq!(execute.tag, b'E');
+            connection.into_connection().into_transport();
+        });
+    }
 
     #[test]
     fn branded_resources_rewrite_names_without_losing_bind_details() {

@@ -549,6 +549,102 @@ async fn trust_ready(
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
+async fn async_sinks_match_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let mut ready = trust_ready(port).await?;
+
+    let mut startup_parameters = Vec::new();
+    while let Some(status) = ready.pop_parameter_status() {
+        startup_parameters.push(status.name);
+    }
+    assert!(
+        startup_parameters
+            .iter()
+            .any(|name| name.as_ref() == b"client_encoding")
+    );
+
+    let (mut query, frame) = ready.push_query(
+        b"SET application_name = 'pg-proto-live'; DO $$ BEGIN RAISE NOTICE 'sink notice'; END $$",
+    )?;
+    query.push_frame(frame)?;
+    query.flush().await?;
+    let (mut ready, command_notice) = loop {
+        let item = query.receive().await?;
+        match query.offer(item) {
+            Ok(SimpleTransition::Continue(next, item)) => {
+                query = next;
+                if let SessionItem::CommandComplete { notices, .. } = item
+                    && let Some(notice) = notices.into_iter().next()
+                {
+                    break loop_until_ready(query, notice).await?;
+                }
+            }
+            Ok(SimpleTransition::Ready(state)) => {
+                return Err(format!("notice was not attached before readiness: {state:?}").into());
+            }
+            Ok(SimpleTransition::Error(_, error)) => {
+                return Err(format!("async sink query failed: {error:?}").into());
+            }
+            Ok(_) | Err(_) => return Err("illegal async sink response".into()),
+        }
+    };
+
+    let forwarded_notice = ready
+        .pop_notice()
+        .expect("notice forwarding sink was empty");
+    assert_eq!(forwarded_notice, command_notice);
+    assert!(
+        command_notice.fields.fields.iter().any(|field| {
+            field.code == b'M' && field.value == Bytes::from_static(b"sink notice")
+        })
+    );
+    let status = ready
+        .pop_parameter_status()
+        .expect("application_name ParameterStatus was not retained");
+    assert_eq!(status.name, Bytes::from_static(b"application_name"));
+    assert_eq!(status.value, Bytes::from_static(b"pg-proto-live"));
+    assert!(ready.parameters_changed());
+    ready.into_transport();
+    Ok(())
+}
+
+async fn loop_until_ready(
+    mut query: Conn<
+        Buffered<tokio::net::TcpStream>,
+        pg_proto::session::SimpleQuery,
+        pg_proto::Dirty,
+    >,
+    notice: pg_proto::demux::TaggedNotice,
+) -> Result<
+    (
+        Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready, pg_proto::Dirty>,
+        pg_proto::demux::TaggedNotice,
+    ),
+    Box<dyn Error>,
+> {
+    loop {
+        let item = query.receive().await?;
+        match query.offer(item) {
+            Ok(SimpleTransition::Continue(next, _)) => query = next,
+            Ok(SimpleTransition::Ready(ReadyState::Clean(ready))) => return Ok((ready, notice)),
+            Ok(SimpleTransition::Ready(ReadyState::Dirty { conn, .. })) => {
+                return Ok((conn, notice));
+            }
+            Ok(SimpleTransition::Error(_, error)) => {
+                return Err(format!("async sink query failed: {error:?}").into());
+            }
+            Ok(_) | Err(_) => return Err("illegal async sink response".into()),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
 async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()

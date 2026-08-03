@@ -60,6 +60,53 @@ where
 `Parse`, `Bind`, `Describe`, and `RowDescription` retain all names, values,
 format codes, and OIDs needed to reconstruct rewritten frames.
 
+## Connection-branded statements and portals
+
+For locally constructed extended-query traffic, `with_connection_resources`
+shares a generative brand between the connection and its statement/portal
+namespace. A token cannot be used by another connection, while rewritten client
+and upstream names remain available to proxy policy:
+
+```rust
+use bytes::Bytes;
+use pg_proto::{
+    Conn,
+    auth::Ready,
+    resources::with_connection_resources,
+};
+
+fn build_pipeline<S>(ready: Conn<S, Ready>) -> std::io::Result<Conn<S, pg_proto::session::BoundBuilding, pg_proto::Dirty>> {
+    with_connection_resources(ready.begin_extended(), |connection| {
+        let (connection, statement, _parse) = connection
+            .prepare(
+                Bytes::from_static(b"client_statement"),
+                Bytes::from_static(b"proxy_17_statement"),
+                Bytes::from_static(b"select $1::int4"),
+                vec![23],
+            )
+            .map_err(std::io::Error::other)?;
+        let (connection, portal, _bind) = connection
+            .bind(
+                &statement,
+                Bytes::from_static(b"client_portal"),
+                Bytes::from_static(b"proxy_17_portal"),
+                vec![1],
+                vec![Some(Bytes::from_static(b"\0\0\0*"))],
+                vec![1],
+            )
+            .map_err(std::io::Error::other)?;
+        let (connection, _execute) = connection
+            .execute(&portal, 0)
+            .map_err(std::io::Error::other)?;
+        Ok(connection.into_connection())
+    })
+}
+```
+
+The returned frames are still fully typed and may be inspected or replaced
+before buffering. Calling `into_connection` is the explicit escape from
+resource-aware handling back to the ordinary typestate API.
+
 ## Verification
 
 Run the deterministic suite with `cargo test`. Run the live PostgreSQL matrix

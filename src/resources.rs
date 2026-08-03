@@ -1,6 +1,6 @@
 //! Branded prepared-statement and portal resources with proxy name rewriting.
 
-use std::{cell::Cell, collections::HashMap, io, marker::PhantomData};
+use std::{cell::Cell, collections::HashMap, error::Error, fmt, io, marker::PhantomData};
 
 use bytes::Bytes;
 
@@ -94,10 +94,41 @@ pub enum ResourceError {
     UnknownPortal,
 }
 
+impl fmt::Display for ResourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StatementNameCollision => "prepared statement name collision",
+            Self::PortalNameCollision => "portal name collision",
+            Self::UnknownStatement => "unknown or stale prepared statement",
+            Self::UnknownPortal => "unknown or stale portal",
+        })
+    }
+}
+
+impl Error for ResourceError {}
+
 #[derive(Debug)]
 pub enum ResourceProtocolError {
     Resource(ResourceError),
     Wire(io::Error),
+}
+
+impl fmt::Display for ResourceProtocolError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Resource(error) => error.fmt(formatter),
+            Self::Wire(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for ResourceProtocolError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Resource(error) => Some(error),
+            Self::Wire(error) => Some(error),
+        }
+    }
 }
 
 impl From<ResourceError> for ResourceProtocolError {

@@ -508,6 +508,37 @@ mod tests {
     };
     use frontend::{Event, RuntimeFsm, RuntimeState, Session};
 
+    macro_rules! exhaust_generated_runtime {
+        ($module:ident, $depth:expr) => {{
+            fn visit(runtime: $module::RuntimeFsm, depth: usize) {
+                for &event in $module::ALL_EVENTS {
+                    let state = runtime.state();
+                    let mut next = runtime;
+                    match next.step(event) {
+                        Ok(()) if depth > 0 => visit(next, depth - 1),
+                        Ok(()) => {}
+                        Err(error) => {
+                            assert_eq!(error.state, state);
+                            assert_eq!(error.event, event);
+                            assert_eq!(next.state(), state);
+                        }
+                    }
+                }
+            }
+            visit($module::RuntimeFsm::new(), $depth);
+        }};
+    }
+
+    #[test]
+    fn every_generated_protocol_exhausts_reachable_valid_and_invalid_events() {
+        exhaust_generated_runtime!(frontend, 5);
+        exhaust_generated_runtime!(backend, 5);
+        exhaust_generated_runtime!(pre_startup, 5);
+        exhaust_generated_runtime!(server_pre_startup, 5);
+        exhaust_generated_runtime!(authentication, 6);
+        exhaust_generated_runtime!(server_authentication, 6);
+    }
+
     #[test]
     fn generated_backend_projection_is_state_aware() {
         let parse = FrontendMessage::Parse(Parse {

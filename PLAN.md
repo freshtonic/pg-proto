@@ -96,12 +96,16 @@ work using that feature is complete.
       completion classification through generated projection.
     - [x] Route server-side password, SASL-initial/continuation, and token
       response classification through generated projection.
-- [ ] Add exhaustive/property-generated valid and invalid sequence testing and
+- [x] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through
     depth six from the canonical transition artefact.
-  - [ ] Generate codec-message sequences and compare generated and handwritten
-    projections across the complete protocol grammar.
+  - [x] Exercise codec-message projection across pre-startup, authentication,
+    extended query, error recovery, and COPY, with handwritten compatibility
+    sessions consuming the same generated classifiers.
+  - [x] Exhaust every event at every reachable state through bounded recursive
+    paths for all six generated PostgreSQL role grammars, including unchanged
+    state on rejection.
 - [ ] Remove superseded handwritten state-machine code after parity is proven.
 
 ## 5. Proxy composition and production parity
@@ -170,5 +174,5 @@ work using that feature is complete.
     parameter statuses, and notifications below the session grammar as the
     deliberately filtered byte-stream projection.
 - [x] Apply generated codec-message-to-event projection throughout the protocol.
-- [ ] Extend differential testing from canonical runtime events to codec-message
+- [x] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.

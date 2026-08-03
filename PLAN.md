@@ -116,7 +116,7 @@ management, routing, pool orchestration, and deployment remain downstream. The
 work here is to expose sufficiently general primitives and prove them with
 neutral composition harnesses and examples.
 
-- [ ] Audit current `cipherstash/proxy` and pgcat protocol use solely to identify
+- [x] Audit current `cipherstash/proxy` and pgcat protocol use solely to identify
   required wire coverage, interception points, and library invariants; record
   every discovered obligation without importing application policy.
 - [ ] Define a neutral client ↔ intermediary ↔ upstream composition API that

@@ -18,7 +18,7 @@ use crate::{
     pre_startup::{
         AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
         PreStartup, PreStartupMessage, ServerSslDecision, SslMode, SslModeNegotiation,
-        TlsHandshake, decode_pre_startup_with_limit, ssl_request_packet,
+        TlsHandshake, decode_pre_startup_with_limit, gssenc_request_packet, ssl_request_packet,
     },
     tls::{ClientTls, ServerTls},
 };
@@ -326,6 +326,14 @@ impl<S, Cleanliness> Conn<Buffered<S, Backend>, PreStartup, Cleanliness> {
         self.transport_mut().push_raw(&ssl_request_packet());
         self.transition()
     }
+
+    /// Buffers a `GSSENCRequest` and enters the raw single-byte reply phase.
+    pub fn request_gss(
+        mut self,
+    ) -> Conn<Buffered<S, Backend>, crate::pre_startup::AwaitingGssReply, Cleanliness> {
+        self.transport_mut().push_raw(&gssenc_request_packet());
+        self.transition()
+    }
 }
 
 impl<S, Cleanliness> Conn<Buffered<S, Frontend>, ServerSslDecision, Cleanliness> {
@@ -337,6 +345,24 @@ impl<S, Cleanliness> Conn<Buffered<S, Frontend>, ServerSslDecision, Cleanliness>
 
     /// Buffers the server's raw `N` response and returns to pre-startup choice.
     pub fn decline_ssl(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
+        self.transport_mut().push_raw(b"N");
+        self.transition()
+    }
+}
+
+impl<S, Cleanliness>
+    Conn<Buffered<S, Frontend>, crate::pre_startup::ServerGssDecision, Cleanliness>
+{
+    /// Buffers the server's raw `S` response and enters the GSS handshake phase.
+    pub fn approve_gss(
+        mut self,
+    ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::GssHandshake, Cleanliness> {
+        self.transport_mut().push_raw(b"S");
+        self.transition()
+    }
+
+    /// Buffers the server's raw `N` response and returns to pre-startup choice.
+    pub fn decline_gss(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
         self.transport_mut().push_raw(b"N");
         self.transition()
     }
@@ -370,6 +396,27 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslRe
     ) -> io::Result<SslModeNegotiation<Buffered<S, Backend>, Cleanliness>> {
         let reply = self.transport_mut().receive_encryption_reply().await?;
         Ok(self.apply_ssl_reply(reply, mode))
+    }
+}
+
+impl<S: AsyncRead + Unpin, Cleanliness>
+    Conn<Buffered<S, Backend>, crate::pre_startup::AwaitingGssReply, Cleanliness>
+{
+    /// Receives and projects the server's raw GSSENC decision byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
+    pub async fn receive_gss_reply(
+        mut self,
+    ) -> io::Result<Negotiation<Buffered<S, Backend>, crate::pre_startup::GssHandshake, Cleanliness>>
+    {
+        let reply = self.transport_mut().receive_encryption_reply().await?;
+        Ok(match reply {
+            EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
+            EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
+            EncryptionReply::LegacyError => Negotiation::LegacyError(self.transition()),
+        })
     }
 }
 
@@ -805,5 +852,46 @@ mod tests {
             .expect_err("declared packet exceeds the configured limit");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn upstream_transport_negotiates_raw_gssenc_reply() {
+        let (proxy, mut server) = tokio::io::duplex(32);
+        let mut pending = Conn::new(Buffered::new(proxy)).request_gss();
+        pending.flush().await.expect("GSSENCRequest is writable");
+
+        let mut request = [0_u8; 8];
+        server
+            .read_exact(&mut request)
+            .await
+            .expect("server receives GSSENCRequest");
+        assert_eq!(request, gssenc_request_packet());
+        server
+            .write_all(b"N")
+            .await
+            .expect("server writes decision");
+
+        let Negotiation::Rejected(plaintext) = pending
+            .receive_gss_reply()
+            .await
+            .expect("valid GSSENC decision")
+        else {
+            panic!("expected plaintext fallback")
+        };
+        plaintext.into_transport();
+    }
+
+    #[test]
+    fn client_facing_transport_buffers_raw_gssenc_decision() {
+        let conn = Conn::new(Buffered::<_, Frontend>::new_frontend(()));
+        let crate::pre_startup::PreStartupOffer::Gss(decision) =
+            conn.offer_pre_startup(PreStartupMessage::GssEncRequest)
+        else {
+            panic!("expected GSSENC decision")
+        };
+
+        let handshake = decision.approve_gss();
+        assert_eq!(handshake.pending_output(), b"S");
+        handshake.into_transport();
     }
 }

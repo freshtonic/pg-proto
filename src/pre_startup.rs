@@ -284,7 +284,7 @@ impl<S> Conn<S, PreStartup, Pristine> {
     }
 
     pub fn gssenc_request(self) -> (Conn<S, AwaitingGssReply>, [u8; 8]) {
-        (self.transition(), request_packet(GSSENC_REQUEST_CODE))
+        (self.transition(), gssenc_request_packet())
     }
 
     /// Encodes and enters the startup phase.
@@ -446,6 +446,10 @@ impl<S, C> Conn<S, GssHandshake, C> {
 
 pub(crate) const fn ssl_request_packet() -> [u8; 8] {
     request_packet(SSL_REQUEST_CODE)
+}
+
+pub(crate) const fn gssenc_request_packet() -> [u8; 8] {
+    request_packet(GSSENC_REQUEST_CODE)
 }
 
 const fn request_packet(code: u32) -> [u8; 8] {

@@ -173,12 +173,14 @@ neutral composition harnesses and examples.
 
 ## Current work
 
-- [ ] Add comprehensive Rustdoc for every public module, type, trait, function,
+- [x] Add comprehensive Rustdoc for every public module, type, trait, function,
   method, constant, field, variant, implementation API, and generated macro item.
   - [x] Document every public item emitted by the protocol grammar macro.
   - [x] Document codec, pre-startup, startup, transport, cancellation, SCRAM,
     authentication, server authentication, and integration foundation APIs.
-  - [ ] Document every handwritten public API and enforce `missing_docs`.
+  - [x] Document cleanliness, demux, resources, replication, and both client- and
+    server-role session APIs.
+  - [x] Document every handwritten public API and enforce `missing_docs`.
 
 - [x] Provide a technical README covering the crate's purpose, typestate value,
   use cases, usage, rustdoc entry points, examples, supported PostgreSQL versions,

@@ -5,42 +5,71 @@ use std::io;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A typed payload sent by a walsender inside backend `CopyData`.
 pub enum BackendReplication {
+    /// A range of write-ahead log data.
     XLogData {
+        /// WAL position of the first byte in `data`.
         wal_start: u64,
+        /// Current end of WAL on the server.
         wal_end: u64,
+        /// Server clock as microseconds since 2000-01-01 UTC.
         server_time: i64,
+        /// WAL bytes.
         data: Bytes,
     },
+    /// A primary keepalive message.
     PrimaryKeepalive {
+        /// Current end of WAL on the server.
         wal_end: u64,
+        /// Server clock as microseconds since 2000-01-01 UTC.
         server_time: i64,
+        /// Whether the server requests an immediate status reply.
         reply_requested: bool,
     },
+    /// An extension payload whose tag is not recognised by this crate.
     Unknown {
+        /// Replication sub-message tag.
         tag: u8,
+        /// Bytes following the tag.
         body: Bytes,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A typed payload sent by a standby inside frontend `CopyData`.
 pub enum FrontendReplication {
+    /// The standby's WAL receipt, flush, and replay positions.
     StandbyStatus {
+        /// Last WAL position written locally.
         written: u64,
+        /// Last WAL position flushed durably.
         flushed: u64,
+        /// Last WAL position applied during replay.
         applied: u64,
+        /// Client clock as microseconds since 2000-01-01 UTC.
         client_time: i64,
+        /// Whether the standby requests an immediate keepalive reply.
         reply_requested: bool,
     },
+    /// Transaction horizons used to prevent premature vacuuming on the primary.
     HotStandbyFeedback {
+        /// Client clock as microseconds since 2000-01-01 UTC.
         client_time: i64,
+        /// Oldest transaction identifier still needed by the standby.
         xmin: u32,
+        /// Epoch disambiguating wraparound of `xmin`.
         xmin_epoch: u32,
+        /// Oldest catalog transaction identifier still needed by the standby.
         catalog_xmin: u32,
+        /// Epoch disambiguating wraparound of `catalog_xmin`.
         catalog_xmin_epoch: u32,
     },
+    /// An extension payload whose tag is not recognised by this crate.
     Unknown {
+        /// Replication sub-message tag.
         tag: u8,
+        /// Bytes following the tag.
         body: Bytes,
     },
 }
@@ -79,6 +108,7 @@ impl BackendReplication {
     }
 
     #[must_use]
+    /// Encodes this value as a backend replication sub-message.
     pub fn encode(&self) -> Bytes {
         let mut output = BytesMut::new();
         match self {
@@ -152,6 +182,7 @@ impl FrontendReplication {
     }
 
     #[must_use]
+    /// Encodes this value as a frontend replication sub-message.
     pub fn encode(&self) -> Bytes {
         let mut output = BytesMut::new();
         match self {

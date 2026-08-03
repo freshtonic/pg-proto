@@ -18,53 +18,70 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// A client simple query is being served.
 pub enum ServerSimpleQuery {}
 
 #[derive(Debug)]
+/// A simple-query error was sent and readiness must follow.
 pub enum ServerSimpleError {}
 
 #[derive(Debug)]
+/// A legacy function call is being served.
 pub enum ServerFunctionCall {}
 
 #[derive(Debug)]
+/// A function result was sent and readiness must follow.
 pub enum ServerFunctionCallDone {}
 
 #[derive(Debug)]
+/// A function-call error was sent and readiness must follow.
 pub enum ServerFunctionCallError {}
 
 #[derive(Debug)]
+/// The server is accepting an extended-query pipeline.
 pub enum ServerBuilding {}
 
 #[derive(Debug)]
+/// An inspected `Parse` awaits its response.
 pub enum ServerParse {}
 
 #[derive(Debug)]
+/// An inspected `Bind` awaits its response.
 pub enum ServerBind {}
 
 #[derive(Debug)]
+/// An inspected `Describe` awaits its response.
 pub enum ServerDescribe {}
 
 #[derive(Debug)]
+/// An inspected `Execute` is being served.
 pub enum ServerExecute {}
 
 #[derive(Debug)]
+/// An inspected `Close` awaits its response.
 pub enum ServerClose {}
 
 #[derive(Debug)]
+/// A client `Sync` awaits `ReadyForQuery`.
 pub enum ServerSync {}
 
 #[derive(Debug)]
+/// A failed extended pipeline is discarded until `Sync`.
 pub enum ServerExtendedError {}
 
 #[derive(Debug)]
+/// COPY resumes in a simple-query session.
 pub enum CopySimple {}
 
 #[derive(Debug)]
+/// COPY resumes in an extended-query session.
 pub enum CopyExtended {}
 
 /// Maps a COPY resumption marker to its generated nested-session states.
 pub trait CopyResume {
+    /// Generated state while both COPY directions remain open.
     const BOTH_OPEN_STATE: backend::RuntimeState;
+    /// Generated state after the server closes its COPY direction.
     const BOTH_SERVER_DONE_STATE: backend::RuntimeState;
 }
 
@@ -81,94 +98,139 @@ impl CopyResume for CopyExtended {
 }
 
 #[derive(Debug)]
+/// Server-role COPY IN stream, resumed according to `Resume`.
 pub struct ServerCopyIn<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
+/// Client completed a server-role COPY IN stream.
 pub struct ServerCopyInDone<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
+/// Client failed a server-role COPY IN stream.
 pub struct ServerCopyInFailed<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
+/// Server-role COPY OUT stream, resumed according to `Resume`.
 pub struct ServerCopyOut<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
+/// Server completed a server-role COPY OUT stream.
 pub struct ServerCopyOutDone<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
+/// Both halves of a COPY BOTH stream remain open.
 pub enum BothOpen {}
 
 #[derive(Debug)]
+/// The client half of a COPY BOTH stream is closed.
 pub enum BothClientDone {}
 
 #[derive(Debug)]
+/// The server half of a COPY BOTH stream is closed.
 pub enum BothServerDone {}
 
 #[derive(Debug)]
+/// Both halves of a COPY BOTH stream are closed.
 pub enum BothDone {}
 
 #[derive(Debug)]
+/// Server-role COPY BOTH stream parameterised by resumption and half-close state.
 pub struct ServerCopyBoth<Resume, Ends>(PhantomData<(Resume, Ends)>);
 
 #[derive(Debug)]
+/// Client failed a server-role COPY BOTH stream.
 pub struct ServerCopyBothFailed<Resume>(PhantomData<Resume>);
 
+/// Client choice while both COPY BOTH directions remain open.
 #[derive(Debug)]
 pub enum ServerCopyBothOpenOffer<S, C, Resume> {
+    /// The client sent one opaque data chunk.
     Data {
+        /// Connection remaining in COPY BOTH.
         conn: Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
+        /// Copy payload.
         data: Bytes,
     },
+    /// The client closed its sending half.
     Done(Conn<S, ServerCopyBoth<Resume, BothClientDone>, C>),
+    /// The client aborted COPY.
     Fail {
+        /// Failed COPY connection.
         conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        /// Client error message without its terminating NUL.
         message: Bytes,
     },
 }
 
+/// Client choice after the server closes its COPY BOTH direction.
 #[derive(Debug)]
 pub enum ServerCopyBothServerDoneOffer<S, C, Resume> {
+    /// The client sent one final opaque data chunk.
     Data {
+        /// Connection with only the client direction open.
         conn: Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        /// Copy payload.
         data: Bytes,
     },
+    /// The client closed the remaining direction.
     Done(Conn<S, ServerCopyBoth<Resume, BothDone>, C>),
+    /// The client aborted COPY.
     Fail {
+        /// Failed COPY connection.
         conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        /// Client error message without its terminating NUL.
         message: Bytes,
     },
 }
 
+/// Typed standby choice while both replication directions remain open.
 #[derive(Debug)]
 pub enum ServerReplicationOpenOffer<S, C, Resume> {
+    /// The standby sent one decoded replication message.
     Message {
+        /// Connection remaining in COPY BOTH.
         conn: Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
+        /// Decoded standby message.
         message: FrontendReplication,
     },
+    /// The standby closed its sending half.
     Done(Conn<S, ServerCopyBoth<Resume, BothClientDone>, C>),
+    /// The standby aborted replication.
     Fail {
+        /// Failed replication connection.
         conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        /// Standby error message without its terminating NUL.
         message: Bytes,
     },
 }
 
+/// Typed standby choice after the walsender closes its direction.
 #[derive(Debug)]
 pub enum ServerReplicationServerDoneOffer<S, C, Resume> {
+    /// The standby sent one final decoded replication message.
     Message {
+        /// Connection with only the standby direction open.
         conn: Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
+        /// Decoded standby message.
         message: FrontendReplication,
     },
+    /// The standby closed the remaining direction.
     Done(Conn<S, ServerCopyBoth<Resume, BothDone>, C>),
+    /// The standby aborted replication.
     Fail {
+        /// Failed replication connection.
         conn: Conn<S, ServerCopyBothFailed<Resume>, C>,
+        /// Standby error message without its terminating NUL.
         message: Bytes,
     },
 }
 
+/// Replication projection preserving the open connection when decoding fails.
 pub type ServerReplicationOpenProjection<S, C, Resume> = Result<
     ServerReplicationOpenOffer<S, C, Resume>,
     (Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, io::Error),
 >;
+/// Replication projection after server half-close, preserving decode failures.
 pub type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
     ServerReplicationServerDoneOffer<S, C, Resume>,
     (
@@ -180,27 +242,40 @@ pub type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
 /// Client choice inside a server-role COPY IN sub-session.
 #[derive(Debug)]
 pub enum ServerCopyInOffer<S, C, Resume> {
+    /// The client sent one data chunk.
     Data {
+        /// Connection remaining in COPY IN.
         conn: Conn<S, ServerCopyIn<Resume>, C>,
+        /// Copy payload.
         data: Bytes,
     },
+    /// The client completed COPY IN.
     Done(Conn<S, ServerCopyInDone<Resume>, C>),
+    /// The client aborted COPY IN.
     Fail {
+        /// Failed COPY connection.
         conn: Conn<S, ServerCopyInFailed<Resume>, C>,
+        /// Client error message without its terminating NUL.
         message: Bytes,
     },
 }
 
+/// COPY IN projection preserving the connection and message on mismatch.
 pub type CopyInProjection<S, C, Resume> = Result<
     ServerCopyInOffer<S, C, Resume>,
     Box<(Conn<S, ServerCopyIn<Resume>, C>, FrontendMessage)>,
 >;
+/// Result of starting a server-role COPY IN stream.
 pub type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C>, Frame)>;
+/// Result of starting a server-role COPY OUT stream.
 pub type CopyOutStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyOut<Resume>, C>, Frame)>;
+/// Result of closing a server-role COPY OUT stream.
 pub type CopyOutCompletion<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyOutDone<Resume>, C>, Frame)>;
+/// Result of starting a server-role COPY BOTH stream.
 pub type CopyBothStart<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, Frame)>;
+/// COPY BOTH projection while both directions remain open.
 pub type CopyBothOpenProjection<S, C, Resume> = Result<
     ServerCopyBothOpenOffer<S, C, Resume>,
     Box<(
@@ -208,6 +283,7 @@ pub type CopyBothOpenProjection<S, C, Resume> = Result<
         FrontendMessage,
     )>,
 >;
+/// COPY BOTH projection after the server direction closes.
 pub type CopyBothServerDoneProjection<S, C, Resume> = Result<
     ServerCopyBothServerDoneOffer<S, C, Resume>,
     Box<(
@@ -215,72 +291,107 @@ pub type CopyBothServerDoneProjection<S, C, Resume> = Result<
         FrontendMessage,
     )>,
 >;
+/// Result of closing the server half of COPY BOTH.
 pub type CopyBothServerHalfClose<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>, Frame)>;
+/// Result of completing COPY BOTH after both halves close.
 pub type CopyBothCompletion<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothDone>, C>, Frame)>;
 
 /// External choice offered by a client while the server role is ready.
 #[derive(Debug)]
 pub enum ServerReadyOffer<S, C> {
+    /// A simple query, conservatively marking the session dirty.
     Query {
+        /// Connection serving the query.
         conn: Conn<S, ServerSimpleQuery, Dirty>,
+        /// Inspectable and replaceable SQL bytes.
         query: Bytes,
     },
+    /// A legacy function-call request.
     FunctionCall {
+        /// Connection serving the function call.
         conn: Conn<S, ServerFunctionCall, Dirty>,
+        /// Fully decoded function-call message.
         message: FunctionCall,
     },
+    /// One message in an extended-query pipeline.
     Extended(ServerExtendedOffer<S, C>),
+    /// The client terminated the session.
     Terminate(Conn<S, Terminated, C>),
 }
 
 /// A response-specific branch of the extended-query building loop.
 #[derive(Debug)]
 pub enum ServerExtendedOffer<S, C> {
+    /// An inspected and reconstructable `Parse` request.
     Parse {
+        /// Connection awaiting a parse response.
         conn: Conn<S, ServerParse, Dirty>,
+        /// Decoded request available to application policy.
         message: Parse,
     },
+    /// An inspected and reconstructable `Bind` request.
     Bind {
+        /// Connection awaiting a bind response.
         conn: Conn<S, ServerBind, Dirty>,
+        /// Decoded request available to application policy.
         message: Bind,
     },
+    /// An inspected and reconstructable `Describe` request.
     Describe {
+        /// Connection awaiting a description response.
         conn: Conn<S, ServerDescribe, C>,
+        /// Decoded request available to application policy.
         message: Describe,
     },
+    /// An inspected and reconstructable `Execute` request.
     Execute {
+        /// Connection serving the portal execution.
         conn: Conn<S, ServerExecute, C>,
+        /// Decoded request available to application policy.
         message: Execute,
     },
+    /// An inspected and reconstructable `Close` request.
     Close {
+        /// Connection awaiting a close response.
         conn: Conn<S, ServerClose, C>,
+        /// Decoded request available to application policy.
         message: Close,
     },
+    /// The client requested immediate delivery of buffered responses.
     Flush(Conn<S, ServerBuilding, C>),
+    /// The client ended the pipeline.
     Sync(Conn<S, ServerSync, C>),
 }
 
 /// Projection while discarding a failed pipeline up to its synchronisation point.
 #[derive(Debug)]
 pub enum ServerDiscard<S, C> {
+    /// A pipeline message was discarded; continue until synchronisation.
     Continue(Conn<S, ServerExtendedError, C>),
+    /// `Sync` ended the failed pipeline.
     Sync(Conn<S, ServerSync, C>),
 }
 
 /// Ready state produced from the status byte sent to the client.
 #[derive(Debug)]
 pub enum ServerReadyState<S, C> {
+    /// Idle readiness retained the existing cleanliness index.
     Ready(Conn<S, Ready, C>),
+    /// Non-idle readiness made the connection dirty.
     Dirty {
+        /// Ready connection carrying the dirty marker.
         conn: Conn<S, Ready, Dirty>,
+        /// Transaction status sent to the client.
         status: TransactionStatus,
     },
 }
 
+/// Projection of a client ready-state choice, preserving invalid input.
 pub type ReadyProjection<S, C> =
     Result<ServerReadyOffer<S, C>, Box<(Conn<S, Ready, C>, FrontendMessage)>>;
+/// Projection of an extended-query choice, preserving invalid input.
 pub type ExtendedProjection<S, Phase, C> =
     Result<ServerExtendedOffer<S, C>, Box<(Conn<S, Phase, C>, FrontendMessage)>>;
 

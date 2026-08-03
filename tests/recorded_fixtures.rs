@@ -1,3 +1,5 @@
+//! Offline protocol coverage using sanitised recorded wire fixtures.
+
 use bytes::BytesMut;
 use pg_proto::codec::{
     Authentication, Backend, BackendMessage, Frontend, FrontendMessage, PgCodec,

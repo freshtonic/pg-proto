@@ -1,3 +1,5 @@
+//! Lightweight throughput budget for representative codec operations.
+
 use std::{hint::black_box, time::Instant};
 
 use bytes::{Bytes, BytesMut};

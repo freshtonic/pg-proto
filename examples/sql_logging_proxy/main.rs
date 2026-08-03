@@ -1,3 +1,5 @@
+//! Runs a transparent proxy which logs inbound SQL and result row counts.
+
 #[path = "../proxy_support/mod.rs"]
 mod proxy_support;
 

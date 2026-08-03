@@ -11,44 +11,62 @@ use crate::codec::{BackendMessage, DiagnosticResponse, TransactionStatus};
 pub struct CommandIndex(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A backend notice attributed to the command active when it arrived.
 pub struct TaggedNotice {
+    /// Command to which the notice belongs.
     pub command: CommandIndex,
+    /// Structured notice fields.
     pub fields: DiagnosticResponse,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A decoded asynchronous notification.
 pub struct Notification {
+    /// Process identifier of the notifying backend.
     pub process_id: u32,
+    /// Notification channel.
     pub channel: Bytes,
+    /// Notification payload.
     pub payload: Bytes,
 }
 
 /// One ordered `ParameterStatus` update retained for proxy forwarding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParameterStatus {
+    /// Parameter name.
     pub name: Bytes,
+    /// Current parameter value.
     pub value: Bytes,
 }
 
 /// A causally independent backend event retained in its original wire order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AsyncEvent {
+    /// A positionally tagged notice.
     Notice(TaggedNotice),
+    /// A run-time parameter update.
     ParameterStatus(ParameterStatus),
+    /// A `LISTEN`/`NOTIFY` notification.
     Notification(Notification),
 }
 
 /// Ordering and command attribution for an asynchronous backend event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderedAsyncEvent {
+    /// Monotonic sequence number across all asynchronous event kinds.
     pub sequence: u64,
+    /// Command active when the event arrived.
     pub command: CommandIndex,
+    /// Decoded event.
     pub event: AsyncEvent,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
+/// Backend cancellation credentials captured during startup.
 pub struct CancelKey {
+    /// Backend process identifier.
     pub process_id: u32,
+    /// Opaque cancellation secret; its debug representation is redacted.
     pub secret_key: Bytes,
 }
 
@@ -65,14 +83,22 @@ impl std::fmt::Debug for CancelKey {
 /// A protocol-advancing message, optionally closing a command boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionItem {
+    /// An ordinary protocol-advancing backend message.
     Message(BackendMessage),
+    /// Readiness together with pooling-relevant state accumulated by the demux.
     ReadyForQuery {
+        /// Backend transaction status.
         status: TransactionStatus,
+        /// Whether run-time parameters differ from their startup baseline.
         parameters_changed: bool,
     },
+    /// Command completion with notices accumulated since the previous boundary.
     CommandComplete {
+        /// Backend command tag.
         tag: Bytes,
+        /// Completed command's position in the session.
         command: CommandIndex,
+        /// Notices attributed to this command.
         notices: Vec<TaggedNotice>,
     },
 }
@@ -172,26 +198,31 @@ impl Demux {
         }
     }
 
+    /// Returns the latest value of every reported run-time parameter.
     #[must_use]
     pub fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
         &self.parameters
     }
 
+    /// Reports whether parameters differ from the startup baseline.
     #[must_use]
     pub const fn parameters_changed(&self) -> bool {
         self.parameters_changed
     }
 
+    /// Returns the most recently received cancellation key, if any.
     #[must_use]
     pub const fn cancel_key(&self) -> Option<&CancelKey> {
         self.cancel_key.as_ref()
     }
 
+    /// Returns the latest backend transaction status, if readiness was observed.
     #[must_use]
     pub const fn transaction_status(&self) -> Option<TransactionStatus> {
         self.transaction_status
     }
 
+    /// Removes the next queued asynchronous notification.
     pub fn pop_notification(&mut self) -> Option<Notification> {
         self.notifications.pop_front()
     }

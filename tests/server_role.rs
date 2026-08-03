@@ -1,3 +1,5 @@
+//! Integration coverage for the typed client-facing server role.
+
 use bytes::Bytes;
 use pg_proto::{
     Conn,

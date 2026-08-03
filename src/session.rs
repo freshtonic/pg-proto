@@ -18,148 +18,222 @@ use crate::{
 };
 
 #[derive(Debug)]
+/// A simple-query command is awaiting backend results and readiness.
 pub enum SimpleQuery {}
 
 #[derive(Debug)]
+/// A legacy function call is awaiting its result.
 pub enum FunctionCalling {}
 
 #[derive(Debug)]
+/// An extended-query pipeline is being built but has no bound portal yet.
 pub enum Building {}
 
 #[derive(Debug)]
+/// An extended-query pipeline contains a bound, executable portal.
 pub enum BoundBuilding {}
 
 #[derive(Debug)]
+/// Command results are complete and `ReadyForQuery` is required.
 pub enum AwaitingReady {}
 
 #[derive(Debug)]
+/// The client may stream COPY data to the backend.
 pub enum CopyIn {}
 
 #[derive(Debug)]
+/// The backend may stream COPY data to the client.
 pub enum CopyOut {}
 
 #[derive(Debug)]
+/// Both peers may stream COPY data.
 pub enum CopyBoth {}
 
 #[derive(Debug)]
+/// The client half of a COPY BOTH session is closed.
 pub enum CopyBothClientDone {}
 
 #[derive(Debug)]
+/// The backend half of a COPY BOTH session is closed.
 pub enum CopyBothServerDone {}
 
 #[derive(Debug)]
+/// An errored command is being drained until `ReadyForQuery`.
 pub enum Draining {}
 
 #[derive(Debug)]
+/// A pool-reset query is executing on a dirty connection.
 pub enum Resetting {}
 
 #[derive(Debug)]
+/// Reset command completion was observed and readiness is required.
 pub enum ResetComplete {}
 
+/// Structured backend error used by session transitions.
 pub type ErrorResponse = DiagnosticResponse;
 
+/// A successful transition or a backend error that enters [`Draining`].
 pub type Fallible<T, S, C = Pristine> = Result<T, (Conn<S, Draining, C>, ErrorResponse)>;
 
+/// Backend branch available while a simple query is active.
 #[derive(Debug)]
 pub enum SimpleTransition<S, C> {
+    /// A result item was consumed and more results may follow.
     Continue(Conn<S, SimpleQuery, C>, SessionItem),
+    /// The command entered COPY IN.
     CopyIn(Conn<S, CopyIn, C>, CopyResponse),
+    /// The command entered COPY OUT.
     CopyOut(Conn<S, CopyOut, C>, CopyResponse),
+    /// The command entered COPY BOTH.
     CopyBoth(Conn<S, CopyBoth, C>, CopyResponse),
+    /// Readiness completed the simple-query cycle.
     Ready(ReadyState<S, C>),
+    /// An error entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Backend branch available after a result completes.
 #[derive(Debug)]
 pub enum AwaitingReadyTransition<S, C> {
+    /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, AwaitingReady, C>, SessionItem),
+    /// Readiness completed the command cycle.
     Ready(ReadyState<S, C>),
+    /// An error entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Backend branch available for the legacy function-call protocol.
 #[derive(Debug)]
 pub enum FunctionCallTransition<S, C> {
+    /// The backend returned the function value.
     Response(Conn<S, AwaitingReady, C>, Bytes),
+    /// The backend rejected the call.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Backend branch while discarding messages after an error.
 #[derive(Debug)]
 pub enum DrainingTransition<S, C> {
+    /// A non-terminal item was discarded; continue draining.
     Continue(Conn<S, Draining, C>, SessionItem),
+    /// Readiness completed recovery.
     Ready(ReadyState<S, C>),
 }
 
+/// Backend branch during COPY OUT.
 #[derive(Debug)]
 pub enum CopyOutTransition<S, C> {
+    /// One chunk of copy data was received.
     Data(Conn<S, CopyOut, C>, Bytes),
+    /// The backend closed the copy stream.
     Done(Conn<S, AwaitingReady, C>),
+    /// COPY failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Asynchronous backend branch available while sending COPY IN data.
 #[derive(Debug)]
 pub enum CopyInTransition<S, C> {
+    /// COPY failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Backend branch while both COPY directions remain open.
 #[derive(Debug)]
 pub enum CopyBothReceive<S, C> {
+    /// One opaque backend data chunk was received.
     Data(Conn<S, CopyBoth, C>, Bytes),
+    /// The backend closed its half of the stream.
     Done(Conn<S, CopyBothServerDone, C>),
+    /// COPY failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Backend branch after the client closes its COPY BOTH half.
 #[derive(Debug)]
 pub enum CopyBothClientDoneReceive<S, C> {
+    /// One final opaque backend data chunk was received.
     Data(Conn<S, CopyBothClientDone, C>, Bytes),
+    /// The backend closed its half of the stream.
     Done(Conn<S, AwaitingReady, C>),
+    /// COPY failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Typed walsender branch while both replication directions remain open.
 #[derive(Debug)]
 pub enum ReplicationReceive<S, C> {
+    /// One decoded backend replication message was received.
     Message(Conn<S, CopyBoth, C>, BackendReplication),
+    /// The backend closed its half of the stream.
     Done(Conn<S, CopyBothServerDone, C>),
+    /// Replication failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Typed walsender branch after the standby closes its sending half.
 #[derive(Debug)]
 pub enum ReplicationClientDoneReceive<S, C> {
+    /// One decoded backend replication message was received.
     Message(Conn<S, CopyBothClientDone, C>, BackendReplication),
+    /// The backend closed its half of the stream.
     Done(Conn<S, AwaitingReady, C>),
+    /// Replication failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
+/// Replication projection preserving the connection when decoding fails.
 pub type ReplicationProjection<S, C> =
     Result<ReplicationReceive<S, C>, (Conn<S, CopyBoth, C>, io::Error)>;
+/// Replication projection after client half-close, preserving decode failures.
 pub type ReplicationClientDoneProjection<S, C> =
     Result<ReplicationClientDoneReceive<S, C>, (Conn<S, CopyBothClientDone, C>, io::Error)>;
 
+/// Readiness classified by pooling cleanliness evidence.
 #[derive(Debug)]
 pub enum ReadyState<S, C> {
+    /// The connection retained its existing cleanliness index.
     Clean(Conn<S, Ready, C>),
+    /// Transaction or parameter evidence made the connection dirty.
     Dirty {
+        /// Ready connection carrying the dirty cleanliness marker.
         conn: Conn<S, Ready, Dirty>,
+        /// Transaction status reported by the backend.
         status: TransactionStatus,
+        /// Whether reported parameters differ from startup values.
         parameters_changed: bool,
     },
 }
 
+/// Backend branch while a reset command is executing.
 #[derive(Debug)]
 pub enum ResettingTransition<S> {
+    /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, Resetting, Dirty>, SessionItem),
+    /// Reset command completion was observed.
     Complete(Conn<S, ResetComplete, Dirty>),
+    /// Reset failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, Dirty>, ErrorResponse),
 }
 
+/// Backend branch after reset command completion.
 #[derive(Debug)]
 pub enum ResetCompleteTransition<S> {
+    /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, ResetComplete, Dirty>, SessionItem),
+    /// Idle readiness with restored parameters proved the connection pristine.
     Ready(Conn<S, Ready, Pristine>),
+    /// Readiness retained dirty transaction or parameter state.
     Dirty {
+        /// Ready connection retaining its dirty marker.
         conn: Conn<S, Ready, Dirty>,
+        /// Transaction status reported by the backend.
         status: TransactionStatus,
+        /// Whether reported parameters differ from startup values.
         parameters_changed: bool,
     },
+    /// Reset failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, Dirty>, ErrorResponse),
 }
 
@@ -336,10 +410,12 @@ impl<S, C> Conn<S, Building, C> {
         Ok((self, message.to_frame()?))
     }
 
+    /// Requests delivery of buffered extended-query responses without ending the cycle.
     pub fn push_flush(self) -> (Self, Frame) {
         (self, empty_frame(b'H'))
     }
 
+    /// Ends the extended-query pipeline and waits for readiness.
     pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'S'))
     }
@@ -383,10 +459,12 @@ impl<S, C> Conn<S, BoundBuilding, C> {
         Ok((self, message.to_frame()?))
     }
 
+    /// Requests delivery of buffered extended-query responses without ending the cycle.
     pub fn push_flush(self) -> (Self, Frame) {
         (self, empty_frame(b'H'))
     }
 
+    /// Ends the extended-query pipeline and waits for readiness.
     pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'S'))
     }
@@ -463,6 +541,7 @@ impl<S, C> Conn<S, CopyIn, C> {
         )
     }
 
+    /// Closes the client-to-backend copy stream and waits for command completion.
     pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
@@ -598,6 +677,7 @@ impl<S, C> Conn<S, CopyOut, C> {
 }
 
 impl<S, C> Conn<S, CopyBoth, C> {
+    /// Sends one opaque data chunk while retaining both COPY directions.
     pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
         (
             self,
@@ -613,6 +693,7 @@ impl<S, C> Conn<S, CopyBoth, C> {
         self.push_copy_data(message.encode())
     }
 
+    /// Closes the client half while leaving the backend half readable.
     pub fn push_copy_done(self) -> (Conn<S, CopyBothClientDone, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }

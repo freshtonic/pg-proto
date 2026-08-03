@@ -1,3 +1,5 @@
+//! End-to-end coverage for the SQL-logging proxy example.
+
 use std::{
     error::Error,
     sync::{Arc, Mutex},

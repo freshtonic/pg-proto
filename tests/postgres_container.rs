@@ -1,3 +1,5 @@
+//! Compatibility tests against containerised supported `PostgreSQL` releases.
+
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
 use bytes::Bytes;

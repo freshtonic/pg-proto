@@ -1,3 +1,5 @@
+//! Integration tests for protocol grammar generation.
+
 use pg_proto_fsm::protocol;
 
 enum TestInternal {

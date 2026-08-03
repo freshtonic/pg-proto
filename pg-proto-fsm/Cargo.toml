@@ -9,6 +9,7 @@ description = "Protocol grammar generator for pg-proto"
 proc-macro = true
 
 [lints.rust]
+missing_docs = "deny"
 unsafe_code = "forbid"
 
 [lints.clippy]

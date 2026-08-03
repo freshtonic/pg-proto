@@ -93,6 +93,7 @@ impl<'id, S, P, C> ResourceConnection<'id, S, P, C> {
     }
 }
 
+/// Result of preparing a statement while building an extended-query pipeline.
 pub type PrepareResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, Building, Dirty>,
@@ -102,6 +103,7 @@ pub type PrepareResult<'id, S> = Result<
     ResourceProtocolError,
 >;
 
+/// Result of binding a portal for the first time in a pipeline.
 pub type BindResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
@@ -111,6 +113,7 @@ pub type BindResult<'id, S> = Result<
     ResourceProtocolError,
 >;
 
+/// Result of preparing another statement after a portal has been bound.
 pub type BoundPrepareResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
@@ -120,6 +123,7 @@ pub type BoundPrepareResult<'id, S> = Result<
     ResourceProtocolError,
 >;
 
+/// Result of binding another portal after the pipeline has become executable.
 pub type RebindResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
@@ -130,25 +134,38 @@ pub type RebindResult<'id, S> = Result<
 >;
 
 #[derive(Debug)]
+/// Readiness projected while retaining the connection's resource brand.
 pub enum ResourceReadyState<'id, S, C> {
+    /// The connection retained its existing cleanliness index.
     Clean(ResourceConnection<'id, S, Ready, C>),
+    /// Transaction or parameter evidence made the connection dirty.
     Dirty {
+        /// Ready, dirty connection and its resource namespace.
         conn: ResourceConnection<'id, S, Ready, Dirty>,
+        /// Transaction status reported by `ReadyForQuery`.
         status: TransactionStatus,
+        /// Whether reported parameters differ from their startup values.
         parameters_changed: bool,
     },
 }
 
 #[derive(Debug)]
+/// Projection while awaiting readiness after an extended-query result.
 pub enum ResourceAwaitingTransition<'id, S, C> {
+    /// A non-terminal item was consumed; continue waiting.
     Continue(ResourceConnection<'id, S, AwaitingReady, C>, SessionItem),
+    /// `ReadyForQuery` completed the cycle.
     Ready(ResourceReadyState<'id, S, C>),
+    /// An error entered the drain-until-ready recovery phase.
     Error(ResourceConnection<'id, S, Draining, C>, ErrorResponse),
 }
 
 #[derive(Debug)]
+/// Projection while draining an errored resource-aware pipeline.
 pub enum ResourceDrainingTransition<'id, S, C> {
+    /// A non-terminal item was consumed; continue draining.
     Continue(ResourceConnection<'id, S, Draining, C>, SessionItem),
+    /// `ReadyForQuery` completed recovery.
     Ready(ResourceReadyState<'id, S, C>),
 }
 
@@ -182,10 +199,15 @@ pub struct Portal<'id> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Failure to resolve or allocate a branded protocol resource.
 pub enum ResourceError {
+    /// A live prepared statement already uses the requested name.
     StatementNameCollision,
+    /// A live portal already uses the requested name.
     PortalNameCollision,
+    /// The prepared-statement token or client name is unknown or stale.
     UnknownStatement,
+    /// The portal token or client name is unknown or stale.
     UnknownPortal,
 }
 
@@ -203,8 +225,11 @@ impl fmt::Display for ResourceError {
 impl Error for ResourceError {}
 
 #[derive(Debug)]
+/// A resource-namespace or wire-encoding failure.
 pub enum ResourceProtocolError {
+    /// Resource identity or lifetime validation failed.
     Resource(ResourceError),
+    /// Reconstruction of the wire message failed.
     Wire(io::Error),
 }
 
@@ -824,16 +849,19 @@ impl ResourceScope<'_> {
 }
 
 impl PreparedStatement<'_> {
+    /// Returns the statement name presented by the client.
     #[must_use]
     pub fn client_name(&self) -> &[u8] {
         &self.client_name
     }
 
+    /// Returns the rewritten statement name sent upstream.
     #[must_use]
     pub fn upstream_name(&self) -> &[u8] {
         &self.upstream_name
     }
 
+    /// Constructs a `Describe` message using the rewritten statement name.
     #[must_use]
     pub fn describe(&self) -> Describe {
         Describe {
@@ -844,16 +872,19 @@ impl PreparedStatement<'_> {
 }
 
 impl Portal<'_> {
+    /// Returns the portal name presented by the client.
     #[must_use]
     pub fn client_name(&self) -> &[u8] {
         &self.client_name
     }
 
+    /// Returns the rewritten portal name sent upstream.
     #[must_use]
     pub fn upstream_name(&self) -> &[u8] {
         &self.upstream_name
     }
 
+    /// Constructs a `Describe` message using the rewritten portal name.
     #[must_use]
     pub fn describe(&self) -> Describe {
         Describe {
@@ -862,6 +893,7 @@ impl Portal<'_> {
         }
     }
 
+    /// Constructs an `Execute` message using the rewritten portal name.
     #[must_use]
     pub fn execute(&self, max_rows: i32) -> Execute {
         Execute {

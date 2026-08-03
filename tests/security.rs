@@ -1,3 +1,5 @@
+//! Regression tests for redaction of authentication and cancellation secrets.
+
 use bytes::Bytes;
 use pg_proto::{
     codec::FrontendMessage, demux::CancelKey, integrations::TokenStep,

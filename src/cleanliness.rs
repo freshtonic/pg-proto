@@ -7,35 +7,56 @@ use crate::codec::TransactionStatus;
 /// Observable facts which may affect whether an upstream connection is reusable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CleanlinessEvent {
+    /// The backend reported its current transaction state.
     TransactionStatus(TransactionStatus),
+    /// A reportable run-time parameter changed.
     ParameterChanged {
+        /// Parameter name.
         name: Bytes,
+        /// New parameter value.
         value: Bytes,
     },
+    /// The session began listening on a notification channel.
     Listen {
+        /// Channel name.
         channel: Bytes,
     },
+    /// The session stopped listening on one or all channels.
     Unlisten {
+        /// Channel name, or `None` for every channel.
         channel: Option<Bytes>,
     },
+    /// The session acquired an advisory lock.
     AdvisoryLockAcquired,
+    /// The session released its advisory locks.
     AdvisoryLocksReleased,
+    /// A portal became live.
     PortalOpened {
+        /// Portal name.
         name: Bytes,
     },
+    /// A portal was closed.
     PortalClosed {
+        /// Portal name.
         name: Bytes,
     },
+    /// A prepared statement became live.
     StatementPrepared {
+        /// Prepared-statement name.
         name: Bytes,
     },
+    /// A prepared statement was closed.
     StatementClosed {
+        /// Prepared-statement name.
         name: Bytes,
     },
+    /// A reset operation restored the application's clean baseline.
     ResetComplete,
     /// Evidence from application-specific SQL inspection.
     Application {
+        /// Application-defined category.
         kind: Bytes,
+        /// Application-defined supporting detail.
         detail: Bytes,
     },
 }
@@ -45,8 +66,10 @@ pub enum CleanlinessEvent {
 /// The protocol library reports facts; the application decides whether they
 /// prohibit pooling and what reset operation, if any, restores reusability.
 pub trait CleanlinessPolicy {
+    /// Incorporates one observed fact into the policy's state.
     fn observe(&mut self, event: &CleanlinessEvent);
 
+    /// Reports whether the accumulated evidence permits connection reuse.
     fn reusable(&self) -> bool;
 }
 

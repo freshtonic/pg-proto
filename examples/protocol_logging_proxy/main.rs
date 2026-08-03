@@ -1,3 +1,5 @@
+//! Runs a transparent proxy which logs every frontend and backend protocol message.
+
 #[path = "../proxy_support/mod.rs"]
 mod proxy_support;
 

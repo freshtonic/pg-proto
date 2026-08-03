@@ -1,3 +1,5 @@
+//! Integration coverage for composing independently typed proxy sides.
+
 use bytes::Bytes;
 use pg_proto::{
     cancel::{CancelKeyMap, CancelKeyRegistry},

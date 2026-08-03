@@ -1,3 +1,5 @@
+//! Compile-fail coverage for illegal protocol and resource transitions.
+
 #[test]
 fn illegal_protocol_transitions_do_not_compile() {
     let tests = trybuild::TestCases::new();

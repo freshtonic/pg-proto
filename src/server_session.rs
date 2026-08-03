@@ -209,7 +209,7 @@ pub enum ServerReadyOffer<S, C> {
         query: Bytes,
     },
     FunctionCall {
-        conn: Conn<S, ServerFunctionCall, C>,
+        conn: Conn<S, ServerFunctionCall, Dirty>,
         message: FunctionCall,
     },
     Extended(ServerExtendedOffer<S, C>),
@@ -290,6 +290,14 @@ impl<S, C> Conn<S, Ready, C> {
     /// Accepts inspected query text which cannot retain client session state.
     pub fn accept_stateless_query(self, query: Bytes) -> (Conn<S, ServerSimpleQuery, C>, Bytes) {
         (self.transition(), query)
+    }
+
+    /// Accepts an allow-listed function call known not to retain session state.
+    pub fn accept_stateless_function_call(
+        self,
+        message: FunctionCall,
+    ) -> (Conn<S, ServerFunctionCall, C>, FunctionCall) {
+        (self.transition(), message)
     }
 }
 

@@ -202,6 +202,18 @@ impl<S, C> Conn<S, Ready, C> {
     pub fn push_function_call(
         self,
         message: &FunctionCall,
+    ) -> io::Result<(Conn<S, FunctionCalling, Dirty>, Frame)> {
+        Ok((self.transition(), message.to_frame()?))
+    }
+
+    /// Buffers an allow-listed function call known not to retain session state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a count or argument length exceeds its wire field.
+    pub fn push_stateless_function_call(
+        self,
+        message: &FunctionCall,
     ) -> io::Result<(Conn<S, FunctionCalling, C>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }

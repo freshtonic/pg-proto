@@ -5,88 +5,118 @@ use pg_proto_fsm::protocol;
 protocol! {
     pub mod frontend {
         initial Ready;
+        messages {
+            internal: crate::codec::FrontendMessage,
+            external: crate::codec::BackendMessage,
+        }
         Ready internal {
-            Query(query: bytes::Bytes) => Simple [Dirty],
+            Query(query: bytes::Bytes) => Simple [Dirty] <= crate::codec::FrontendMessage::Query(_),
             BeginExtended(begin_extended) => Building,
-            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionCalling [Dirty],
+            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionCalling [Dirty] <= crate::codec::FrontendMessage::FunctionCall(_),
             Reset(reset) => Resetting [Dirty],
-            Terminate(terminate) => Terminated,
+            Terminate(terminate) => Terminated <= crate::codec::FrontendMessage::Terminate,
         }
         FunctionCalling external {
-            FunctionResponse(function_response: bytes::Bytes) => AwaitingReady,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            FunctionResponse(function_response: bytes::Bytes) => AwaitingReady <= crate::codec::BackendMessage::FunctionCallResponse(_),
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Simple external {
-            Continue(continue_response: crate::codec::BackendMessage) => Simple,
-            CopyIn(enter_copy_in: crate::codec::CopyResponse) => CopyIn,
-            CopyOut(enter_copy_out: crate::codec::CopyResponse) => CopyOut,
-            CopyBoth(enter_copy_both: crate::codec::CopyResponse) => CopyBoth,
-            Ready(ready: crate::codec::TransactionStatus) => Ready,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            Continue(continue_response: crate::codec::BackendMessage) => Simple <= crate::codec::BackendMessage::RowDescription(_)
+                | crate::codec::BackendMessage::DataRow(_)
+                | crate::codec::BackendMessage::CommandComplete(_)
+                | crate::codec::BackendMessage::EmptyQueryResponse,
+            CopyIn(enter_copy_in: crate::codec::CopyResponse) => CopyIn <= crate::codec::BackendMessage::CopyInResponse(_),
+            CopyOut(enter_copy_out: crate::codec::CopyResponse) => CopyOut <= crate::codec::BackendMessage::CopyOutResponse(_),
+            CopyBoth(enter_copy_both: crate::codec::CopyResponse) => CopyBoth <= crate::codec::BackendMessage::CopyBothResponse(_),
+            Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Building internal {
-            Parse(parse: crate::codec::Parse) => Building [Dirty],
-            Describe(describe: crate::codec::Describe) => Building,
-            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty],
-            Close(close: crate::codec::Close) => Building,
-            Flush(flush) => Building,
-            Sync(sync) => AwaitingReady,
+            Parse(parse: crate::codec::Parse) => Building [Dirty] <= crate::codec::FrontendMessage::Parse(_),
+            Describe(describe: crate::codec::Describe) => Building <= crate::codec::FrontendMessage::Describe(_),
+            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Bind(_),
+            Close(close: crate::codec::Close) => Building <= crate::codec::FrontendMessage::Close(_),
+            Flush(flush) => Building <= crate::codec::FrontendMessage::Flush,
+            Sync(sync) => AwaitingReady <= crate::codec::FrontendMessage::Sync,
         }
         BoundBuilding internal {
-            Parse(parse: crate::codec::Parse) => BoundBuilding [Dirty],
-            Describe(describe: crate::codec::Describe) => BoundBuilding,
-            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty],
-            Execute(execute: crate::codec::Execute) => BoundBuilding,
-            Close(close: crate::codec::Close) => BoundBuilding,
-            Flush(flush) => BoundBuilding,
-            Sync(sync) => AwaitingReady,
+            Parse(parse: crate::codec::Parse) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Parse(_),
+            Describe(describe: crate::codec::Describe) => BoundBuilding <= crate::codec::FrontendMessage::Describe(_),
+            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Bind(_),
+            Execute(execute: crate::codec::Execute) => BoundBuilding <= crate::codec::FrontendMessage::Execute(_),
+            Close(close: crate::codec::Close) => BoundBuilding <= crate::codec::FrontendMessage::Close(_),
+            Flush(flush) => BoundBuilding <= crate::codec::FrontendMessage::Flush,
+            Sync(sync) => AwaitingReady <= crate::codec::FrontendMessage::Sync,
         }
         AwaitingReady external {
-            Continue(continue_response: crate::codec::BackendMessage) => AwaitingReady,
-            Ready(ready: crate::codec::TransactionStatus) => Ready,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            Continue(continue_response: crate::codec::BackendMessage) => AwaitingReady <= crate::codec::BackendMessage::ParseComplete
+                | crate::codec::BackendMessage::BindComplete
+                | crate::codec::BackendMessage::CloseComplete
+                | crate::codec::BackendMessage::RowDescription(_)
+                | crate::codec::BackendMessage::NoData
+                | crate::codec::BackendMessage::ParameterDescription(_)
+                | crate::codec::BackendMessage::DataRow(_)
+                | crate::codec::BackendMessage::CommandComplete(_)
+                | crate::codec::BackendMessage::PortalSuspended
+                | crate::codec::BackendMessage::EmptyQueryResponse,
+            Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyIn mixed {
-            internal CopyData(copy_data: bytes::Bytes) => CopyIn,
-            internal CopyDone(copy_done) => AwaitingReady,
-            internal CopyFail(copy_fail: bytes::Bytes) => AwaitingReady,
-            external Error(error: crate::codec::DiagnosticResponse) => Draining,
+            internal CopyData(copy_data: bytes::Bytes) => CopyIn <= crate::codec::FrontendMessage::CopyData(_),
+            internal CopyDone(copy_done) => AwaitingReady <= crate::codec::FrontendMessage::CopyDone,
+            internal CopyFail(copy_fail: bytes::Bytes) => AwaitingReady <= crate::codec::FrontendMessage::CopyFail(_),
+            external Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyOut external {
-            CopyData(copy_data: bytes::Bytes) => CopyOut,
-            CopyDone(copy_done) => AwaitingReady,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            CopyData(copy_data: bytes::Bytes) => CopyOut <= crate::codec::BackendMessage::CopyData(_),
+            CopyDone(copy_done) => AwaitingReady <= crate::codec::BackendMessage::CopyDone,
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBoth mixed {
-            internal SendCopyData(send_copy_data: bytes::Bytes) => CopyBoth,
-            external ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBoth,
-            internal SendCopyDone(send_copy_done) => CopyBothClientDone,
-            external ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
-            external Error(error: crate::codec::DiagnosticResponse) => Draining,
+            internal SendCopyData(send_copy_data: bytes::Bytes) => CopyBoth <= crate::codec::FrontendMessage::CopyData(_),
+            external ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBoth <= crate::codec::BackendMessage::CopyData(_),
+            internal SendCopyDone(send_copy_done) => CopyBothClientDone <= crate::codec::FrontendMessage::CopyDone,
+            external ReceiveCopyDone(receive_copy_done) => CopyBothServerDone <= crate::codec::BackendMessage::CopyDone,
+            external Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBothClientDone external {
-            ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBothClientDone,
-            ReceiveCopyDone(receive_copy_done) => AwaitingReady,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBothClientDone <= crate::codec::BackendMessage::CopyData(_),
+            ReceiveCopyDone(receive_copy_done) => AwaitingReady <= crate::codec::BackendMessage::CopyDone,
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBothServerDone internal {
-            SendCopyData(send_copy_data: bytes::Bytes) => CopyBothServerDone,
-            SendCopyDone(send_copy_done) => AwaitingReady,
+            SendCopyData(send_copy_data: bytes::Bytes) => CopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
+            SendCopyDone(send_copy_done) => AwaitingReady <= crate::codec::FrontendMessage::CopyDone,
         }
         Draining external {
-            Continue(continue_response: crate::codec::BackendMessage) => Draining,
-            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            Continue(continue_response: crate::codec::BackendMessage) => Draining <= crate::codec::BackendMessage::RowDescription(_)
+                | crate::codec::BackendMessage::DataRow(_)
+                | crate::codec::BackendMessage::CommandComplete(_)
+                | crate::codec::BackendMessage::EmptyQueryResponse
+                | crate::codec::BackendMessage::ParseComplete
+                | crate::codec::BackendMessage::BindComplete
+                | crate::codec::BackendMessage::CloseComplete
+                | crate::codec::BackendMessage::NoData
+                | crate::codec::BackendMessage::ParameterDescription(_)
+                | crate::codec::BackendMessage::PortalSuspended,
+            Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Resetting external {
-            Continue(continue_reset: crate::codec::BackendMessage) => Resetting,
-            DiscardComplete(discard_complete: bytes::Bytes) => ResetComplete,
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            Continue(continue_reset: crate::codec::BackendMessage) => Resetting <= crate::codec::BackendMessage::RowDescription(_)
+                | crate::codec::BackendMessage::DataRow(_)
+                | crate::codec::BackendMessage::EmptyQueryResponse,
+            DiscardComplete(discard_complete: bytes::Bytes) => ResetComplete <= crate::codec::BackendMessage::CommandComplete(_),
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ResetComplete external {
-            Continue(continue_reset: crate::codec::BackendMessage) => ResetComplete,
-            ReadyClean(ready_clean: crate::codec::TransactionStatus) => Ready [Pristine],
-            ReadyDirty(ready_dirty: crate::codec::TransactionStatus) => Ready [Dirty],
-            Error(error: crate::codec::DiagnosticResponse) => Draining,
+            Continue(continue_reset: crate::codec::BackendMessage) => ResetComplete <= crate::codec::BackendMessage::RowDescription(_)
+                | crate::codec::BackendMessage::DataRow(_)
+                | crate::codec::BackendMessage::CommandComplete(_)
+                | crate::codec::BackendMessage::EmptyQueryResponse,
+            ReadyClean(ready_clean: crate::codec::TransactionStatus) => Ready [Pristine] <= crate::codec::BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
+            ReadyDirty(ready_dirty: crate::codec::TransactionStatus) => Ready [Dirty] <= crate::codec::BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::InTransaction | crate::codec::TransactionStatus::FailedTransaction),
+            Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Terminated external {}
     }
@@ -500,6 +530,35 @@ mod tests {
                 &BackendMessage::CopyDone,
             ),
             Some(backend::Event::Done)
+        );
+    }
+
+    #[test]
+    fn generated_frontend_projection_covers_wire_messages_only() {
+        assert_eq!(
+            frontend::project_internal(frontend::RuntimeState::Building, &FrontendMessage::Sync,),
+            Some(frontend::Event::Sync)
+        );
+        assert_eq!(
+            frontend::project_external(
+                frontend::RuntimeState::Simple,
+                &BackendMessage::ReadyForQuery(TransactionStatus::Idle),
+            ),
+            Some(frontend::Event::Ready)
+        );
+        assert_eq!(
+            frontend::project_external(
+                frontend::RuntimeState::ResetComplete,
+                &BackendMessage::ReadyForQuery(TransactionStatus::FailedTransaction),
+            ),
+            Some(frontend::Event::ReadyDirty)
+        );
+        assert_eq!(
+            frontend::project_external(
+                frontend::RuntimeState::CopyIn,
+                &BackendMessage::CopyData(Bytes::from_static(b"illegal direction")),
+            ),
+            None
         );
     }
 

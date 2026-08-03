@@ -1,12 +1,6 @@
 use std::{
     error::Error,
-    net::SocketAddr,
     sync::{Arc, Mutex},
-};
-
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ImageExt as _, runners::AsyncRunner as _},
 };
 use tokio::net::TcpListener;
 
@@ -15,26 +9,26 @@ mod proxy_support;
 
 use proxy_support::Observation;
 
-fn postgres_tag() -> String {
-    let version = std::env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
-    assert!(
-        matches!(version.as_str(), "14" | "15" | "16" | "17" | "18"),
-        "unsupported PostgreSQL test version"
-    );
-    format!("{version}-alpine")
+#[tokio::test]
+#[ignore = "requires local networking"]
+async fn rejects_an_unavailable_explicit_upstream_before_listening() -> Result<(), Box<dyn Error>> {
+    let unused = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = unused.local_addr()?;
+    drop(unused);
+
+    let Err(error) = proxy_support::ExampleUpstream::resolve(Some(&address.to_string())).await
+    else {
+        return Err("unexpectedly connected to an unused address".into());
+    };
+    assert!(error.to_string().contains("omit the upstream argument"));
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
 async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_init_sql(include_bytes!("../examples/sql_logging_proxy/customer_orders.sql").to_vec())
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let postgres_port = postgres.get_host_port_ipv4(5432).await?;
-    let upstream = SocketAddr::from(([127, 0, 0, 1], postgres_port));
+    let postgres = proxy_support::ExampleUpstream::resolve(None).await?;
+    let upstream = postgres.address();
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let proxy_address = listener.local_addr()?;

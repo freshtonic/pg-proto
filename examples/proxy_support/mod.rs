@@ -1,10 +1,14 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use bytes::BytesMut;
 use pg_proto::{
     codec::{Backend, BackendMessage, Frontend, FrontendMessage},
     pre_startup::{PreStartupMessage, decode_pre_startup},
     transport::Buffered,
+};
+use testcontainers_modules::{
+    postgres::Postgres,
+    testcontainers::{ContainerAsync, ImageExt as _, runners::AsyncRunner as _},
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -30,6 +34,56 @@ pub enum Observation {
 }
 
 pub type Observer = Arc<dyn Fn(Observation) + Send + Sync>;
+
+pub struct ExampleUpstream {
+    address: SocketAddr,
+    _container: Option<ContainerAsync<Postgres>>,
+}
+
+impl ExampleUpstream {
+    pub async fn resolve(configured: Option<&str>) -> Result<Self, Box<dyn Error>> {
+        if let Some(configured) = configured {
+            let address: SocketAddr = configured.parse()?;
+            TcpStream::connect(address).await.map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot connect to PostgreSQL at {address}: {error}; start that server or omit the upstream argument to use the example container"
+                    ),
+                )
+            })?;
+            return Ok(Self {
+                address,
+                _container: None,
+            });
+        }
+
+        let version =
+            std::env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
+        if !matches!(version.as_str(), "14" | "15" | "16" | "17" | "18") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PG_PROTO_POSTGRES_VERSION must be 14, 15, 16, 17, or 18",
+            )
+            .into());
+        }
+        let container = Postgres::default()
+            .with_init_sql(include_bytes!("../sql_logging_proxy/customer_orders.sql").to_vec())
+            .with_host_auth()
+            .with_tag(format!("{version}-alpine"))
+            .start()
+            .await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        Ok(Self {
+            address: SocketAddr::from(([127, 0, 0, 1], port)),
+            _container: Some(container),
+        })
+    }
+
+    pub const fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
 
 pub async fn serve(
     listener: TcpListener,

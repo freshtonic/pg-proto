@@ -4,11 +4,11 @@ This companion example forwards the same traffic while printing every decoded
 pre-startup, frontend, and backend message with its direction and connection
 number. `PasswordResponse` uses pg-proto's redacted `Debug` implementation.
 
-Start the sample PostgreSQL container as described in the
-[`sql_logging_proxy` README](../sql_logging_proxy/README.md), then run:
+Run without arguments to start and retain a PostgreSQL 18 test container loaded
+with the customer/orders fixture:
 
 ```sh
-cargo run --example protocol_logging_proxy -- 127.0.0.1:6432 127.0.0.1:5432
+cargo run --example protocol_logging_proxy
 ```
 
 Connect with encryption disabled so that the demonstration can inspect frames:
@@ -23,3 +23,12 @@ The output includes the startup packet and messages such as `Parse`, `Bind`,
 wire order. As with the SQL logger, this local example declines SSL and GSS
 requests; production proxies should terminate encryption rather than log
 plaintext traffic.
+
+To use an existing server instead, pass the listener and upstream explicitly:
+
+```sh
+cargo run --example protocol_logging_proxy -- 127.0.0.1:6432 127.0.0.1:5432
+```
+
+The explicit upstream must already be reachable. The example checks it before
+opening its listener and reports a clear error if it cannot connect.

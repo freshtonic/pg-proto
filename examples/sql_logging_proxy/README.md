@@ -31,7 +31,33 @@ PG_PROTO_POSTGRES_VERSION=14 \
 
 A Docker-compatible container runtime must be running.
 
-## Run it interactively
+## Run it interactively with an automatic container
+
+Run the proxy without an upstream argument. It starts PostgreSQL 18 through the
+Rust `testcontainers-modules` crate, retains the container for the life of the
+proxy, and loads the sample schema automatically:
+
+```sh
+cargo run --example sql_logging_proxy
+```
+
+Then query it from another terminal:
+
+```sh
+psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=disable" \
+  -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
+```
+
+The proxy prints output resembling:
+
+```text
+[1] SQL: SELECT c.name, count(o.id) ...
+[1] ROWS: 3 (SELECT 3)
+```
+
+Set `PG_PROTO_POSTGRES_VERSION` to select PostgreSQL 14, 15, 16, 17, or 18.
+
+## Use an existing PostgreSQL server
 
 Start PostgreSQL with the sample schema mounted as an initialisation script:
 
@@ -57,9 +83,6 @@ psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=disable" \
   -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
 ```
 
-The proxy prints output resembling:
-
-```text
-[1] SQL: SELECT c.name, count(o.id) ...
-[1] ROWS: 3 (SELECT 3)
-```
+An explicit upstream is checked before the proxy begins listening. If it is not
+reachable, the example exits immediately with guidance instead of accepting and
+then abruptly closing a client connection.

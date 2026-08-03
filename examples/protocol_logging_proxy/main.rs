@@ -9,13 +9,14 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let listen = address(1, "127.0.0.1:6432")?;
-    let upstream = address(2, "127.0.0.1:5432")?;
+    let upstream = proxy_support::ExampleUpstream::resolve(env::args().nth(2).as_deref()).await?;
+    let upstream_address = upstream.address();
     let listener = TcpListener::bind(listen).await?;
-    println!("protocol logging proxy listening on {listen}; upstream is {upstream}");
+    println!("protocol logging proxy listening on {listen}; upstream is {upstream_address}");
 
     proxy_support::serve(
         listener,
-        upstream,
+        upstream_address,
         Arc::new(|event| {
             if let Observation::Protocol {
                 connection,

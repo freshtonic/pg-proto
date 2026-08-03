@@ -38,6 +38,12 @@ pub enum CopyBoth {}
 #[derive(Debug)]
 pub enum Draining {}
 
+#[derive(Debug)]
+pub enum Resetting {}
+
+#[derive(Debug)]
+pub enum ResetComplete {}
+
 pub type ErrorResponse = DiagnosticResponse;
 
 pub type Fallible<T, S, C = Pristine> = Result<T, (Conn<S, Draining, C>, ErrorResponse)>;
@@ -89,6 +95,25 @@ pub enum ReadyState<S, C> {
     },
 }
 
+#[derive(Debug)]
+pub enum ResettingTransition<S> {
+    Continue(Conn<S, Resetting, Dirty>, SessionItem),
+    Complete(Conn<S, ResetComplete, Dirty>),
+    Error(Conn<S, Draining, Dirty>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum ResetCompleteTransition<S> {
+    Continue(Conn<S, ResetComplete, Dirty>, SessionItem),
+    Ready(Conn<S, Ready, Pristine>),
+    Dirty {
+        conn: Conn<S, Ready, Dirty>,
+        status: TransactionStatus,
+        parameters_changed: bool,
+    },
+    Error(Conn<S, Draining, Dirty>, ErrorResponse),
+}
+
 impl<S, C> Conn<S, Ready, C> {
     /// Buffers a simple query and enters its response phase.
     ///
@@ -124,6 +149,23 @@ impl<S> Conn<S, Ready, Pristine> {
     /// ```
     pub fn release(self) -> S {
         self.into_transport()
+    }
+}
+
+impl<S> Conn<S, Ready, Dirty> {
+    /// Begins the only typed path which can recover pool-safe cleanliness.
+    ///
+    /// `ROLLBACK` makes the sequence legal after either transaction status;
+    /// `DISCARD ALL` then clears session-local resources and settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed reset query cannot be encoded.
+    pub fn begin_reset(self) -> io::Result<(Conn<S, Resetting, Dirty>, Frame)> {
+        Ok((
+            self.transition(),
+            cstr_frame(b'Q', b"ROLLBACK; DISCARD ALL")?,
+        ))
     }
 }
 
@@ -387,6 +429,47 @@ impl<S, C> Conn<S, AwaitingReady, C> {
     }
 }
 
+impl<S> Conn<S, Resetting, Dirty> {
+    /// Waits for evidence that `DISCARD ALL` itself completed.
+    #[must_use]
+    pub fn offer(self, item: SessionItem) -> ResettingTransition<S> {
+        match item {
+            SessionItem::CommandComplete { tag, .. } if tag == b"DISCARD ALL".as_slice() => {
+                ResettingTransition::Complete(self.transition())
+            }
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                ResettingTransition::Error(self.transition(), error)
+            }
+            item => ResettingTransition::Continue(self, item),
+        }
+    }
+}
+
+impl<S> Conn<S, ResetComplete, Dirty> {
+    /// Restores `Pristine` only from idle readiness and the startup parameter baseline.
+    #[must_use]
+    pub fn offer(self, item: SessionItem) -> ResetCompleteTransition<S> {
+        match item {
+            SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            } => ResetCompleteTransition::Ready(self.transition()),
+            SessionItem::ReadyForQuery {
+                status,
+                parameters_changed,
+            } => ResetCompleteTransition::Dirty {
+                conn: self.transition(),
+                status,
+                parameters_changed,
+            },
+            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
+                ResetCompleteTransition::Error(self.transition(), error)
+            }
+            item => ResetCompleteTransition::Continue(self, item),
+        }
+    }
+}
+
 impl<S, P> Conn<S, P, Pristine> {
     /// Conservatively records session-local state without changing protocol phase.
     pub fn mark_dirty(self) -> Conn<S, P, Dirty> {
@@ -506,5 +589,39 @@ mod tests {
             panic!("parameter change should taint readiness")
         };
         conn.into_transport();
+    }
+
+    #[test]
+    fn discard_all_evidence_recovers_pool_cleanliness() {
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let (resetting, frame) = ready.mark_dirty().begin_reset().unwrap();
+        assert_eq!(frame.body, Bytes::from_static(b"ROLLBACK; DISCARD ALL\0"));
+        let ResettingTransition::Continue(resetting, _) =
+            resetting.offer(SessionItem::CommandComplete {
+                tag: Bytes::from_static(b"ROLLBACK"),
+                command: crate::demux::CommandIndex(0),
+                notices: vec![],
+            })
+        else {
+            panic!("ROLLBACK incorrectly completed reset")
+        };
+        let ResettingTransition::Complete(reset_complete) =
+            resetting.offer(SessionItem::CommandComplete {
+                tag: Bytes::from_static(b"DISCARD ALL"),
+                command: crate::demux::CommandIndex(1),
+                notices: vec![],
+            })
+        else {
+            panic!("DISCARD ALL did not advance reset")
+        };
+        let ResetCompleteTransition::Ready(ready) =
+            reset_complete.offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: false,
+            })
+        else {
+            panic!("clean ready evidence did not restore pristine state")
+        };
+        ready.release();
     }
 }

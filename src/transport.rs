@@ -11,6 +11,7 @@ use crate::{
     auth::TlsServerEndPoint,
     codec::{Backend, BackendMessage, Direction, Frame, Frontend, FrontendMessage, PgCodec},
     demux::{CancelKey, Demux, Notification, SessionItem},
+    pre_startup::{PreStartup, PreStartupMessage, decode_pre_startup},
 };
 
 /// Transport wrapper which retains bytes until each write has completed.
@@ -128,6 +129,27 @@ impl<S: AsyncRead + Unpin, D: Direction> Buffered<S, D> {
     }
 }
 
+impl<S: AsyncRead + Unpin> Buffered<S, Frontend> {
+    /// Receives one raw first packet before tagged frontend framing begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns malformed pre-startup data and underlying transport read errors.
+    pub async fn receive_pre_startup(&mut self) -> io::Result<PreStartupMessage> {
+        loop {
+            if let Some(message) = decode_pre_startup(&mut self.inbound)? {
+                return Ok(message);
+            }
+            if self.io.read_buf(&mut self.inbound).await? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "client closed with no complete pre-startup packet",
+                ));
+            }
+        }
+    }
+}
+
 impl<S: AsyncRead + Unpin> Buffered<S, Backend> {
     /// Receives one decoded backend message while retaining partial input.
     ///
@@ -235,6 +257,17 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
     pub async fn receive_frontend_wire(&mut self) -> io::Result<FrontendMessage> {
         self.transport_mut().receive_wire().await
+    }
+}
+
+impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
+    /// Receives a raw pre-startup packet before server-role state projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns malformed pre-startup data and underlying transport read errors.
+    pub async fn receive_pre_startup_wire(&mut self) -> io::Result<PreStartupMessage> {
+        self.transport_mut().receive_pre_startup().await
     }
 }
 
@@ -439,5 +472,46 @@ mod tests {
             intercepted,
             FrontendMessage::Query(Bytes::from_static(b"select encrypted"))
         );
+    }
+
+    #[tokio::test]
+    async fn client_facing_transport_projects_repeated_pre_startup_choice() {
+        let (proxy, mut client) = tokio::io::duplex(256);
+        let ssl = PreStartupMessage::SslRequest
+            .to_packet()
+            .expect("encodable SSLRequest");
+        let startup = PreStartupMessage::Startup(crate::startup::StartupMessage {
+            version: crate::startup::ProtocolVersion::V3_2,
+            parameters: std::collections::BTreeMap::from([(
+                Bytes::from_static(b"user"),
+                Bytes::from_static(b"postgres"),
+            )]),
+        });
+        let startup_packet = startup.to_packet().expect("encodable StartupMessage");
+        client.write_all(&ssl).await.expect("writable client");
+        client
+            .write_all(&startup_packet)
+            .await
+            .expect("writable client");
+
+        let mut conn = Conn::new(Buffered::<_, Frontend>::new_frontend(proxy));
+        let ssl = conn
+            .receive_pre_startup_wire()
+            .await
+            .expect("decodable SSLRequest");
+        let crate::pre_startup::PreStartupOffer::Ssl(decision) = conn.offer_pre_startup(ssl) else {
+            panic!("unexpected pre-startup branch")
+        };
+        let (mut conn, reply) = decision.reject_ssl();
+        assert_eq!(reply, b'N');
+        let message = conn
+            .receive_pre_startup_wire()
+            .await
+            .expect("decodable StartupMessage");
+        assert_eq!(message, startup);
+        assert!(matches!(
+            conn.offer_pre_startup(message),
+            crate::pre_startup::PreStartupOffer::Startup { .. }
+        ));
     }
 }

@@ -31,6 +31,28 @@ pub enum GssHandshake {}
 #[derive(Debug)]
 pub enum Terminated {}
 
+#[derive(Debug)]
+pub enum ServerSslDecision {}
+
+#[derive(Debug)]
+pub enum ServerGssDecision {}
+
+/// Server-role projection of the client's first-packet external choice.
+#[derive(Debug)]
+pub enum PreStartupOffer<S, C = Pristine> {
+    Ssl(Conn<S, ServerSslDecision, C>),
+    Gss(Conn<S, ServerGssDecision, C>),
+    Cancel {
+        conn: Conn<S, Terminated, C>,
+        process_id: u32,
+        secret_key: Bytes,
+    },
+    Startup {
+        conn: Conn<S, Startup, C>,
+        message: StartupMessage,
+    },
+}
+
 /// The server's single-byte answer to an SSL request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EncryptionReply {
@@ -255,6 +277,50 @@ impl<S> Conn<S, PreStartup, Pristine> {
     }
 }
 
+impl<S, C> Conn<S, PreStartup, C> {
+    /// Projects an inspected client pre-startup packet into the server role.
+    pub fn offer_pre_startup(self, message: PreStartupMessage) -> PreStartupOffer<S, C> {
+        match message {
+            PreStartupMessage::SslRequest => PreStartupOffer::Ssl(self.transition()),
+            PreStartupMessage::GssEncRequest => PreStartupOffer::Gss(self.transition()),
+            PreStartupMessage::CancelRequest {
+                process_id,
+                secret_key,
+            } => PreStartupOffer::Cancel {
+                conn: self.transition(),
+                process_id,
+                secret_key,
+            },
+            PreStartupMessage::Startup(message) => PreStartupOffer::Startup {
+                conn: self.transition(),
+                message,
+            },
+        }
+    }
+}
+
+impl<S, C> Conn<S, ServerSslDecision, C> {
+    /// Rejects SSL and returns to the pre-startup choice on the same transport.
+    pub fn reject_ssl(self) -> (Conn<S, PreStartup, C>, u8) {
+        (self.transition(), EncryptionReply::Rejected.as_byte())
+    }
+
+    /// Accepts SSL and requires the transport handshake before startup is legal.
+    pub fn accept_ssl(self) -> (Conn<S, TlsHandshake, C>, u8) {
+        (self.transition(), EncryptionReply::Accepted.as_byte())
+    }
+}
+
+impl<S, C> Conn<S, ServerGssDecision, C> {
+    pub fn reject_gss(self) -> (Conn<S, PreStartup, C>, u8) {
+        (self.transition(), EncryptionReply::Rejected.as_byte())
+    }
+
+    pub fn accept_gss(self) -> (Conn<S, GssHandshake, C>, u8) {
+        (self.transition(), EncryptionReply::Accepted.as_byte())
+    }
+}
+
 impl<S> Conn<S, AwaitingSslReply, Pristine> {
     /// Resolves the raw SSL response byte.
     ///
@@ -291,10 +357,29 @@ impl<S> Conn<S, TlsHandshake, Pristine> {
     }
 }
 
+impl<S, C> Conn<S, TlsHandshake, C> {
+    /// Records a server-side TLS upgrade while preserving cleanliness.
+    pub fn finish_server_tls<Tls>(
+        self,
+        upgrade: impl FnOnce(S) -> Tls,
+    ) -> Conn<Tls, PreStartup, C> {
+        self.map_transport(upgrade).transition()
+    }
+}
+
 impl<S> Conn<S, GssHandshake, Pristine> {
     /// Records a completed in-place GSS encryption upgrade.
     pub fn finish_gss<Gss>(self, upgrade: impl FnOnce(S) -> Gss) -> Conn<Gss, PreStartup> {
         Conn::new(upgrade(self.into_transport()))
+    }
+}
+
+impl<S, C> Conn<S, GssHandshake, C> {
+    pub fn finish_server_gss<Gss>(
+        self,
+        upgrade: impl FnOnce(S) -> Gss,
+    ) -> Conn<Gss, PreStartup, C> {
+        self.map_transport(upgrade).transition()
     }
 }
 

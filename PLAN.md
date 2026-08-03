@@ -72,7 +72,9 @@ work using that feature is complete.
     compatibility sessions.
     - [x] Generate state-aware client-message projection for backend Ready,
       extended-query/error-drain, COPY IN, and COPY BOTH states.
-    - [ ] Generate backend-message projection and replace handwritten matching.
+    - [x] Generate backend-message projection for query responses, typed
+      descriptions, errors, readiness, function calls, and nested COPY states.
+    - [ ] Replace handwritten matching with generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

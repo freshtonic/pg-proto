@@ -158,34 +158,34 @@ protocol! {
         Auth external {
             Ok(ok) => AwaitingStartupReady,
             Cleartext(cleartext) => PasswordResponse,
-            Md5(md5) => PasswordResponse,
-            Sasl(sasl) => SaslInitial,
+            Md5(md5: [u8; 4]) => PasswordResponse,
+            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial,
             Gss(gss) => TokenResponse,
             Sspi(sspi) => TokenResponse,
             KerberosV5(kerberos_v5) => TokenResponse,
             Error(error) => Terminated,
         }
         PasswordResponse internal {
-            Password(password) => AwaitingAuthOk,
+            Password(password: bytes::Bytes) => AwaitingAuthOk,
         }
         TokenResponse internal {
-            Response(response) => TokenChallenge,
+            Response(response: bytes::Bytes) => TokenChallenge,
         }
         TokenChallenge external {
-            Continue(continue_token) => TokenResponse,
+            Continue(continue_token: bytes::Bytes) => TokenResponse,
             Ok(ok) => AwaitingStartupReady,
             Error(error) => Terminated,
         }
         SaslInitial internal {
-            Initial(initial) => Sasl,
+            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl,
         }
         Sasl external {
-            Continue(continue_response) => SaslChallenge,
-            Final(final_response) => SaslFinal,
+            Continue(continue_response: bytes::Bytes) => SaslChallenge,
+            Final(final_response: bytes::Bytes) => SaslFinal,
             Error(error) => Terminated,
         }
         SaslChallenge internal {
-            Response(response) => Sasl,
+            Response(response: bytes::Bytes) => Sasl,
         }
         SaslFinal internal {
             Verified(verified) => AwaitingAuthOk,
@@ -377,8 +377,8 @@ protocol! {
         }
         Auth internal {
             Cleartext(cleartext) => PasswordResponse,
-            Md5(md5) => PasswordResponse,
-            Sasl(sasl) => SaslInitial,
+            Md5(md5: [u8; 4]) => PasswordResponse,
+            Sasl(sasl: Vec<bytes::Bytes>) => SaslInitial,
             Gss(gss) => TokenResponse,
             Sspi(sspi) => TokenResponse,
             KerberosV5(kerberos_v5) => TokenResponse,
@@ -386,24 +386,24 @@ protocol! {
             Error(error) => Terminated,
         }
         PasswordResponse external {
-            Response(response) => Auth,
+            Response(response: bytes::Bytes) => Auth,
         }
         SaslInitial external {
-            Initial(initial) => Sasl,
+            Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl,
         }
         Sasl internal {
-            Continue(continue_response) => SaslResponse,
-            Final(final_response) => Auth,
+            Continue(continue_response: bytes::Bytes) => SaslResponse,
+            Final(final_response: bytes::Bytes) => Auth,
             Error(error) => Terminated,
         }
         SaslResponse external {
-            Response(response) => Sasl,
+            Response(response: bytes::Bytes) => Sasl,
         }
         TokenResponse external {
-            Response(response) => TokenPolicy,
+            Response(response: bytes::Bytes) => TokenPolicy,
         }
         TokenPolicy internal {
-            Continue(continue_token) => TokenResponse,
+            Continue(continue_token: bytes::Bytes) => TokenResponse,
             Verified(verified) => Auth,
             Error(error) => Terminated,
         }

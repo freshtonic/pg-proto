@@ -121,5 +121,7 @@ work using that feature is complete.
     transitions, including state-preserving reconstruction failure.
   - [x] Apply payloads to frontend simple query, COPY data/failure, and
     function-call transitions.
-  - [ ] Apply payloads to frontend authentication and remaining control
+  - [x] Apply asymmetric payloads to client- and server-facing password, token,
+    and recursive SASL authentication transitions.
+  - [ ] Apply payloads to remaining frontend and backend control/response
     transitions.

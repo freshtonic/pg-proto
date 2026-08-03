@@ -60,7 +60,7 @@ pub struct ResourceConnection<'id, S, P, C> {
     resources: ResourceScope<'id>,
 }
 
-impl<S, P, C> ResourceConnection<'_, S, P, C> {
+impl<'id, S, P, C> ResourceConnection<'id, S, P, C> {
     /// Borrows the typed connection for transport-only operations such as
     /// buffering a frame returned by this wrapper.
     pub const fn connection(&self) -> &Conn<S, P, C> {
@@ -71,6 +71,20 @@ impl<S, P, C> ResourceConnection<'_, S, P, C> {
     /// as buffering and flushing returned frames.
     pub const fn connection_mut(&mut self) -> &mut Conn<S, P, C> {
         &mut self.conn
+    }
+
+    /// Reports whether a prepared-statement token is still live in this
+    /// connection's namespace.
+    #[must_use]
+    pub fn statement_is_live(&self, statement: &PreparedStatement<'id>) -> bool {
+        self.resources.statements.get(&statement.upstream_name) == Some(&statement.generation)
+    }
+
+    /// Reports whether a portal token is still live in this connection's
+    /// namespace.
+    #[must_use]
+    pub fn portal_is_live(&self, portal: &Portal<'id>) -> bool {
+        self.resources.portals.get(&portal.upstream_name) == Some(&portal.generation)
     }
 
     /// Deliberately leaves resource-aware handling while retaining typestate.
@@ -869,6 +883,46 @@ mod tests {
                 panic!("idle readiness should complete the extended cycle")
             };
             ready.begin_extended().into_connection().into_transport();
+        });
+    }
+
+    #[test]
+    fn idle_readiness_invalidates_only_the_unnamed_portal() {
+        let ready: Conn<(), crate::auth::Ready> = Conn::new(()).transition();
+        with_connection_resources(ready.begin_extended(), |connection| {
+            let (connection, statement, _) = connection
+                .prepare(
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::from_static(b"select 1"),
+                    vec![],
+                )
+                .unwrap();
+            let (connection, portal, _) = connection
+                .bind(
+                    &statement,
+                    Bytes::new(),
+                    Bytes::new(),
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .unwrap();
+            assert!(connection.statement_is_live(&statement));
+            assert!(connection.portal_is_live(&portal));
+            let (awaiting, _) = connection.sync();
+            let ResourceAwaitingTransition::Ready(ResourceReadyState::Clean(ready)) = awaiting
+                .offer(SessionItem::ReadyForQuery {
+                    status: TransactionStatus::Idle,
+                    parameters_changed: false,
+                })
+            else {
+                panic!("idle readiness should complete the extended cycle")
+            };
+
+            assert!(ready.statement_is_live(&statement));
+            assert!(!ready.portal_is_live(&portal));
+            ready.into_connection().into_transport();
         });
     }
 

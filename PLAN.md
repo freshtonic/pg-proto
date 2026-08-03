@@ -111,3 +111,5 @@ work using that feature is complete.
 - [x] Cover the complete asynchronous branded cycle against live PostgreSQL 18.
 - [ ] Add explicit unnamed-resource boundary regression tests to the branded
   connection API.
+  - [x] Idle transaction completion invalidates the unnamed portal only.
+  - [ ] A simple-query boundary invalidates the unnamed statement.

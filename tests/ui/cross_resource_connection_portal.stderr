@@ -27,7 +27,7 @@ error[E0521]: borrowed data escapes outside of closure
    |                                                          -----
    |                                                          |
    |                                                          `first` is a reference that is only valid in the closure body
-   |                                                          has type `ResourceConnection<'1, (), pg_proto::session::Building, Pristine>`
+   |                                                          has type `ResourceConnection<'1, (), pg_proto::session::Building, pg_proto::Pristine>`
 ...
 15 |               let _ = second.bind(
    |  _____________________^

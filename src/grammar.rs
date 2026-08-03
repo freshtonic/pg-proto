@@ -6,10 +6,10 @@ protocol! {
     pub mod frontend {
         initial Ready;
         Ready internal {
-            Query(query) => Simple,
+            Query(query) => Simple [Dirty],
             BeginExtended(begin_extended) => Building,
-            FunctionCall(function_call) => FunctionCalling,
-            Reset(reset) => Resetting,
+            FunctionCall(function_call) => FunctionCalling [Dirty],
+            Reset(reset) => Resetting [Dirty],
             Terminate(terminate) => Terminated,
         }
         FunctionCalling external {
@@ -25,17 +25,17 @@ protocol! {
             Error(error) => Draining,
         }
         Building internal {
-            Parse(parse) => Building,
+            Parse(parse) => Building [Dirty],
             Describe(describe) => Building,
-            Bind(bind) => BoundBuilding,
+            Bind(bind) => BoundBuilding [Dirty],
             Close(close) => Building,
             Flush(flush) => Building,
             Sync(sync) => AwaitingReady,
         }
         BoundBuilding internal {
-            Parse(parse) => BoundBuilding,
+            Parse(parse) => BoundBuilding [Dirty],
             Describe(describe) => BoundBuilding,
-            Bind(bind) => BoundBuilding,
+            Bind(bind) => BoundBuilding [Dirty],
             Execute(execute) => BoundBuilding,
             Close(close) => BoundBuilding,
             Flush(flush) => BoundBuilding,
@@ -84,7 +84,8 @@ protocol! {
         }
         ResetComplete external {
             Continue(continue_reset) => ResetComplete,
-            Ready(ready) => Ready,
+            ReadyClean(ready_clean) => Ready [Pristine],
+            ReadyDirty(ready_dirty) => Ready [Dirty],
             Error(error) => Draining,
         }
         Terminated external {}
@@ -205,13 +206,13 @@ protocol! {
     pub mod backend {
         initial Ready;
         Ready external {
-            Query(query) => Simple,
-            Parse(parse) => ParseResponse,
-            Bind(bind) => BindResponse,
+            Query(query) => Simple [Dirty],
+            Parse(parse) => ParseResponse [Dirty],
+            Bind(bind) => BindResponse [Dirty],
             Describe(describe) => DescribeResponse,
-            Execute(execute) => ExecuteResponse,
+            Execute(execute) => ExecuteResponse [Dirty],
             Close(close) => CloseResponse,
-            FunctionCall(function_call) => FunctionResponse,
+            FunctionCall(function_call) => FunctionResponse [Dirty],
             Terminate(terminate) => Terminated,
         }
         Simple internal {
@@ -226,10 +227,10 @@ protocol! {
             Ready(ready) => Ready,
         }
         Building external {
-            Parse(parse) => ParseResponse,
-            Bind(bind) => BindResponse,
+            Parse(parse) => ParseResponse [Dirty],
+            Bind(bind) => BindResponse [Dirty],
             Describe(describe) => DescribeResponse,
-            Execute(execute) => ExecuteResponse,
+            Execute(execute) => ExecuteResponse [Dirty],
             Close(close) => CloseResponse,
             Flush(flush) => Building,
             Sync(sync) => SyncResponse,
@@ -643,13 +644,13 @@ mod tests {
             .continue_reset()
             .discard_complete()
             .continue_reset()
-            .ready();
+            .ready_clean();
 
         let mut runtime = RuntimeFsm::new();
         runtime.step(Event::Reset).unwrap();
-        assert!(runtime.step(Event::Ready).is_err());
+        assert!(runtime.step(Event::ReadyClean).is_err());
         runtime.step(Event::DiscardComplete).unwrap();
-        runtime.step(Event::Ready).unwrap();
+        runtime.step(Event::ReadyClean).unwrap();
         assert_eq!(runtime.state(), RuntimeState::Ready);
 
         let dirty: Conn<(), crate::auth::Ready, crate::Dirty> =
@@ -673,6 +674,23 @@ mod tests {
             panic!("idle readiness did not restore pristine evidence")
         };
         ready.release();
+    }
+
+    #[test]
+    fn generated_transport_session_tracks_cleanliness_effects() {
+        struct InitiallyClean;
+
+        let ready: frontend::TypedSession<(), frontend::Ready, InitiallyClean> =
+            frontend::TypedSession::with_transport(());
+        let dirty: frontend::TypedSession<(), frontend::Simple, frontend::Dirty> = ready.query();
+        let dirty: frontend::TypedSession<(), frontend::Ready, frontend::Dirty> = dirty.ready();
+        assert_eq!(dirty.into_transport(), ());
+
+        let dirty: frontend::TypedSession<(), frontend::Ready, frontend::Dirty> =
+            frontend::TypedSession::with_transport(());
+        let clean: frontend::TypedSession<(), frontend::Ready, frontend::Pristine> =
+            dirty.reset().discard_complete().ready_clean();
+        assert_eq!(clean.into_transport(), ());
     }
 
     #[test]

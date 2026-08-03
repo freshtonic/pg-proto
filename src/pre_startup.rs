@@ -4,7 +4,7 @@
 //! byte, and a successful negotiation changes the connection's transport type.
 
 use crate::{Conn, Pristine, startup::StartupMessage};
-use bytes::BufMut as _;
+use bytes::{BufMut as _, Bytes, BytesMut};
 
 const SSL_REQUEST_CODE: u32 = 80_877_103;
 const GSSENC_REQUEST_CODE: u32 = 80_877_104;
@@ -37,6 +37,86 @@ pub enum EncryptionReply {
     Accepted,
     Rejected,
     LegacyError,
+}
+
+impl EncryptionReply {
+    #[must_use]
+    pub const fn as_byte(self) -> u8 {
+        match self {
+            Self::Accepted => b'S',
+            Self::Rejected => b'N',
+            Self::LegacyError => b'E',
+        }
+    }
+}
+
+/// The external choice occupying a new connection's untagged first packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreStartupMessage {
+    SslRequest,
+    GssEncRequest,
+    CancelRequest { process_id: u32, secret_key: Bytes },
+    Startup(StartupMessage),
+}
+
+impl PreStartupMessage {
+    /// Reconstructs the complete raw packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cancellation key or startup message.
+    pub fn to_packet(&self) -> std::io::Result<Bytes> {
+        match self {
+            Self::SslRequest => Ok(Bytes::copy_from_slice(&request_packet(SSL_REQUEST_CODE))),
+            Self::GssEncRequest => Ok(Bytes::copy_from_slice(&request_packet(GSSENC_REQUEST_CODE))),
+            Self::CancelRequest {
+                process_id,
+                secret_key,
+            } => cancel_packet(*process_id, secret_key),
+            Self::Startup(message) => message.encode(),
+        }
+    }
+}
+
+/// Incrementally decodes one raw pre-startup packet without consuming partial input.
+///
+/// # Errors
+///
+/// Returns an error for invalid lengths, special-request shapes, or startup data.
+pub fn decode_pre_startup(input: &mut BytesMut) -> std::io::Result<Option<PreStartupMessage>> {
+    if input.len() < 4 {
+        input.reserve(4 - input.len());
+        return Ok(None);
+    }
+    let length = usize::try_from(u32::from_be_bytes([input[0], input[1], input[2], input[3]]))
+        .map_err(|_| invalid("pre-startup packet length overflow"))?;
+    if length < 8 {
+        return Err(invalid("pre-startup packet is shorter than 8 bytes"));
+    }
+    if input.len() < length {
+        input.reserve(length - input.len());
+        return Ok(None);
+    }
+    let packet = input.split_to(length).freeze();
+    let code = u32::from_be_bytes([packet[4], packet[5], packet[6], packet[7]]);
+    match code {
+        SSL_REQUEST_CODE if length == 8 => Ok(Some(PreStartupMessage::SslRequest)),
+        GSSENC_REQUEST_CODE if length == 8 => Ok(Some(PreStartupMessage::GssEncRequest)),
+        CANCEL_REQUEST_CODE => {
+            if !(16..=268).contains(&length) {
+                return Err(invalid("invalid CancelRequest length"));
+            }
+            let process_id = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+            let secret_key = packet.slice(12..);
+            Ok(Some(PreStartupMessage::CancelRequest {
+                process_id,
+                secret_key,
+            }))
+        }
+        _ => StartupMessage::decode(packet)
+            .map(PreStartupMessage::Startup)
+            .map(Some),
+    }
 }
 
 impl TryFrom<u8> for EncryptionReply {
@@ -171,19 +251,7 @@ impl<S> Conn<S, PreStartup, Pristine> {
                 "cancellation key length is outside 4..=256",
             ));
         }
-        let key_length = u32::try_from(secret_key.len()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "cancellation key too large",
-            )
-        })?;
-        let length = 12 + key_length;
-        let mut packet = bytes::BytesMut::with_capacity(12 + secret_key.len());
-        packet.put_u32(length);
-        packet.put_u32(CANCEL_REQUEST_CODE);
-        packet.put_u32(process_id);
-        packet.extend_from_slice(secret_key);
-        Ok((self.transition(), packet.freeze()))
+        Ok((self.transition(), cancel_packet(process_id, secret_key)?))
     }
 }
 
@@ -236,6 +304,28 @@ const fn request_packet(code: u32) -> [u8; 8] {
     [
         length[0], length[1], length[2], length[3], code[0], code[1], code[2], code[3],
     ]
+}
+
+fn cancel_packet(process_id: u32, secret_key: &[u8]) -> std::io::Result<Bytes> {
+    if !(4..=256).contains(&secret_key.len()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cancellation key length is outside 4..=256",
+        ));
+    }
+    let key_length =
+        u32::try_from(secret_key.len()).map_err(|_| invalid("cancellation key length overflow"))?;
+    let length = 12 + key_length;
+    let mut packet = BytesMut::with_capacity(12 + secret_key.len());
+    packet.put_u32(length);
+    packet.put_u32(CANCEL_REQUEST_CODE);
+    packet.put_u32(process_id);
+    packet.extend_from_slice(secret_key);
+    Ok(packet.freeze())
+}
+
+fn invalid(message: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
 #[cfg(test)]
@@ -298,5 +388,39 @@ mod tests {
                 verification: CertificateVerification::CertificateAuthorityAndHost,
             }
         );
+    }
+
+    #[test]
+    fn incrementally_decodes_each_pre_startup_branch() {
+        let messages = [
+            PreStartupMessage::SslRequest,
+            PreStartupMessage::GssEncRequest,
+            PreStartupMessage::CancelRequest {
+                process_id: 42,
+                secret_key: Bytes::from_static(&[7; 32]),
+            },
+            PreStartupMessage::Startup(StartupMessage {
+                version: crate::startup::ProtocolVersion::V3_2,
+                parameters: std::collections::BTreeMap::from([(
+                    Bytes::from_static(b"user"),
+                    Bytes::from_static(b"postgres"),
+                )]),
+            }),
+        ];
+
+        for message in messages {
+            let packet = message.to_packet().expect("encodable pre-startup message");
+            let mut input = BytesMut::from(&packet[..3]);
+            assert_eq!(
+                decode_pre_startup(&mut input).expect("partial input is valid"),
+                None
+            );
+            input.extend_from_slice(&packet[3..]);
+            assert_eq!(
+                decode_pre_startup(&mut input).expect("complete packet is valid"),
+                Some(message)
+            );
+            assert!(input.is_empty());
+        }
     }
 }

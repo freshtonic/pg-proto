@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// A frontend startup message, retained as bytes for lossless proxy forwarding.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +32,49 @@ impl StartupMessage {
         output[..4].copy_from_slice(&length.to_be_bytes());
         Ok(output.freeze())
     }
+
+    /// Decodes one complete untagged startup packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid length, malformed strings, duplicate
+    /// parameters, or trailing bytes.
+    pub fn decode(mut packet: Bytes) -> io::Result<Self> {
+        if packet.len() < 8 {
+            return Err(invalid("startup packet is shorter than 8 bytes"));
+        }
+        let declared = usize::try_from(packet.get_u32())
+            .map_err(|_| invalid("startup packet length overflow"))?;
+        if declared != packet.len() + 4 {
+            return Err(invalid("startup packet length does not match its bytes"));
+        }
+        let version = ProtocolVersion {
+            major: packet.get_u16(),
+            minor: packet.get_u16(),
+        };
+        let mut parameters = BTreeMap::new();
+        loop {
+            if packet.is_empty() {
+                return Err(invalid("startup parameters have no final terminator"));
+            }
+            if packet[0] == 0 {
+                packet.advance(1);
+                break;
+            }
+            let name = take_cstr(&mut packet)?;
+            let value = take_cstr(&mut packet)?;
+            if parameters.insert(name, value).is_some() {
+                return Err(invalid("duplicate startup parameter"));
+            }
+        }
+        if !packet.is_empty() {
+            return Err(invalid("startup packet has trailing bytes"));
+        }
+        Ok(Self {
+            version,
+            parameters,
+        })
+    }
 }
 
 /// `PostgreSQL` protocol version, including supported 3.x minor versions.
@@ -59,6 +102,20 @@ fn put_cstr(value: &[u8], output: &mut BytesMut) -> io::Result<()> {
     Ok(())
 }
 
+fn take_cstr(input: &mut Bytes) -> io::Result<Bytes> {
+    let end = input
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| invalid("unterminated startup parameter"))?;
+    let value = input.split_to(end);
+    input.advance(1);
+    Ok(value)
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +133,9 @@ mod tests {
         assert_eq!(u32::from_be_bytes(encoded[..4].try_into().unwrap()), 32);
         assert_eq!(&encoded[4..8], &[0, 3, 0, 2]);
         assert_eq!(encoded.last(), Some(&0));
+        assert_eq!(
+            StartupMessage::decode(encoded).expect("decodable startup message"),
+            message
+        );
     }
 }

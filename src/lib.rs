@@ -5,6 +5,7 @@ pub mod codec;
 pub mod demux;
 pub mod pre_startup;
 pub mod server_auth;
+pub mod server_session;
 pub mod session;
 pub mod startup;
 pub mod tls;

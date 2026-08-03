@@ -7,7 +7,7 @@ use pg_proto::{
     codec::{Authentication, BackendMessage, NegotiateProtocolVersion},
     demux::SessionItem,
     pre_startup::Startup,
-    session::SimpleTransition,
+    session::{ReadyState, SimpleTransition},
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
@@ -113,10 +113,16 @@ async fn run_select_42(
                         }
                         SessionItem::CommandComplete { .. } => saw_command_complete = true,
                         SessionItem::Message(_) => {}
+                        SessionItem::ReadyForQuery { .. } => {
+                            unreachable!("ReadyForQuery cannot be a Continue transition")
+                        }
                     }
                 }
-                Ok(SimpleTransition::Ready(ready, _status)) => {
+                Ok(SimpleTransition::Ready(ReadyState::Clean(ready))) => {
                     return Ok::<_, std::io::Error>(ready);
+                }
+                Ok(SimpleTransition::Ready(ReadyState::Dirty { .. })) => {
+                    return Err(std::io::Error::other("query left a dirty connection"));
                 }
                 Ok(SimpleTransition::Error(_, _)) => {
                     return Err(std::io::Error::other("query returned ErrorResponse"));

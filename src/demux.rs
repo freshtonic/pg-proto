@@ -33,6 +33,10 @@ pub struct CancelKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionItem {
     Message(BackendMessage),
+    ReadyForQuery {
+        status: TransactionStatus,
+        parameters_changed: bool,
+    },
     CommandComplete {
         tag: Bytes,
         command: CommandIndex,
@@ -104,7 +108,10 @@ impl Demux {
                 if self.startup_parameters.is_none() {
                     self.startup_parameters = Some(self.parameters.clone());
                 }
-                Some(SessionItem::Message(BackendMessage::ReadyForQuery(status)))
+                Some(SessionItem::ReadyForQuery {
+                    status,
+                    parameters_changed: self.parameters_changed,
+                })
             }
             BackendMessage::CommandComplete(tag) => {
                 let command = self.command;

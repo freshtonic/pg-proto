@@ -401,9 +401,10 @@ mod tests {
         let mut transport = Buffered::new(client);
         assert_eq!(
             transport.receive_session().await.expect("valid messages"),
-            SessionItem::Message(BackendMessage::ReadyForQuery(
-                crate::codec::TransactionStatus::Idle
-            ))
+            SessionItem::ReadyForQuery {
+                status: crate::codec::TransactionStatus::Idle,
+                parameters_changed: false,
+            }
         );
         assert_eq!(
             transport

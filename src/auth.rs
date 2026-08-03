@@ -178,7 +178,10 @@ impl<S> Conn<S, AwaitingStartupReady, Pristine> {
     pub fn offer_ready(self, item: SessionItem) -> Result<Conn<S, Ready>, (Self, SessionItem)> {
         if matches!(
             item,
-            SessionItem::Message(codec::BackendMessage::ReadyForQuery(_))
+            SessionItem::ReadyForQuery {
+                status: codec::TransactionStatus::Idle,
+                parameters_changed: false,
+            }
         ) {
             Ok(self.transition())
         } else {

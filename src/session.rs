@@ -45,21 +45,31 @@ pub enum SimpleTransition<S, C> {
     CopyIn(Conn<S, CopyIn, C>, CopyResponse),
     CopyOut(Conn<S, CopyOut, C>, CopyResponse),
     CopyBoth(Conn<S, CopyBoth, C>, CopyResponse),
-    Ready(Conn<S, Ready, C>, TransactionStatus),
+    Ready(ReadyState<S, C>),
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
 #[derive(Debug)]
 pub enum AwaitingReadyTransition<S, C> {
     Continue(Conn<S, AwaitingReady, C>, SessionItem),
-    Ready(Conn<S, Ready, C>, TransactionStatus),
+    Ready(ReadyState<S, C>),
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
 #[derive(Debug)]
 pub enum DrainingTransition<S, C> {
     Continue(Conn<S, Draining, C>, SessionItem),
-    Ready(Conn<S, Ready, C>, TransactionStatus),
+    Ready(ReadyState<S, C>),
+}
+
+#[derive(Debug)]
+pub enum ReadyState<S, C> {
+    Clean(Conn<S, Ready, C>),
+    Dirty {
+        conn: Conn<S, Ready, Dirty>,
+        status: TransactionStatus,
+        parameters_changed: bool,
+    },
 }
 
 impl<S, C> Conn<S, Ready, C> {
@@ -171,9 +181,14 @@ impl<S, C> Conn<S, SimpleQuery, C> {
             SessionItem::Message(BackendMessage::CopyBothResponse(response)) => {
                 Ok(SimpleTransition::CopyBoth(self.transition(), response))
             }
-            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
-                Ok(SimpleTransition::Ready(self.transition(), status))
-            }
+            SessionItem::ReadyForQuery {
+                status,
+                parameters_changed,
+            } => Ok(SimpleTransition::Ready(ready_state(
+                self,
+                status,
+                parameters_changed,
+            ))),
             SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
                 Ok(SimpleTransition::Error(self.transition(), error))
             }
@@ -246,9 +261,10 @@ impl<S, C> Conn<S, Draining, C> {
     /// `ReadyForQuery` is the sole exit from error draining.
     pub fn offer(self, item: SessionItem) -> DrainingTransition<S, C> {
         match item {
-            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
-                DrainingTransition::Ready(self.transition(), status)
-            }
+            SessionItem::ReadyForQuery {
+                status,
+                parameters_changed,
+            } => DrainingTransition::Ready(ready_state(self, status, parameters_changed)),
             item => DrainingTransition::Continue(self, item),
         }
     }
@@ -258,9 +274,10 @@ impl<S, C> Conn<S, AwaitingReady, C> {
     /// Consumes responses after Sync until `ReadyForQuery` proves readiness.
     pub fn offer(self, item: SessionItem) -> AwaitingReadyTransition<S, C> {
         match item {
-            SessionItem::Message(BackendMessage::ReadyForQuery(status)) => {
-                AwaitingReadyTransition::Ready(self.transition(), status)
-            }
+            SessionItem::ReadyForQuery {
+                status,
+                parameters_changed,
+            } => AwaitingReadyTransition::Ready(ready_state(self, status, parameters_changed)),
             SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
                 AwaitingReadyTransition::Error(self.transition(), error)
             }
@@ -299,6 +316,22 @@ fn empty_frame(tag: u8) -> Frame {
     }
 }
 
+fn ready_state<S, P, C>(
+    conn: Conn<S, P, C>,
+    status: TransactionStatus,
+    parameters_changed: bool,
+) -> ReadyState<S, C> {
+    if status == TransactionStatus::Idle && !parameters_changed {
+        ReadyState::Clean(conn.transition())
+    } else {
+        ReadyState::Dirty {
+            conn: conn.transition(),
+            status,
+            parameters_changed,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +345,43 @@ mod tests {
         let (bound, _) = bound.push_execute(Bytes::new());
         let (_awaiting_ready, sync) = bound.push_sync();
         assert_eq!(sync.tag, b'S');
+    }
+
+    #[test]
+    fn transaction_status_taints_ready_connection() {
+        let query: Conn<(), SimpleQuery> = Conn::new(()).transition();
+        let transition = query
+            .offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::InTransaction,
+                parameters_changed: false,
+            })
+            .expect("ReadyForQuery is valid evidence");
+        assert!(matches!(
+            transition,
+            SimpleTransition::Ready(ReadyState::Dirty {
+                status: TransactionStatus::InTransaction,
+                parameters_changed: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn changed_parameters_taint_idle_connection() {
+        let query: Conn<(), SimpleQuery> = Conn::new(()).transition();
+        let transition = query
+            .offer(SessionItem::ReadyForQuery {
+                status: TransactionStatus::Idle,
+                parameters_changed: true,
+            })
+            .expect("ReadyForQuery is valid evidence");
+        assert!(matches!(
+            transition,
+            SimpleTransition::Ready(ReadyState::Dirty {
+                status: TransactionStatus::Idle,
+                parameters_changed: true,
+                ..
+            })
+        ));
     }
 }

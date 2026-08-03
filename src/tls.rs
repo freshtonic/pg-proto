@@ -14,7 +14,10 @@ use rustls::{
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use x509_parser::prelude::{FromDer, X509Certificate};
+use x509_parser::{
+    prelude::{FromDer, X509Certificate},
+    signature_algorithm::SignatureAlgorithm,
+};
 
 use crate::auth::TlsServerEndPoint;
 
@@ -149,15 +152,20 @@ pub fn channel_binding(certificate: &CertificateDer<'_>) -> io::Result<Vec<u8>> 
             format!("invalid TLS certificate: {error}"),
         )
     })?;
-    let signature_oid = parsed.signature_algorithm.algorithm.to_id_string();
+    let signature_oid = match SignatureAlgorithm::try_from(&parsed.signature_algorithm) {
+        Ok(SignatureAlgorithm::RSASSA_PSS(parameters)) => {
+            parameters.hash_algorithm_oid().to_id_string()
+        }
+        _ => parsed.signature_algorithm.algorithm.to_id_string(),
+    };
 
     Ok(match signature_oid.as_str() {
-        // sha384WithRSAEncryption and ecdsa-with-SHA384
-        "1.2.840.113549.1.1.12" | "1.2.840.10045.4.3.3" => {
+        // SHA-384, sha384WithRSAEncryption, and ecdsa-with-SHA384.
+        "2.16.840.1.101.3.4.2.2" | "1.2.840.113549.1.1.12" | "1.2.840.10045.4.3.3" => {
             Sha384::digest(certificate.as_ref()).to_vec()
         }
-        // sha512WithRSAEncryption and ecdsa-with-SHA512
-        "1.2.840.113549.1.1.13" | "1.2.840.10045.4.3.4" => {
+        // SHA-512, sha512WithRSAEncryption, and ecdsa-with-SHA512.
+        "2.16.840.1.101.3.4.2.3" | "1.2.840.113549.1.1.13" | "1.2.840.10045.4.3.4" => {
             Sha512::digest(certificate.as_ref()).to_vec()
         }
         // RFC 5929 promotes MD5 and SHA-1 to SHA-256. SHA-256 is also the
@@ -175,7 +183,7 @@ mod tests {
         pre_startup::{Negotiation, PreStartupOffer},
         transport::Buffered,
     };
-    use rcgen::generate_simple_self_signed;
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P384_SHA384, generate_simple_self_signed};
     use rustls::{RootCertStore, pki_types::PrivateKeyDer};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -315,5 +323,18 @@ mod tests {
 
         assert_eq!(client.tls_server_end_point(), expected);
         assert_eq!(server.tls_server_end_point(), expected);
+    }
+
+    #[test]
+    fn channel_binding_uses_the_certificate_signature_digest() {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let params = CertificateParams::new(["localhost".to_owned()]).unwrap();
+        let generated = params.self_signed(&key).unwrap();
+        let certificate = CertificateDer::from(generated.der().to_vec());
+
+        assert_eq!(
+            channel_binding(&certificate).unwrap(),
+            Sha384::digest(certificate.as_ref()).to_vec()
+        );
     }
 }

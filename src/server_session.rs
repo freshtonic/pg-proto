@@ -62,6 +62,24 @@ pub enum CopySimple {}
 #[derive(Debug)]
 pub enum CopyExtended {}
 
+/// Maps a COPY resumption marker to its generated nested-session states.
+pub trait CopyResume {
+    const BOTH_OPEN_STATE: backend::RuntimeState;
+    const BOTH_SERVER_DONE_STATE: backend::RuntimeState;
+}
+
+impl CopyResume for CopySimple {
+    const BOTH_OPEN_STATE: backend::RuntimeState = backend::RuntimeState::SimpleCopyBoth;
+    const BOTH_SERVER_DONE_STATE: backend::RuntimeState =
+        backend::RuntimeState::SimpleCopyBothServerDone;
+}
+
+impl CopyResume for CopyExtended {
+    const BOTH_OPEN_STATE: backend::RuntimeState = backend::RuntimeState::ExtendedCopyBoth;
+    const BOTH_SERVER_DONE_STATE: backend::RuntimeState =
+        backend::RuntimeState::ExtendedCopyBothServerDone;
+}
+
 #[derive(Debug)]
 pub struct ServerCopyIn<Resume>(PhantomData<Resume>);
 
@@ -835,23 +853,30 @@ impl<S, C> Conn<S, ServerCopyOutDone<CopyExtended>, C> {
     }
 }
 
-impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
+impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
     /// Projects client data, half-close, or failure while both directions are open.
     ///
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not COPY traffic.
     pub fn offer_frontend(self, message: FrontendMessage) -> CopyBothOpenProjection<S, C, Resume> {
-        match message {
-            FrontendMessage::CopyData(data) => {
+        match (
+            backend::project_external(Resume::BOTH_OPEN_STATE, &message),
+            message,
+        ) {
+            (Some(backend::Event::ReceiveData), FrontendMessage::CopyData(data)) => {
                 Ok(ServerCopyBothOpenOffer::Data { conn: self, data })
             }
-            FrontendMessage::CopyDone => Ok(ServerCopyBothOpenOffer::Done(self.transition())),
-            FrontendMessage::CopyFail(message) => Ok(ServerCopyBothOpenOffer::Fail {
-                conn: self.transition(),
-                message,
-            }),
-            other => Err(Box::new((self, other))),
+            (Some(backend::Event::ReceiveDone), FrontendMessage::CopyDone) => {
+                Ok(ServerCopyBothOpenOffer::Done(self.transition()))
+            }
+            (Some(backend::Event::Fail), FrontendMessage::CopyFail(message)) => {
+                Ok(ServerCopyBothOpenOffer::Fail {
+                    conn: self.transition(),
+                    message,
+                })
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 
@@ -912,7 +937,7 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
     }
 }
 
-impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C> {
+impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C> {
     /// Projects remaining client traffic after the backend has half-closed.
     ///
     /// # Errors
@@ -922,16 +947,23 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C> {
         self,
         message: FrontendMessage,
     ) -> CopyBothServerDoneProjection<S, C, Resume> {
-        match message {
-            FrontendMessage::CopyData(data) => {
+        match (
+            backend::project_external(Resume::BOTH_SERVER_DONE_STATE, &message),
+            message,
+        ) {
+            (Some(backend::Event::ReceiveData), FrontendMessage::CopyData(data)) => {
                 Ok(ServerCopyBothServerDoneOffer::Data { conn: self, data })
             }
-            FrontendMessage::CopyDone => Ok(ServerCopyBothServerDoneOffer::Done(self.transition())),
-            FrontendMessage::CopyFail(message) => Ok(ServerCopyBothServerDoneOffer::Fail {
-                conn: self.transition(),
-                message,
-            }),
-            other => Err(Box::new((self, other))),
+            (Some(backend::Event::ReceiveDone), FrontendMessage::CopyDone) => {
+                Ok(ServerCopyBothServerDoneOffer::Done(self.transition()))
+            }
+            (Some(backend::Event::Fail), FrontendMessage::CopyFail(message)) => {
+                Ok(ServerCopyBothServerDoneOffer::Fail {
+                    conn: self.transition(),
+                    message,
+                })
+            }
+            (_, other) => Err(Box::new((self, other))),
         }
     }
 }

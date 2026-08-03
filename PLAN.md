@@ -74,12 +74,14 @@ work using that feature is complete.
       extended-query/error-drain, COPY IN, and COPY BOTH states.
     - [x] Generate backend-message projection for query responses, typed
       descriptions, errors, readiness, function calls, and nested COPY states.
-    - [ ] Replace handwritten matching with generated projection.
+    - [x] Replace server-role handwritten request classification with generated
+      projection while retaining compatibility payload enums.
       - [x] Route server-role Ready and extended-query request dispatch through
         generated state-aware projection.
       - [x] Route extended error-drain and simple/extended COPY IN dispatch
         through generated projection.
-      - [ ] Route COPY BOTH dispatch through generated projection.
+      - [x] Route COPY BOTH open and backend-half-closed dispatch through
+        generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

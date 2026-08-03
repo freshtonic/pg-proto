@@ -1,0 +1,17 @@
+[package]
+name = "pg-proto"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Session-typed PostgreSQL wire protocol"
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+

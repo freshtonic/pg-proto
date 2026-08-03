@@ -206,163 +206,163 @@ protocol! {
     pub mod backend {
         initial Ready;
         Ready external {
-            Query(query) => Simple [Dirty],
-            Parse(parse) => ParseResponse [Dirty],
-            Bind(bind) => BindResponse [Dirty],
-            Describe(describe) => DescribeResponse,
-            Execute(execute) => ExecuteResponse [Dirty],
-            Close(close) => CloseResponse,
-            FunctionCall(function_call) => FunctionResponse [Dirty],
+            Query(query: bytes::Bytes) => Simple [Dirty],
+            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty],
+            Bind(bind: crate::codec::Bind) => BindResponse [Dirty],
+            Describe(describe: crate::codec::Describe) => DescribeResponse,
+            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty],
+            Close(close: crate::codec::Close) => CloseResponse,
+            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionResponse [Dirty],
             Terminate(terminate) => Terminated,
         }
         Simple internal {
             Continue(continue_response) => Simple,
-            CopyIn(copy_in) => SimpleCopyIn,
-            CopyOut(copy_out) => SimpleCopyOut,
-            CopyBoth(copy_both) => SimpleCopyBoth,
-            Ready(ready) => Ready,
-            Error(error) => SimpleError,
+            CopyIn(copy_in: crate::codec::CopyResponse) => SimpleCopyIn,
+            CopyOut(copy_out: crate::codec::CopyResponse) => SimpleCopyOut,
+            CopyBoth(copy_both: crate::codec::CopyResponse) => SimpleCopyBoth,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            Error(error: crate::codec::DiagnosticResponse) => SimpleError,
         }
         SimpleError internal {
-            Ready(ready) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         Building external {
-            Parse(parse) => ParseResponse [Dirty],
-            Bind(bind) => BindResponse [Dirty],
-            Describe(describe) => DescribeResponse,
-            Execute(execute) => ExecuteResponse [Dirty],
-            Close(close) => CloseResponse,
+            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty],
+            Bind(bind: crate::codec::Bind) => BindResponse [Dirty],
+            Describe(describe: crate::codec::Describe) => DescribeResponse,
+            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty],
+            Close(close: crate::codec::Close) => CloseResponse,
             Flush(flush) => Building,
             Sync(sync) => SyncResponse,
         }
         ParseResponse internal {
             Complete(complete) => Building,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         BindResponse internal {
             Complete(complete) => Building,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         DescribeResponse internal {
-            RowDescription(row_description) => Building,
+            RowDescription(row_description: crate::codec::RowDescription) => Building,
             NoData(no_data) => Building,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExecuteResponse internal {
             Continue(continue_response) => ExecuteResponse,
-            CopyIn(copy_in) => ExtendedCopyIn,
-            CopyOut(copy_out) => ExtendedCopyOut,
-            CopyBoth(copy_both) => ExtendedCopyBoth,
-            CommandComplete(command_complete) => Building,
+            CopyIn(copy_in: crate::codec::CopyResponse) => ExtendedCopyIn,
+            CopyOut(copy_out: crate::codec::CopyResponse) => ExtendedCopyOut,
+            CopyBoth(copy_both: crate::codec::CopyResponse) => ExtendedCopyBoth,
+            CommandComplete(command_complete: bytes::Bytes) => Building,
             PortalSuspended(portal_suspended) => Building,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         CloseResponse internal {
             Complete(complete) => Building,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedError external {
             Discard(discard) => ExtendedError,
             Sync(sync) => SyncResponse,
         }
         SyncResponse internal {
-            Ready(ready) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         FunctionResponse internal {
-            Result(result) => FunctionReady,
-            Error(error) => FunctionReady,
+            Result(result: bytes::Bytes) => FunctionReady,
+            Error(error: crate::codec::DiagnosticResponse) => FunctionReady,
         }
         FunctionReady internal {
-            Ready(ready) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         SimpleCopyIn external {
-            Data(data) => SimpleCopyIn,
+            Data(data: bytes::Bytes) => SimpleCopyIn,
             Done(done) => SimpleCopyInDone,
-            Fail(fail) => SimpleCopyInFailed,
+            Fail(fail: bytes::Bytes) => SimpleCopyInFailed,
         }
         SimpleCopyInDone internal {
-            CommandComplete(command_complete) => SimpleCopyReady,
+            CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady,
         }
         SimpleCopyInFailed internal {
-            Error(error) => SimpleCopyReady,
+            Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyOut internal {
-            Data(data) => SimpleCopyOut,
+            Data(data: bytes::Bytes) => SimpleCopyOut,
             Done(done) => SimpleCopyOutDone,
-            Error(error) => SimpleCopyReady,
+            Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyOutDone internal {
-            CommandComplete(command_complete) => SimpleCopyReady,
+            CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady,
         }
         SimpleCopyReady internal {
-            Ready(ready) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         ExtendedCopyIn external {
-            Data(data) => ExtendedCopyIn,
+            Data(data: bytes::Bytes) => ExtendedCopyIn,
             Done(done) => ExtendedCopyInDone,
-            Fail(fail) => ExtendedCopyInFailed,
+            Fail(fail: bytes::Bytes) => ExtendedCopyInFailed,
         }
         ExtendedCopyInDone internal {
-            CommandComplete(command_complete) => Building,
+            CommandComplete(command_complete: bytes::Bytes) => Building,
         }
         ExtendedCopyInFailed internal {
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyOut internal {
-            Data(data) => ExtendedCopyOut,
+            Data(data: bytes::Bytes) => ExtendedCopyOut,
             Done(done) => ExtendedCopyOutDone,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyOutDone internal {
-            CommandComplete(command_complete) => Building,
+            CommandComplete(command_complete: bytes::Bytes) => Building,
         }
         SimpleCopyBoth mixed {
-            internal SendData(send_data) => SimpleCopyBoth,
-            external ReceiveData(receive_data) => SimpleCopyBoth,
+            internal SendData(send_data: bytes::Bytes) => SimpleCopyBoth,
+            external ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBoth,
             internal SendDone(send_done) => SimpleCopyBothServerDone,
             external ReceiveDone(receive_done) => SimpleCopyBothClientDone,
-            external Fail(fail) => SimpleCopyBothFailed,
-            internal Error(error) => SimpleCopyReady,
+            external Fail(fail: bytes::Bytes) => SimpleCopyBothFailed,
+            internal Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyBothClientDone internal {
-            SendData(send_data) => SimpleCopyBothClientDone,
+            SendData(send_data: bytes::Bytes) => SimpleCopyBothClientDone,
             SendDone(send_done) => SimpleCopyBothDone,
-            Error(error) => SimpleCopyReady,
+            Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyBothServerDone external {
-            ReceiveData(receive_data) => SimpleCopyBothServerDone,
+            ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBothServerDone,
             ReceiveDone(receive_done) => SimpleCopyBothDone,
-            Fail(fail) => SimpleCopyBothFailed,
+            Fail(fail: bytes::Bytes) => SimpleCopyBothFailed,
         }
         SimpleCopyBothDone internal {
-            CommandComplete(command_complete) => SimpleCopyReady,
+            CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady,
         }
         SimpleCopyBothFailed internal {
-            Error(error) => SimpleCopyReady,
+            Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         ExtendedCopyBoth mixed {
-            internal SendData(send_data) => ExtendedCopyBoth,
-            external ReceiveData(receive_data) => ExtendedCopyBoth,
+            internal SendData(send_data: bytes::Bytes) => ExtendedCopyBoth,
+            external ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBoth,
             internal SendDone(send_done) => ExtendedCopyBothServerDone,
             external ReceiveDone(receive_done) => ExtendedCopyBothClientDone,
-            external Fail(fail) => ExtendedCopyBothFailed,
-            internal Error(error) => ExtendedError,
+            external Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed,
+            internal Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyBothClientDone internal {
-            SendData(send_data) => ExtendedCopyBothClientDone,
+            SendData(send_data: bytes::Bytes) => ExtendedCopyBothClientDone,
             SendDone(send_done) => ExtendedCopyBothDone,
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyBothServerDone external {
-            ReceiveData(receive_data) => ExtendedCopyBothServerDone,
+            ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBothServerDone,
             ReceiveDone(receive_done) => ExtendedCopyBothDone,
-            Fail(fail) => ExtendedCopyBothFailed,
+            Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed,
         }
         ExtendedCopyBothDone internal {
-            CommandComplete(command_complete) => Building,
+            CommandComplete(command_complete: bytes::Bytes) => Building,
         }
         ExtendedCopyBothFailed internal {
-            Error(error) => ExtendedError,
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         Terminated external {}
     }

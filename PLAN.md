@@ -123,5 +123,7 @@ work using that feature is complete.
     function-call transitions.
   - [x] Apply asymmetric payloads to client- and server-facing password, token,
     and recursive SASL authentication transitions.
-  - [ ] Apply payloads to remaining frontend and backend control/response
-    transitions.
+  - [x] Apply structured request, response, error, transaction-status, and COPY
+    payloads across the backend-role query grammar.
+  - [ ] Apply payloads to pre-startup, startup metadata, asynchronous projection,
+    and remaining generic continuation transitions.

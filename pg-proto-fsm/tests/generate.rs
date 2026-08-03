@@ -127,6 +127,12 @@ fn railroad_svg_is_emitted_at_compile_time() {
     assert_eq!(width, content_width + 12);
 }
 
+#[test]
+fn railroad_rustdoc_escapes_the_width_limiter() {
+    let source = include_str!("../src/lib.rs");
+    assert!(source.contains(".width-limiter:has(.pg-proto-railroad) {{ max-width: none; }}"));
+}
+
 fn svg_attribute(svg: &str, name: &str) -> i64 {
     let prefix = format!(" {name}=\"");
     svg.split_once(&prefix)

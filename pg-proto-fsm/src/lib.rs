@@ -451,6 +451,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
     let module_doc = format!(
         "Generated `{module}` protocol grammar.\n\n\
          ## Railroad diagram\n\n\
+         <style>.width-limiter:has(.pg-proto-railroad) {{ max-width: none; }}</style>\n\
          <div class=\"pg-proto-railroad\" style=\"overflow-x: auto\">\n\
          {svg}\n\
          </div>\n\n\

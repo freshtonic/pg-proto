@@ -173,6 +173,9 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
+  `width-limiter` cap without changing the width of ordinary documentation pages.
+
 - [x] Add comprehensive Rustdoc for every public module, type, trait, function,
   method, constant, field, variant, implementation API, and generated macro item.
   - [x] Document every public item emitted by the protocol grammar macro.

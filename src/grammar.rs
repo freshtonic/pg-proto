@@ -326,13 +326,63 @@ protocol! {
     }
 }
 
+protocol! {
+    pub mod server_authentication {
+        initial Startup;
+        Startup internal {
+            Begin(begin) => Auth,
+            Reject(reject) => Terminated,
+        }
+        Auth internal {
+            Cleartext(cleartext) => PasswordResponse,
+            Md5(md5) => PasswordResponse,
+            Sasl(sasl) => SaslInitial,
+            Gss(gss) => TokenResponse,
+            Sspi(sspi) => TokenResponse,
+            KerberosV5(kerberos_v5) => TokenResponse,
+            Ok(ok) => StartupReady,
+            Error(error) => Terminated,
+        }
+        PasswordResponse external {
+            Response(response) => Auth,
+        }
+        SaslInitial external {
+            Initial(initial) => Sasl,
+        }
+        Sasl internal {
+            Continue(continue_response) => SaslResponse,
+            Final(final_response) => Auth,
+            Error(error) => Terminated,
+        }
+        SaslResponse external {
+            Response(response) => Sasl,
+        }
+        TokenResponse external {
+            Response(response) => TokenPolicy,
+        }
+        TokenPolicy internal {
+            Continue(continue_token) => TokenResponse,
+            Verified(verified) => Auth,
+            Error(error) => Terminated,
+        }
+        StartupReady internal {
+            ParameterStatus(parameter_status) => StartupReady,
+            BackendKeyData(backend_key_data) => StartupReady,
+            NegotiateProtocol(negotiate_protocol) => StartupReady,
+            Ready(ready) => Ready,
+        }
+        Ready external {}
+        Terminated external {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use bytes::Bytes;
 
-    use super::{authentication, backend, frontend, pre_startup};
+    use super::{authentication, backend, frontend, pre_startup, server_authentication};
     use crate::{
         Conn,
         auth::AuthOffer,
@@ -613,6 +663,37 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), authentication::RuntimeState::Ready);
+    }
+
+    #[test]
+    fn generated_server_authentication_keeps_mechanisms_independent() {
+        let _typed = server_authentication::Session::new()
+            .begin()
+            .sasl()
+            .initial()
+            .continue_response()
+            .response()
+            .final_response()
+            .ok()
+            .negotiate_protocol()
+            .parameter_status()
+            .backend_key_data()
+            .ready();
+
+        let mut runtime = server_authentication::RuntimeFsm::new();
+        for event in [
+            server_authentication::Event::Begin,
+            server_authentication::Event::Gss,
+            server_authentication::Event::Response,
+            server_authentication::Event::Continue,
+            server_authentication::Event::Response,
+            server_authentication::Event::Verified,
+            server_authentication::Event::Ok,
+            server_authentication::Event::Ready,
+        ] {
+            runtime.step(event).unwrap();
+        }
+        assert_eq!(runtime.state(), server_authentication::RuntimeState::Ready);
     }
 
     #[test]

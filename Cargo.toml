@@ -29,3 +29,4 @@ x509-parser = "0.18.1"
 rcgen = "0.14.8"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+trybuild = "1.0.120"

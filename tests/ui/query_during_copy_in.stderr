@@ -1,0 +1,7 @@
+error[E0599]: no method named `push_query` found for struct `Conn<S, pg_proto::session::CopyIn, C>` in the current scope
+ --> tests/ui/query_during_copy_in.rs:4:18
+  |
+4 |     let _ = copy.push_query(b"select 1");
+  |                  ^^^^^^^^^^ method not found in `Conn<S, pg_proto::session::CopyIn, C>`
+  |
+  = note: the method was found for `Conn<S, pg_proto::auth::Ready, C>`

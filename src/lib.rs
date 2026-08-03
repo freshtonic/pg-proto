@@ -33,6 +33,17 @@ impl<Transport, Phase, Cleanliness> Conn<Transport, Phase, Cleanliness> {
         self.transport
     }
 
+    /// Changes transport representation without changing either state index.
+    pub fn map_transport<Next>(
+        self,
+        map: impl FnOnce(Transport) -> Next,
+    ) -> Conn<Next, Phase, Cleanliness> {
+        Conn {
+            transport: map(self.transport),
+            _state: PhantomData,
+        }
+    }
+
     pub(crate) const fn transport(&self) -> &Transport {
         &self.transport
     }

@@ -25,6 +25,9 @@ pub enum AwaitingAuthOk {}
 #[derive(Debug)]
 pub enum Ready {}
 
+#[derive(Debug)]
+pub enum AwaitingStartupReady {}
+
 /// TLS transports expose the RFC 5929 `tls-server-end-point` binding.
 pub trait TlsServerEndPoint {
     fn tls_server_end_point(&self) -> &[u8];
@@ -33,7 +36,7 @@ pub trait TlsServerEndPoint {
 /// External choice offered by the backend during authentication.
 #[derive(Debug)]
 pub enum AuthOffer<S> {
-    Ok(Conn<S, Ready>),
+    Ok(Conn<S, AwaitingStartupReady>),
     Cleartext(Conn<S, PasswordResponse>),
     Md5 {
         conn: Conn<S, PasswordResponse>,
@@ -160,7 +163,13 @@ impl<S> Conn<S, Sasl, Pristine> {
 }
 
 impl<S> Conn<S, AwaitingAuthOk, Pristine> {
-    pub fn authentication_ok(self) -> Conn<S, Ready> {
+    pub fn authentication_ok(self) -> Conn<S, AwaitingStartupReady> {
+        self.transition()
+    }
+}
+
+impl<S> Conn<S, AwaitingStartupReady, Pristine> {
+    pub fn ready(self) -> Conn<S, Ready> {
         self.transition()
     }
 }

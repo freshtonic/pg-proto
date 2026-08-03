@@ -144,6 +144,13 @@ impl<S, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanliness> {
     }
 }
 
+impl<S, Cleanliness> Conn<Buffered<S>, crate::pre_startup::Startup, Cleanliness> {
+    /// Buffers the raw, untagged startup packet before normal framing begins.
+    pub fn push_startup_packet(&mut self, packet: &[u8]) {
+        self.transport_mut().outbound.extend_from_slice(packet);
+    }
+}
+
 impl<S: AsyncWrite + Unpin, Phase, Cleanliness> Conn<Buffered<S>, Phase, Cleanliness> {
     /// Flushes buffered output while retaining ownership of the typed connection.
     ///

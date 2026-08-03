@@ -205,7 +205,7 @@ pub type CopyBothCompletion<S, C, Resume> =
 #[derive(Debug)]
 pub enum ServerReadyOffer<S, C> {
     Query {
-        conn: Conn<S, ServerSimpleQuery, C>,
+        conn: Conn<S, ServerSimpleQuery, Dirty>,
         query: Bytes,
     },
     FunctionCall {
@@ -285,6 +285,11 @@ impl<S, C> Conn<S, Ready, C> {
             FrontendMessage::Terminate => Ok(ServerReadyOffer::Terminate(self.transition())),
             other => project_extended(self, other).map(ServerReadyOffer::Extended),
         }
+    }
+
+    /// Accepts inspected query text which cannot retain client session state.
+    pub fn accept_stateless_query(self, query: Bytes) -> (Conn<S, ServerSimpleQuery, C>, Bytes) {
+        (self.transition(), query)
     }
 }
 
@@ -1097,6 +1102,10 @@ mod tests {
 
     #[test]
     fn simple_query_allows_rewriting_before_ready() {
+        fn require_dirty<S>(conn: Conn<S, Ready, Dirty>) {
+            conn.into_transport();
+        }
+
         let ready: Conn<(), Ready> = Conn::new(()).transition();
         let ServerReadyOffer::Query { conn, query } = ready
             .offer_frontend(FrontendMessage::Query(Bytes::from_static(b"select 1")))
@@ -1114,9 +1123,18 @@ mod tests {
         let (state, frame) = conn.ready(TransactionStatus::Idle).unwrap();
         assert_eq!(frame.body, Bytes::from_static(b"I"));
         let ServerReadyState::Ready(ready) = state else {
-            panic!("idle response was marked dirty")
+            panic!("idle response unexpectedly changed the transaction state")
         };
-        ready.into_transport();
+        require_dirty(ready);
+
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let (query, inspected) = ready.accept_stateless_query(Bytes::from_static(b"select 1"));
+        assert_eq!(inspected, Bytes::from_static(b"select 1"));
+        let (state, _) = query.ready(TransactionStatus::Idle).unwrap();
+        let ServerReadyState::Ready(pristine) = state else {
+            panic!("stateless query did not return to ready")
+        };
+        pristine.release();
     }
 
     #[test]

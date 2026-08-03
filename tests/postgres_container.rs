@@ -4,11 +4,10 @@ use bytes::Bytes;
 use pg_proto::{
     Conn,
     auth::{AuthCompletion, AuthOffer, AwaitingStartupReady, PasswordResponse, SaslEvent},
-    codec::{
-        BackendMessage, Bind, Describe, DescribeTarget, Execute, NegotiateProtocolVersion, Parse,
-    },
+    codec::{BackendMessage, NegotiateProtocolVersion},
     demux::SessionItem,
     pre_startup::{Negotiation, Startup},
+    resources::with_connection_resources,
     session::{
         AwaitingReadyTransition, CopyOutTransition, DrainingTransition, ReadyState,
         SimpleTransition,
@@ -475,31 +474,29 @@ async fn extended_query_pipeline_matches_postgres_18() -> Result<(), Box<dyn Err
     let port = postgres.get_host_port_ipv4(5432).await?;
     let ready = trust_ready(port).await?;
 
-    let building = ready.begin_extended();
-    let (mut building, frame) = building.push_parse(&Parse {
-        statement: Bytes::from_static(b"answer"),
-        query: Bytes::from_static(b"SELECT $1::int4"),
-        parameter_types: vec![23],
+    let bound = with_connection_resources(ready.begin_extended(), |connection| {
+        let (mut connection, statement, frame) = connection.prepare(
+            Bytes::from_static(b"client_answer"),
+            Bytes::from_static(b"answer"),
+            Bytes::from_static(b"SELECT $1::int4"),
+            vec![23],
+        )?;
+        connection.connection_mut().push_frame(frame)?;
+        let (mut connection, portal, frame) = connection.bind(
+            &statement,
+            Bytes::from_static(b"client_answer_portal"),
+            Bytes::from_static(b"answer_portal"),
+            vec![0],
+            vec![Some(Bytes::from_static(b"42"))],
+            vec![0],
+        )?;
+        connection.connection_mut().push_frame(frame)?;
+        let (mut connection, frame) = connection.describe_portal(&portal)?;
+        connection.connection_mut().push_frame(frame)?;
+        let (mut connection, frame) = connection.execute(&portal, 0)?;
+        connection.connection_mut().push_frame(frame)?;
+        Ok::<_, pg_proto::resources::ResourceProtocolError>(connection.into_connection())
     })?;
-    building.push_frame(frame)?;
-    let (mut bound, frame) = building.push_bind(&Bind {
-        portal: Bytes::from_static(b"answer_portal"),
-        statement: Bytes::from_static(b"answer"),
-        parameter_formats: vec![0],
-        parameters: vec![Some(Bytes::from_static(b"42"))],
-        result_formats: vec![0],
-    })?;
-    bound.push_frame(frame)?;
-    let (mut bound, frame) = bound.push_describe(&Describe {
-        target: DescribeTarget::Portal,
-        name: Bytes::from_static(b"answer_portal"),
-    })?;
-    bound.push_frame(frame)?;
-    let (mut bound, frame) = bound.push_execute(&Execute {
-        portal: Bytes::from_static(b"answer_portal"),
-        max_rows: 0,
-    })?;
-    bound.push_frame(frame)?;
     let (mut awaiting, frame) = bound.push_sync();
     awaiting.push_frame(frame)?;
     awaiting.flush().await?;

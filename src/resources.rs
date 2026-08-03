@@ -35,6 +35,18 @@ pub struct ResourceConnection<'id, S, P, C> {
 }
 
 impl<S, P, C> ResourceConnection<'_, S, P, C> {
+    /// Borrows the typed connection for transport-only operations such as
+    /// buffering a frame returned by this wrapper.
+    pub const fn connection(&self) -> &Conn<S, P, C> {
+        &self.conn
+    }
+
+    /// Mutably borrows the typed connection for transport-only operations such
+    /// as buffering and flushing returned frames.
+    pub const fn connection_mut(&mut self) -> &mut Conn<S, P, C> {
+        &mut self.conn
+    }
+
     /// Deliberately leaves resource-aware handling while retaining typestate.
     pub fn into_connection(self) -> Conn<S, P, C> {
         self.conn
@@ -281,6 +293,13 @@ impl<'id> ResourceScope<'id> {
         }
         Ok(portal.execute(max_rows))
     }
+
+    fn describe_portal(&self, portal: &Portal<'id>) -> Result<Describe, ResourceError> {
+        if self.portals.get(&portal.upstream_name) != Some(&portal.generation) {
+            return Err(ResourceError::UnknownPortal);
+        }
+        Ok(portal.describe())
+    }
 }
 
 impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
@@ -339,6 +358,21 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
 }
 
 impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
+    /// Describes only a live portal from this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale portal or invalid wire value.
+    pub fn describe_portal(
+        self,
+        portal: &Portal<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let message = self.resources.describe_portal(portal)?;
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_describe(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
     /// Sends an execute which can name only a live portal from this connection.
     ///
     /// # Errors

@@ -8,8 +8,14 @@ use std::{
 };
 
 use rustls::{
-    ClientConfig, ServerConfig,
-    pki_types::{CertificateDer, ServerName},
+    ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, ServerConfig,
+    SignatureScheme,
+    client::{
+        WebPkiServerVerifier,
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    },
+    crypto::{CryptoProvider, WebPkiSupportedAlgorithms},
+    pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -19,7 +25,98 @@ use x509_parser::{
     signature_algorithm::SignatureAlgorithm,
 };
 
-use crate::auth::TlsServerEndPoint;
+use crate::{
+    auth::TlsServerEndPoint,
+    pre_startup::{CertificateVerification, SslMode},
+};
+
+#[derive(Debug)]
+struct CertificateVerifier {
+    verification: CertificateVerification,
+    roots: RootCertStore,
+    supported: WebPkiSupportedAlgorithms,
+}
+
+impl ServerCertVerifier for CertificateVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, TlsError> {
+        match self.verification {
+            CertificateVerification::None => Ok(ServerCertVerified::assertion()),
+            CertificateVerification::CertificateAuthority => {
+                let parsed = rustls::server::ParsedCertificate::try_from(end_entity)?;
+                rustls::client::verify_server_cert_signed_by_trust_anchor(
+                    &parsed,
+                    &self.roots,
+                    intermediates,
+                    now,
+                    self.supported.all,
+                )?;
+                Ok(ServerCertVerified::assertion())
+            }
+            CertificateVerification::CertificateAuthorityAndHost => {
+                let verifier = WebPkiServerVerifier::builder(Arc::new(self.roots.clone()))
+                    .build()
+                    .map_err(|error| TlsError::General(error.to_string()))?;
+                verifier.verify_server_cert(end_entity, intermediates, server_name, &[], now)
+            }
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.supported.supported_schemes()
+    }
+}
+
+/// Builds a client TLS configuration with libpq-compatible `sslmode` verification.
+///
+/// `require`, `prefer`, and `allow` encrypt without checking the certificate chain;
+/// `verify-ca` checks the chain without checking the host; `verify-full` checks both.
+#[must_use]
+pub fn client_config(mode: SslMode, roots: RootCertStore) -> ClientConfig {
+    let verification = mode.strategy().verification;
+    if verification == CertificateVerification::CertificateAuthorityAndHost {
+        return ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    }
+
+    let provider = CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    let verifier = CertificateVerifier {
+        verification,
+        roots,
+        supported: provider.signature_verification_algorithms,
+    };
+    ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth()
+}
 
 /// A client-side TLS stream carrying its `PostgreSQL` channel-binding value.
 #[derive(Debug)]
@@ -186,6 +283,60 @@ mod tests {
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P384_SHA384, generate_simple_self_signed};
     use rustls::{RootCertStore, pki_types::PrivateKeyDer};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    async fn handshake_with_mode(
+        mode: SslMode,
+        roots: RootCertStore,
+        certificate: CertificateDer<'static>,
+        key_der: &[u8],
+    ) -> io::Result<ClientTls<tokio::io::DuplexStream>> {
+        let key = PrivateKeyDer::try_from(key_der.to_vec()).unwrap();
+        let server_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.clone()], key)
+                .unwrap(),
+        );
+        let client_config = Arc::new(client_config(mode, roots));
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let (client, _) = tokio::join!(
+            connect(
+                client_io,
+                ServerName::try_from("localhost").unwrap(),
+                client_config,
+            ),
+            accept(server_io, server_config, &certificate),
+        );
+        client
+    }
+
+    #[tokio::test]
+    async fn sslmode_controls_chain_and_hostname_verification() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let generated = generate_simple_self_signed(["database.example".into()]).unwrap();
+        let certificate = CertificateDer::from(generated.cert.der().to_vec());
+        let key = generated.signing_key.serialize_der();
+
+        handshake_with_mode(
+            SslMode::Require,
+            RootCertStore::empty(),
+            certificate.clone(),
+            &key,
+        )
+        .await
+        .expect("require encrypts without validating the self-signed certificate");
+
+        let mut roots = RootCertStore::empty();
+        roots.add(certificate.clone()).unwrap();
+        handshake_with_mode(SslMode::VerifyCa, roots.clone(), certificate.clone(), &key)
+            .await
+            .expect("verify-ca validates the chain but deliberately ignores the host");
+
+        let error = handshake_with_mode(SslMode::VerifyFull, roots, certificate, &key)
+            .await
+            .expect_err("verify-full must reject a certificate for another host");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 
     #[tokio::test]
     async fn negotiates_tls_and_exposes_equal_channel_bindings() {

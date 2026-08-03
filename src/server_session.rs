@@ -1319,6 +1319,10 @@ mod tests {
 
     #[test]
     fn copy_both_tracks_half_closes_independently() {
+        use crate::grammar::backend::{Event, RuntimeFsm, RuntimeState};
+
+        let mut generated = RuntimeFsm::new();
+        generated.step(Event::Execute).unwrap();
         let execute: Conn<(), ServerExecute> = Conn::new(()).transition();
         let (both, response) = execute
             .copy_both(CopyResponse {
@@ -1326,30 +1330,38 @@ mod tests {
                 column_formats: vec![],
             })
             .unwrap();
+        generated.step(Event::CopyBoth).unwrap();
         assert_eq!(response.tag, b'W');
         let ServerCopyBothOpenOffer::Done(client_done) =
             both.offer_frontend(FrontendMessage::CopyDone).unwrap()
         else {
             panic!("client half-close projected to the wrong branch")
         };
+        generated.step(Event::ReceiveDone).unwrap();
         let (client_done, data) = client_done
             .data(Bytes::from_static(b"remaining backend data"))
             .unwrap();
+        generated.step(Event::SendData).unwrap();
         assert_eq!(data.tag, b'd');
         let (done, backend_done) = client_done.done().unwrap();
+        generated.step(Event::SendDone).unwrap();
         assert_eq!(backend_done.tag, b'c');
         let (building, _) = done
             .command_complete(Bytes::from_static(b"COPY 0"))
             .unwrap();
+        generated.step(Event::CommandComplete).unwrap();
         let ServerExtendedOffer::Sync(sync) =
             building.offer_frontend(FrontendMessage::Sync).unwrap()
         else {
             panic!("sync projected to the wrong branch")
         };
+        generated.step(Event::Sync).unwrap();
         let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
         let ServerReadyState::Ready(ready) = state else {
             panic!("idle sync was marked dirty")
         };
+        generated.step(Event::Ready).unwrap();
+        assert_eq!(generated.state(), RuntimeState::Ready);
         ready.into_transport();
     }
 

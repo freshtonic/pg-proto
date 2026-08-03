@@ -515,11 +515,14 @@ mod tests {
     #[test]
     fn railroad_labels_use_variant_syntax_and_link_payload_types() {
         let svg = frontend::FRONTEND_RAILROAD_SVG;
-        assert!(svg.contains("◁ ReceiveCopyData(bytes::Bytes)"));
-        assert!(svg.contains(
-            "xlink:href=\"https://docs.rs/bytes/1/bytes/struct.Bytes.html\" class=\"link\""
-        ));
-        assert!(svg.contains("▷ Query(bytes::Bytes) [Dirty]"));
+        assert!(svg.contains("◁ ReceiveCopyData(</tspan>"));
+        assert!(svg.contains("bytes::Bytes</tspan>"));
+        assert!(svg.contains(")</tspan>"));
+        assert!(svg.contains("xlink:href=\"https://docs.rs/bytes/1/bytes/struct.Bytes.html\""));
+        assert!(svg.contains("class=\"link\""));
+        assert!(svg.contains("▷ Query(</tspan>"));
+        assert!(svg.contains(") [Dirty]</tspan>"));
+        assert!(!svg.contains("class=\"link\"> <g class=\"terminal\""));
         assert!(!svg.contains("&amp; ReceiveCopyData"));
     }
 

@@ -63,6 +63,8 @@ work using that feature is complete.
   from corrupting their CSS and preserving their intrinsic dimensions.
 - [x] Polish embedded diagrams with unclipped geometry, enum-variant payload
   syntax, linked rustdoc types, and unambiguous directional glyphs.
+  - [x] Conservatively size transition terminals for rustdoc fonts and restrict
+    each hyperlink to the payload type inside the variant parentheses.
 - [x] Client/server pre-startup, authentication, query, reset, error, COPY, and
   replication grammar coverage.
 - [x] Attach typed message payloads and fallible transition results to generated

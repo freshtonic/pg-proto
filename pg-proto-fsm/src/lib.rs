@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use railroad::{
-    Choice, Diagram, Empty, End, Link, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet,
-    Terminal, VerticalGrid,
+    Choice, Diagram, Empty, End, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet, Terminal,
+    VerticalGrid,
+    svg::{self, HDir},
 };
 use syn::{
     Ident, Pat, Result, Token, Type, Visibility, braced,
@@ -772,33 +773,11 @@ fn railroad_svg(states: &[State]) -> String {
     let productions = states
         .iter()
         .map(|state| {
-            let labelled = |transition: &Transition| {
-                let choice = match transition.choice.unwrap_or(state.choice) {
-                    ChoiceKind::Internal => "▷",
-                    ChoiceKind::External => "◁",
-                    ChoiceKind::Mixed => {
-                        unreachable!("validated mixed transition has a direction")
-                    }
-                };
-                let event = match &transition.payload {
-                    Some(payload) => {
-                        let payload = quote!(#payload).to_string().replace(' ', "");
-                        format!("{}({payload})", transition.event)
-                    }
-                    None => transition.event.to_string(),
-                };
-                match &transition.cleanliness {
-                    Some(cleanliness) => {
-                        format!("{choice} {event} [{cleanliness}]")
-                    }
-                    None => format!("{choice} {event}"),
-                }
-            };
             let self_loops = state
                 .transitions
                 .iter()
                 .filter(|transition| transition.target == state.name)
-                .map(|transition| transition_node(labelled(transition), transition))
+                .map(|transition| transition_node(transition, state.choice))
                 .collect::<Vec<_>>();
             let exits = state
                 .transitions
@@ -806,7 +785,7 @@ fn railroad_svg(states: &[State]) -> String {
                 .filter(|transition| transition.target != state.name)
                 .map(|transition| {
                     Box::new(Sequence::new(vec![
-                        transition_node(labelled(transition), transition),
+                        transition_node(transition, state.choice),
                         Box::new(NonTerminal::new(transition.target.to_string())),
                     ])) as Box<dyn Node>
                 })
@@ -830,8 +809,8 @@ fn railroad_svg(states: &[State]) -> String {
     let root = VerticalGrid::new(productions);
     let mut diagram = Diagram::new_with_stylesheet(root, &Stylesheet::Light);
     diagram.add_css(
-        "svg.railroad a.link text { text-decoration: underline; } \
-         svg.railroad a.link:hover text { text-decoration-thickness: 2px; }",
+        "svg.railroad a.link tspan { text-decoration: underline; } \
+         svg.railroad a.link:hover tspan { text-decoration-thickness: 2px; }",
     );
     let content_width = diagram.width();
     let content_height = diagram.height();
@@ -865,11 +844,106 @@ fn railroad_svg(states: &[State]) -> String {
     svg.replace(['\r', '\n'], " ")
 }
 
-fn transition_node(label: String, transition: &Transition) -> Box<dyn Node> {
-    let terminal = Terminal::new(label);
-    match transition.payload.as_ref().and_then(payload_doc_url) {
-        Some(url) => Box::new(Link::new(terminal, url)),
-        None => Box::new(terminal),
+fn transition_node(transition: &Transition, state_choice: ChoiceKind) -> Box<dyn Node> {
+    let choice = match transition.choice.unwrap_or(state_choice) {
+        ChoiceKind::Internal => "▷",
+        ChoiceKind::External => "◁",
+        ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
+    };
+    let cleanliness = transition
+        .cleanliness
+        .as_ref()
+        .map_or_else(String::new, |cleanliness| format!(" [{cleanliness}]"));
+    let (prefix, payload, suffix, url) = match &transition.payload {
+        Some(payload) => {
+            let rendered = quote!(#payload).to_string().replace(' ', "");
+            (
+                format!("{choice} {}(", transition.event),
+                Some(rendered),
+                format!("){cleanliness}"),
+                payload_doc_url(payload),
+            )
+        }
+        None => (
+            format!("{choice} {}", transition.event),
+            None,
+            cleanliness,
+            None,
+        ),
+    };
+    Box::new(TransitionTerminal {
+        prefix,
+        payload,
+        suffix,
+        url,
+    })
+}
+
+#[derive(Debug)]
+struct TransitionTerminal {
+    prefix: String,
+    payload: Option<String>,
+    suffix: String,
+    url: Option<String>,
+}
+
+impl TransitionTerminal {
+    fn label_width(&self) -> usize {
+        self.prefix.chars().count()
+            + self
+                .payload
+                .as_ref()
+                .map_or(0, |value| value.chars().count())
+            + self.suffix.chars().count()
+    }
+}
+
+impl Node for TransitionTerminal {
+    fn entry_height(&self) -> i64 {
+        11
+    }
+
+    fn height(&self) -> i64 {
+        22
+    }
+
+    fn width(&self) -> i64 {
+        i64::try_from(self.label_width()).expect("transition label width fits i64") * 9 + 24
+    }
+
+    fn draw(&self, x: i64, y: i64, _h_dir: HDir) -> svg::Element {
+        let rect = svg::Element::new("rect")
+            .set("x", &x)
+            .set("y", &y)
+            .set("height", &self.height())
+            .set("width", &self.width())
+            .set("rx", &10)
+            .set("ry", &10);
+        let mut text = svg::Element::new("text")
+            .set("x", &(x + self.width() / 2))
+            .set("y", &(y + self.entry_height() + 5));
+        text.push(svg::Element::new("tspan").text(&self.prefix));
+        if let Some(payload) = &self.payload {
+            let payload = svg::Element::new("tspan").text(payload);
+            match &self.url {
+                Some(url) => {
+                    text.push(
+                        svg::Element::new("a")
+                            .set("xlink:href", url)
+                            .set("class", &"link")
+                            .add(payload),
+                    );
+                }
+                None => {
+                    text.push(payload);
+                }
+            }
+        }
+        text.push(svg::Element::new("tspan").text(&self.suffix));
+        svg::Element::new("g")
+            .set("class", &"terminal")
+            .add(rect)
+            .add(text)
     }
 }
 

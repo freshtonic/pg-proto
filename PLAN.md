@@ -195,3 +195,19 @@ neutral composition harnesses and examples.
 - [x] Apply generated codec-message-to-event projection throughout the protocol.
 - [x] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.
+
+## Optional future work
+
+These are deliberately not completion criteria for `pg-proto`'s current plan.
+They depend on downstream requirements or pursue additional assurance beyond the
+library boundary established above.
+
+- [ ] Provide platform-specific GSSAPI/GSSENC, Kerberos, or SSPI adapters if a
+  downstream Proxy deployment requires them. The library integration traits and
+  typed protocol loops are complete.
+- [ ] Implement CipherStash-specific routing, EQL transformation, credential
+  management, and pool policy in the next Proxy, using `pg-proto` as a library.
+- [ ] Add PostgreSQL 18 to the required compatibility matrix when CipherStash
+  declares it supported; it remains an available forward-compatibility target.
+- [ ] Pursue formal multiparty/proxy verification if its additional assurance
+  justifies the research and maintenance cost.

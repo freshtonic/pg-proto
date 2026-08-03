@@ -8,6 +8,12 @@ protocol! {
         Ready internal {
             Query(query) => Simple,
             BeginExtended(begin_extended) => Building,
+            FunctionCall(function_call) => FunctionCalling,
+            Terminate(terminate) => Terminated,
+        }
+        FunctionCalling external {
+            FunctionResponse(function_response) => AwaitingReady,
+            Error(error) => Draining,
         }
         Simple external {
             Continue(continue_response) => Simple,
@@ -69,6 +75,7 @@ protocol! {
             Continue(continue_response) => Draining,
             Ready(ready) => Ready,
         }
+        Terminated external {}
     }
 }
 
@@ -208,6 +215,26 @@ mod tests {
             server_first.step(event).unwrap();
         }
         assert_eq!(server_first.state(), RuntimeState::AwaitingReady);
+    }
+
+    #[test]
+    fn generated_function_call_and_termination_match_typed_paths() {
+        let _function = Session::new()
+            .function_call()
+            .function_response()
+            .ready()
+            .terminate();
+
+        let mut runtime = RuntimeFsm::new();
+        for event in [
+            Event::FunctionCall,
+            Event::FunctionResponse,
+            Event::Ready,
+            Event::Terminate,
+        ] {
+            runtime.step(event).unwrap();
+        }
+        assert_eq!(runtime.state(), RuntimeState::Terminated);
     }
 
     #[test]

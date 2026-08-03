@@ -70,6 +70,9 @@ work using that feature is complete.
     projectors.
   - [ ] Apply generated projectors to the PostgreSQL grammars and handwritten
     compatibility sessions.
+    - [x] Generate state-aware client-message projection for backend Ready,
+      extended-query/error-drain, COPY IN, and COPY BOTH states.
+    - [ ] Generate backend-message projection and replace handwritten matching.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

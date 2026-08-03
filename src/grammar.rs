@@ -205,15 +205,19 @@ protocol! {
 protocol! {
     pub mod backend {
         initial Ready;
+        messages {
+            internal: crate::codec::BackendMessage,
+            external: crate::codec::FrontendMessage,
+        }
         Ready external {
-            Query(query: bytes::Bytes) => Simple [Dirty],
-            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty],
-            Bind(bind: crate::codec::Bind) => BindResponse [Dirty],
-            Describe(describe: crate::codec::Describe) => DescribeResponse,
-            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty],
-            Close(close: crate::codec::Close) => CloseResponse,
-            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionResponse [Dirty],
-            Terminate(terminate) => Terminated,
+            Query(query: bytes::Bytes) => Simple [Dirty] <= crate::codec::FrontendMessage::Query(_),
+            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty] <= crate::codec::FrontendMessage::Parse(_),
+            Bind(bind: crate::codec::Bind) => BindResponse [Dirty] <= crate::codec::FrontendMessage::Bind(_),
+            Describe(describe: crate::codec::Describe) => DescribeResponse <= crate::codec::FrontendMessage::Describe(_),
+            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty] <= crate::codec::FrontendMessage::Execute(_),
+            Close(close: crate::codec::Close) => CloseResponse <= crate::codec::FrontendMessage::Close(_),
+            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionResponse [Dirty] <= crate::codec::FrontendMessage::FunctionCall(_),
+            Terminate(terminate) => Terminated <= crate::codec::FrontendMessage::Terminate,
         }
         Simple internal {
             Continue(continue_response: crate::codec::BackendMessage) => Simple,
@@ -227,13 +231,13 @@ protocol! {
             Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         Building external {
-            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty],
-            Bind(bind: crate::codec::Bind) => BindResponse [Dirty],
-            Describe(describe: crate::codec::Describe) => DescribeResponse,
-            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty],
-            Close(close: crate::codec::Close) => CloseResponse,
-            Flush(flush) => Building,
-            Sync(sync) => SyncResponse,
+            Parse(parse: crate::codec::Parse) => ParseResponse [Dirty] <= crate::codec::FrontendMessage::Parse(_),
+            Bind(bind: crate::codec::Bind) => BindResponse [Dirty] <= crate::codec::FrontendMessage::Bind(_),
+            Describe(describe: crate::codec::Describe) => DescribeResponse <= crate::codec::FrontendMessage::Describe(_),
+            Execute(execute: crate::codec::Execute) => ExecuteResponse [Dirty] <= crate::codec::FrontendMessage::Execute(_),
+            Close(close: crate::codec::Close) => CloseResponse <= crate::codec::FrontendMessage::Close(_),
+            Flush(flush) => Building <= crate::codec::FrontendMessage::Flush,
+            Sync(sync) => SyncResponse <= crate::codec::FrontendMessage::Sync,
         }
         ParseResponse internal {
             Complete(complete) => Building,
@@ -262,8 +266,20 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedError external {
-            Discard(discard) => ExtendedError,
-            Sync(sync) => SyncResponse,
+            Discard(discard) => ExtendedError <= crate::codec::FrontendMessage::Parse(_)
+                | crate::codec::FrontendMessage::Bind(_)
+                | crate::codec::FrontendMessage::Describe(_)
+                | crate::codec::FrontendMessage::Execute(_)
+                | crate::codec::FrontendMessage::Close(_)
+                | crate::codec::FrontendMessage::Flush
+                | crate::codec::FrontendMessage::Query(_)
+                | crate::codec::FrontendMessage::FunctionCall(_)
+                | crate::codec::FrontendMessage::Terminate
+                | crate::codec::FrontendMessage::CopyData(_)
+                | crate::codec::FrontendMessage::CopyDone
+                | crate::codec::FrontendMessage::CopyFail(_)
+                | crate::codec::FrontendMessage::PasswordResponse(_),
+            Sync(sync) => SyncResponse <= crate::codec::FrontendMessage::Sync,
         }
         SyncResponse internal {
             Ready(ready: crate::codec::TransactionStatus) => Ready,
@@ -276,9 +292,9 @@ protocol! {
             Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         SimpleCopyIn external {
-            Data(data: bytes::Bytes) => SimpleCopyIn,
-            Done(done) => SimpleCopyInDone,
-            Fail(fail: bytes::Bytes) => SimpleCopyInFailed,
+            Data(data: bytes::Bytes) => SimpleCopyIn <= crate::codec::FrontendMessage::CopyData(_),
+            Done(done) => SimpleCopyInDone <= crate::codec::FrontendMessage::CopyDone,
+            Fail(fail: bytes::Bytes) => SimpleCopyInFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         SimpleCopyInDone internal {
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady,
@@ -298,9 +314,9 @@ protocol! {
             Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         ExtendedCopyIn external {
-            Data(data: bytes::Bytes) => ExtendedCopyIn,
-            Done(done) => ExtendedCopyInDone,
-            Fail(fail: bytes::Bytes) => ExtendedCopyInFailed,
+            Data(data: bytes::Bytes) => ExtendedCopyIn <= crate::codec::FrontendMessage::CopyData(_),
+            Done(done) => ExtendedCopyInDone <= crate::codec::FrontendMessage::CopyDone,
+            Fail(fail: bytes::Bytes) => ExtendedCopyInFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         ExtendedCopyInDone internal {
             CommandComplete(command_complete: bytes::Bytes) => Building,
@@ -318,10 +334,10 @@ protocol! {
         }
         SimpleCopyBoth mixed {
             internal SendData(send_data: bytes::Bytes) => SimpleCopyBoth,
-            external ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBoth,
+            external ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBoth <= crate::codec::FrontendMessage::CopyData(_),
             internal SendDone(send_done) => SimpleCopyBothServerDone,
-            external ReceiveDone(receive_done) => SimpleCopyBothClientDone,
-            external Fail(fail: bytes::Bytes) => SimpleCopyBothFailed,
+            external ReceiveDone(receive_done) => SimpleCopyBothClientDone <= crate::codec::FrontendMessage::CopyDone,
+            external Fail(fail: bytes::Bytes) => SimpleCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
             internal Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyBothClientDone internal {
@@ -330,9 +346,9 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady,
         }
         SimpleCopyBothServerDone external {
-            ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBothServerDone,
-            ReceiveDone(receive_done) => SimpleCopyBothDone,
-            Fail(fail: bytes::Bytes) => SimpleCopyBothFailed,
+            ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
+            ReceiveDone(receive_done) => SimpleCopyBothDone <= crate::codec::FrontendMessage::CopyDone,
+            Fail(fail: bytes::Bytes) => SimpleCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         SimpleCopyBothDone internal {
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady,
@@ -342,10 +358,10 @@ protocol! {
         }
         ExtendedCopyBoth mixed {
             internal SendData(send_data: bytes::Bytes) => ExtendedCopyBoth,
-            external ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBoth,
+            external ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBoth <= crate::codec::FrontendMessage::CopyData(_),
             internal SendDone(send_done) => ExtendedCopyBothServerDone,
-            external ReceiveDone(receive_done) => ExtendedCopyBothClientDone,
-            external Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed,
+            external ReceiveDone(receive_done) => ExtendedCopyBothClientDone <= crate::codec::FrontendMessage::CopyDone,
+            external Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
             internal Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyBothClientDone internal {
@@ -354,9 +370,9 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExtendedCopyBothServerDone external {
-            ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBothServerDone,
-            ReceiveDone(receive_done) => ExtendedCopyBothDone,
-            Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed,
+            ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
+            ReceiveDone(receive_done) => ExtendedCopyBothDone <= crate::codec::FrontendMessage::CopyDone,
+            Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         ExtendedCopyBothDone internal {
             CommandComplete(command_complete: bytes::Bytes) => Building,
@@ -430,12 +446,40 @@ mod tests {
     use crate::{
         Conn,
         auth::AuthOffer,
-        codec::{Authentication, Bind, Execute, Parse, TransactionStatus},
+        codec::{Authentication, Bind, Execute, FrontendMessage, Parse, TransactionStatus},
         demux::SessionItem,
         session::{AwaitingReadyTransition, ReadyState},
         startup::{ProtocolVersion, StartupMessage},
     };
     use frontend::{Event, RuntimeFsm, RuntimeState, Session};
+
+    #[test]
+    fn generated_backend_projection_is_state_aware() {
+        let parse = FrontendMessage::Parse(Parse {
+            statement: Bytes::from_static(b"statement"),
+            query: Bytes::from_static(b"select 1"),
+            parameter_types: Vec::new(),
+        });
+        assert_eq!(
+            backend::project_external(backend::RuntimeState::Ready, &parse),
+            Some(backend::Event::Parse)
+        );
+        assert_eq!(
+            backend::project_external(backend::RuntimeState::SimpleCopyIn, &parse),
+            None
+        );
+        assert_eq!(
+            backend::project_external(backend::RuntimeState::ExtendedError, &FrontendMessage::Sync,),
+            Some(backend::Event::Sync)
+        );
+        assert_eq!(
+            backend::project_external(
+                backend::RuntimeState::ExtendedError,
+                &FrontendMessage::Flush,
+            ),
+            Some(backend::Event::Discard)
+        );
+    }
 
     #[test]
     fn generated_typestate_and_runtime_accept_the_extended_loop() {

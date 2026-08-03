@@ -163,7 +163,7 @@ impl Parse for Transition {
         };
         let projection = if input.peek(Token![<=]) {
             input.parse::<Token![<=]>()?;
-            Some(Pat::parse_single(input)?)
+            Some(Pat::parse_multi(input)?)
         } else {
             None
         };

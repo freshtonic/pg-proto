@@ -17,6 +17,18 @@ protocol! {
     }
 }
 
+protocol! {
+    mod duplex {
+        initial Open;
+        Open mixed {
+            internal Send(send) => Open,
+            external Receive(receive) => Open,
+            internal Close(close) => Closed,
+        }
+        Closed external {}
+    }
+}
+
 #[test]
 fn typestate_and_runtime_fsm_follow_the_same_grammar() {
     let _ready: query::Session<query::Ready> = query::Session::new().query().complete();
@@ -38,4 +50,24 @@ fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.starts_with("<svg"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Building"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Sync"));
+}
+
+#[test]
+fn mixed_states_retain_each_transition_direction() {
+    let mut runtime = duplex::RuntimeFsm::new();
+    assert_eq!(runtime.choice(), duplex::ChoiceKind::Mixed);
+    assert_eq!(
+        runtime.event_choice(duplex::Event::Send),
+        Some(duplex::ChoiceKind::Internal)
+    );
+    assert_eq!(
+        runtime.event_choice(duplex::Event::Receive),
+        Some(duplex::ChoiceKind::External)
+    );
+    runtime.step(duplex::Event::Send).unwrap();
+    runtime.step(duplex::Event::Receive).unwrap();
+    runtime.step(duplex::Event::Close).unwrap();
+    assert_eq!(runtime.state(), duplex::RuntimeState::Closed);
+    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('⊕'));
+    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('&'));
 }

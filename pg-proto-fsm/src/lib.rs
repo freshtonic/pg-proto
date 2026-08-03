@@ -32,9 +32,11 @@ struct State {
 enum ChoiceKind {
     Internal,
     External,
+    Mixed,
 }
 
 struct Transition {
+    choice: Option<ChoiceKind>,
     event: Ident,
     method: Ident,
     target: Ident,
@@ -70,10 +72,11 @@ impl Parse for State {
         let choice = match choice_name.to_string().as_str() {
             "internal" => ChoiceKind::Internal,
             "external" => ChoiceKind::External,
+            "mixed" => ChoiceKind::Mixed,
             _ => {
                 return Err(syn::Error::new(
                     choice_name.span(),
-                    "expected `internal` or `external` choice",
+                    "expected `internal`, `external`, or `mixed` choice",
                 ));
             }
         };
@@ -93,13 +96,19 @@ impl Parse for State {
 
 impl Parse for Transition {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let event = input.parse()?;
+        let first: Ident = input.parse()?;
+        let (choice, event) = match first.to_string().as_str() {
+            "internal" => (Some(ChoiceKind::Internal), input.parse()?),
+            "external" => (Some(ChoiceKind::External), input.parse()?),
+            _ => (None, first),
+        };
         let method_content;
         syn::parenthesized!(method_content in input);
         let method = method_content.parse()?;
         input.parse::<Token![=>]>()?;
         let target = input.parse()?;
         Ok(Self {
+            choice,
             event,
             method,
             target,
@@ -151,8 +160,21 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
         let choice = match state.choice {
             ChoiceKind::Internal => quote!(ChoiceKind::Internal),
             ChoiceKind::External => quote!(ChoiceKind::External),
+            ChoiceKind::Mixed => quote!(ChoiceKind::Mixed),
         };
         quote!(RuntimeState::#name => #choice)
+    });
+    let event_choice_arms = states.iter().flat_map(|state| {
+        let source = &state.name;
+        state.transitions.iter().map(move |transition| {
+            let event = &transition.event;
+            let choice = match transition.choice.unwrap_or(state.choice) {
+                ChoiceKind::Internal => quote!(ChoiceKind::Internal),
+                ChoiceKind::External => quote!(ChoiceKind::External),
+                ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
+            };
+            quote!((RuntimeState::#source, Event::#event) => Some(#choice))
+        })
     });
     let typestate_impls = states.iter().map(|state| {
         let source = &state.name;
@@ -207,7 +229,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             pub enum Event { #(#events),* }
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub enum ChoiceKind { Internal, External }
+            pub enum ChoiceKind { Internal, External, Mixed }
 
             impl ChoiceKind {
                 #[must_use]
@@ -215,6 +237,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     match self {
                         Self::Internal => Self::External,
                         Self::External => Self::Internal,
+                        Self::Mixed => Self::Mixed,
                     }
                 }
             }
@@ -249,6 +272,12 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 #[must_use]
                 pub const fn dual_choice(&self) -> ChoiceKind {
                     self.choice().dual()
+                }
+
+                /// Returns the direction of one legal event from the current state.
+                #[must_use]
+                pub const fn event_choice(&self, event: Event) -> Option<ChoiceKind> {
+                    match (self.state, event) { #(#event_choice_arms,)* _ => None }
                 }
 
                 pub fn step(&mut self, event: Event) -> Result<(), TransitionError> {
@@ -312,6 +341,31 @@ fn validate(protocol: &Protocol) -> Result<()> {
         ));
     }
     for state in &protocol.states {
+        match state.choice {
+            ChoiceKind::Mixed
+                if state
+                    .transitions
+                    .iter()
+                    .any(|transition| transition.choice.is_none()) =>
+            {
+                return Err(syn::Error::new(
+                    state.name.span(),
+                    "every transition in a mixed state needs `internal` or `external`",
+                ));
+            }
+            ChoiceKind::Internal | ChoiceKind::External
+                if state
+                    .transitions
+                    .iter()
+                    .any(|transition| transition.choice.is_some()) =>
+            {
+                return Err(syn::Error::new(
+                    state.name.span(),
+                    "transition directions are only valid in a mixed state",
+                ));
+            }
+            _ => {}
+        }
         let mut methods = BTreeSet::new();
         for transition in &state.transitions {
             if !states.contains(&transition.target.to_string()) {
@@ -336,9 +390,10 @@ fn railroad_svg(states: &[State]) -> String {
         .iter()
         .flat_map(|state| {
             state.transitions.iter().map(|transition| {
-                let choice = match state.choice {
+                let choice = match transition.choice.unwrap_or(state.choice) {
                     ChoiceKind::Internal => "⊕",
                     ChoiceKind::External => "&",
+                    ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
                 };
                 Box::new(Sequence::new(vec![
                     Box::new(NonTerminal::new(format!("{} {choice}", state.name))) as Box<dyn Node>,

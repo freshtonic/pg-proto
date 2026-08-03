@@ -14,7 +14,7 @@ use crate::{
     Conn,
     auth::TlsServerEndPoint,
     codec::{Backend, BackendMessage, Direction, Frame, Frontend, FrontendMessage, PgCodec},
-    demux::{CancelKey, Demux, Notification, ParameterStatus, SessionItem},
+    demux::{CancelKey, Demux, Notification, ParameterStatus, SessionItem, TaggedNotice},
     pre_startup::{
         AwaitingSslReply, EncryptionReply, Negotiation, PreStartup, PreStartupMessage,
         ServerSslDecision, SslMode, SslModeNegotiation, TlsHandshake, decode_pre_startup,
@@ -407,6 +407,11 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
 
     pub fn pop_notification(&mut self) -> Option<Notification> {
         self.transport_mut().demux_mut().pop_notification()
+    }
+
+    /// Removes the next tagged notice for prompt forwarding to the client.
+    pub fn pop_notice(&mut self) -> Option<TaggedNotice> {
+        self.transport_mut().demux_mut().pop_notice()
     }
 
     /// Removes the next ordered parameter update for forwarding to the client.

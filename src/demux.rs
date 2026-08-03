@@ -56,6 +56,7 @@ pub enum SessionItem {
 pub struct Demux {
     command: CommandIndex,
     pending_notices: Vec<TaggedNotice>,
+    notices: VecDeque<TaggedNotice>,
     notifications: VecDeque<Notification>,
     parameter_statuses: VecDeque<ParameterStatus>,
     parameters: BTreeMap<Bytes, Bytes>,
@@ -73,10 +74,12 @@ impl Demux {
     pub fn route(&mut self, message: BackendMessage) -> Option<SessionItem> {
         match message {
             BackendMessage::NoticeResponse(fields) => {
-                self.pending_notices.push(TaggedNotice {
+                let notice = TaggedNotice {
                     command: self.command,
                     fields,
-                });
+                };
+                self.pending_notices.push(notice.clone());
+                self.notices.push_back(notice);
                 None
             }
             BackendMessage::ParameterStatus { name, value } => {
@@ -161,6 +164,11 @@ impl Demux {
         self.notifications.pop_front()
     }
 
+    /// Removes the next positionally tagged notice for prompt client forwarding.
+    pub fn pop_notice(&mut self) -> Option<TaggedNotice> {
+        self.notices.pop_front()
+    }
+
     /// Removes the next ordered status update for forwarding to a client.
     pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
         self.parameter_statuses.pop_front()
@@ -204,6 +212,19 @@ mod tests {
                 }],
             }
         );
+        assert_eq!(
+            demux.pop_notice(),
+            Some(TaggedNotice {
+                command: CommandIndex(0),
+                fields: DiagnosticResponse {
+                    fields: vec![crate::codec::DiagnosticField {
+                        code: b'M',
+                        value: Bytes::from_static(b"notice"),
+                    }],
+                },
+            })
+        );
+        assert_eq!(demux.pop_notice(), None);
     }
 
     #[test]

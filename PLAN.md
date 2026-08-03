@@ -57,7 +57,7 @@ work using that feature is complete.
 - [x] Railroad SVG with sequence, choice, recursion, and cleanliness effects.
 - [x] Client/server pre-startup, authentication, query, reset, error, COPY, and
   replication grammar coverage.
-- [ ] Attach typed message payloads and fallible transition results to generated
+- [x] Attach typed message payloads and fallible transition results to generated
   methods so generated APIs can replace the handwritten phase implementations.
 - [ ] Generate or share projection logic between the typed API and runtime FSM,
   eliminating manually duplicated message-to-event matching.
@@ -113,7 +113,7 @@ work using that feature is complete.
   connection API.
   - [x] Idle transaction completion invalidates the unnamed portal only.
   - [x] A simple-query boundary invalidates the unnamed statement only.
-- [ ] Attach typed message payloads and fallible results to generated grammar
+- [x] Attach typed message payloads and fallible results to generated grammar
   transitions, beginning with frontend extended-query construction.
   - [x] Add typed payload syntax and state-preserving fallible handlers to the
     proc macro and railroad output.
@@ -127,5 +127,6 @@ work using that feature is complete.
     payloads across the backend-role query grammar.
   - [x] Apply payloads to pre-startup cancellation/startup and server startup
     metadata, protocol negotiation, cancellation keys, and readiness status.
-  - [ ] Apply payloads to asynchronous projection and remaining generic
-    continuation transitions.
+  - [x] Type remaining data-bearing continuations; retain asynchronous notices,
+    parameter statuses, and notifications below the session grammar as the
+    deliberately filtered byte-stream projection.

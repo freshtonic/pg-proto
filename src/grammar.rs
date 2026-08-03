@@ -13,16 +13,16 @@ protocol! {
             Terminate(terminate) => Terminated,
         }
         FunctionCalling external {
-            FunctionResponse(function_response) => AwaitingReady,
-            Error(error) => Draining,
+            FunctionResponse(function_response: bytes::Bytes) => AwaitingReady,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         Simple external {
-            Continue(continue_response) => Simple,
-            CopyIn(enter_copy_in) => CopyIn,
-            CopyOut(enter_copy_out) => CopyOut,
-            CopyBoth(enter_copy_both) => CopyBoth,
-            Ready(ready) => Ready,
-            Error(error) => Draining,
+            Continue(continue_response: crate::codec::BackendMessage) => Simple,
+            CopyIn(enter_copy_in: crate::codec::CopyResponse) => CopyIn,
+            CopyOut(enter_copy_out: crate::codec::CopyResponse) => CopyOut,
+            CopyBoth(enter_copy_both: crate::codec::CopyResponse) => CopyBoth,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         Building internal {
             Parse(parse: crate::codec::Parse) => Building [Dirty],
@@ -42,51 +42,51 @@ protocol! {
             Sync(sync) => AwaitingReady,
         }
         AwaitingReady external {
-            Continue(continue_response) => AwaitingReady,
-            Ready(ready) => Ready,
-            Error(error) => Draining,
+            Continue(continue_response: crate::codec::BackendMessage) => AwaitingReady,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         CopyIn mixed {
             internal CopyData(copy_data: bytes::Bytes) => CopyIn,
             internal CopyDone(copy_done) => AwaitingReady,
             internal CopyFail(copy_fail: bytes::Bytes) => AwaitingReady,
-            external Error(error) => Draining,
+            external Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         CopyOut external {
             CopyData(copy_data: bytes::Bytes) => CopyOut,
             CopyDone(copy_done) => AwaitingReady,
-            Error(error) => Draining,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         CopyBoth mixed {
             internal SendCopyData(send_copy_data: bytes::Bytes) => CopyBoth,
             external ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBoth,
             internal SendCopyDone(send_copy_done) => CopyBothClientDone,
             external ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
-            external Error(error) => Draining,
+            external Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         CopyBothClientDone external {
             ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBothClientDone,
             ReceiveCopyDone(receive_copy_done) => AwaitingReady,
-            Error(error) => Draining,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         CopyBothServerDone internal {
             SendCopyData(send_copy_data: bytes::Bytes) => CopyBothServerDone,
             SendCopyDone(send_copy_done) => AwaitingReady,
         }
         Draining external {
-            Continue(continue_response) => Draining,
-            Ready(ready) => Ready,
+            Continue(continue_response: crate::codec::BackendMessage) => Draining,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         Resetting external {
-            Continue(continue_reset) => Resetting,
-            DiscardComplete(discard_complete) => ResetComplete,
-            Error(error) => Draining,
+            Continue(continue_reset: crate::codec::BackendMessage) => Resetting,
+            DiscardComplete(discard_complete: bytes::Bytes) => ResetComplete,
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         ResetComplete external {
-            Continue(continue_reset) => ResetComplete,
-            ReadyClean(ready_clean) => Ready [Pristine],
-            ReadyDirty(ready_dirty) => Ready [Dirty],
-            Error(error) => Draining,
+            Continue(continue_reset: crate::codec::BackendMessage) => ResetComplete,
+            ReadyClean(ready_clean: crate::codec::TransactionStatus) => Ready [Pristine],
+            ReadyDirty(ready_dirty: crate::codec::TransactionStatus) => Ready [Dirty],
+            Error(error: crate::codec::DiagnosticResponse) => Draining,
         }
         Terminated external {}
     }
@@ -163,7 +163,7 @@ protocol! {
             Gss(gss) => TokenResponse,
             Sspi(sspi) => TokenResponse,
             KerberosV5(kerberos_v5) => TokenResponse,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         PasswordResponse internal {
             Password(password: bytes::Bytes) => AwaitingAuthOk,
@@ -174,7 +174,7 @@ protocol! {
         TokenChallenge external {
             Continue(continue_token: bytes::Bytes) => TokenResponse,
             Ok(ok) => AwaitingStartupReady,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         SaslInitial internal {
             Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl,
@@ -182,7 +182,7 @@ protocol! {
         Sasl external {
             Continue(continue_response: bytes::Bytes) => SaslChallenge,
             Final(final_response: bytes::Bytes) => SaslFinal,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         SaslChallenge internal {
             Response(response: bytes::Bytes) => Sasl,
@@ -192,10 +192,10 @@ protocol! {
         }
         AwaitingAuthOk external {
             Ok(ok) => AwaitingStartupReady,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         AwaitingStartupReady external {
-            Ready(ready) => Ready,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         Ready external {}
         Terminated external {}
@@ -216,7 +216,7 @@ protocol! {
             Terminate(terminate) => Terminated,
         }
         Simple internal {
-            Continue(continue_response) => Simple,
+            Continue(continue_response: crate::codec::BackendMessage) => Simple,
             CopyIn(copy_in: crate::codec::CopyResponse) => SimpleCopyIn,
             CopyOut(copy_out: crate::codec::CopyResponse) => SimpleCopyOut,
             CopyBoth(copy_both: crate::codec::CopyResponse) => SimpleCopyBoth,
@@ -249,7 +249,7 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError,
         }
         ExecuteResponse internal {
-            Continue(continue_response) => ExecuteResponse,
+            Continue(continue_response: crate::codec::BackendMessage) => ExecuteResponse,
             CopyIn(copy_in: crate::codec::CopyResponse) => ExtendedCopyIn,
             CopyOut(copy_out: crate::codec::CopyResponse) => ExtendedCopyOut,
             CopyBoth(copy_both: crate::codec::CopyResponse) => ExtendedCopyBoth,
@@ -383,7 +383,7 @@ protocol! {
             Sspi(sspi) => TokenResponse,
             KerberosV5(kerberos_v5) => TokenResponse,
             Ok(ok) => StartupReady,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         PasswordResponse external {
             Response(response: bytes::Bytes) => Auth,
@@ -394,7 +394,7 @@ protocol! {
         Sasl internal {
             Continue(continue_response: bytes::Bytes) => SaslResponse,
             Final(final_response: bytes::Bytes) => Auth,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         SaslResponse external {
             Response(response: bytes::Bytes) => Sasl,
@@ -405,7 +405,7 @@ protocol! {
         TokenPolicy internal {
             Continue(continue_token: bytes::Bytes) => TokenResponse,
             Verified(verified) => Auth,
-            Error(error) => Terminated,
+            Error(error: crate::codec::DiagnosticResponse) => Terminated,
         }
         StartupReady internal {
             ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady,
@@ -692,13 +692,32 @@ mod tests {
             })
             .expect("query handler is infallible");
         assert_eq!(query, Bytes::from_static(b"select 1"));
-        let dirty: frontend::TypedSession<(), frontend::Ready, frontend::Dirty> = dirty.ready();
+        let (dirty, _status): (
+            frontend::TypedSession<(), frontend::Ready, frontend::Dirty>,
+            TransactionStatus,
+        ) = dirty
+            .ready(TransactionStatus::Idle, |(), status| {
+                Ok::<_, std::convert::Infallible>(status)
+            })
+            .expect("readiness handler is infallible");
         assert_eq!(dirty.into_transport(), ());
 
         let dirty: frontend::TypedSession<(), frontend::Ready, frontend::Dirty> =
             frontend::TypedSession::with_transport(());
-        let clean: frontend::TypedSession<(), frontend::Ready, frontend::Pristine> =
-            dirty.reset().discard_complete().ready_clean();
+        let (reset_complete, _tag) = dirty
+            .reset()
+            .discard_complete(Bytes::from_static(b"DISCARD ALL"), |(), tag| {
+                Ok::<_, std::convert::Infallible>(tag)
+            })
+            .expect("command handler is infallible");
+        let (clean, _status): (
+            frontend::TypedSession<(), frontend::Ready, frontend::Pristine>,
+            TransactionStatus,
+        ) = reset_complete
+            .ready_clean(TransactionStatus::Idle, |(), status| {
+                Ok::<_, std::convert::Infallible>(status)
+            })
+            .expect("readiness handler is infallible");
         assert_eq!(clean.into_transport(), ());
     }
 

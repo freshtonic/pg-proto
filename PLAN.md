@@ -119,7 +119,7 @@ neutral composition harnesses and examples.
 - [x] Audit current `cipherstash/proxy` and pgcat protocol use solely to identify
   required wire coverage, interception points, and library invariants; record
   every discovered obligation without importing application policy.
-- [ ] Define a neutral client ↔ intermediary ↔ upstream composition API that
+- [x] Define a neutral client ↔ intermediary ↔ upstream composition API that
   retains independent typed sessions on both sides.
 - [ ] Prove independent downstream and upstream TLS/authentication mechanisms and
   credentials can be composed without coupling their state or policy.

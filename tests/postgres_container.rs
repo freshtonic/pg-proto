@@ -10,7 +10,7 @@ use pg_proto::{
     },
     demux::SessionItem,
     pre_startup::Startup,
-    session::{AwaitingReadyTransition, ReadyState, SimpleTransition},
+    session::{AwaitingReadyTransition, DrainingTransition, ReadyState, SimpleTransition},
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
@@ -395,4 +395,49 @@ async fn trust_ready(
         return Err("PostgreSQL did not use trust authentication".into());
     };
     finish_startup(awaiting_ready).await
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let ready = trust_ready(port).await?;
+    let (mut query, frame) = ready.push_query(b"SELECT FROM")?;
+    query.push_frame(frame)?;
+    query.flush().await?;
+
+    let mut draining = loop {
+        let item = query.receive().await?;
+        match query.offer(item) {
+            Ok(SimpleTransition::Continue(next, _)) | Err((next, _)) => query = next,
+            Ok(SimpleTransition::Error(draining, error)) => {
+                assert!(
+                    error
+                        .fields
+                        .iter()
+                        .any(|field| field.code == b'C' && field.value == "42601")
+                );
+                break draining;
+            }
+            Ok(_) => return Err("invalid query did not enter Draining".into()),
+        }
+    };
+
+    let ready = loop {
+        let item = draining.receive().await?;
+        match draining.offer(item) {
+            DrainingTransition::Continue(next, _) => draining = next,
+            DrainingTransition::Ready(ReadyState::Clean(ready)) => break ready,
+            DrainingTransition::Ready(ReadyState::Dirty { .. }) => {
+                return Err("error drain left a dirty connection".into());
+            }
+        }
+    };
+    let _transport = ready.release();
+    Ok(())
 }

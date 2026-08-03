@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use railroad::{Choice, Diagram, End, Node, NonTerminal, Sequence, Start, Stylesheet, Terminal};
+use railroad::{
+    Choice, Diagram, Empty, End, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet, Terminal,
+    VerticalGrid,
+};
 use syn::{
     Ident, Result, Token, Visibility, braced,
     parse::{Parse, ParseStream},
@@ -395,27 +398,52 @@ fn validate(protocol: &Protocol) -> Result<()> {
 }
 
 fn railroad_svg(states: &[State]) -> String {
-    let alternatives = states
+    let productions = states
         .iter()
-        .flat_map(|state| {
-            state.transitions.iter().map(|transition| {
+        .map(|state| {
+            let labelled = |transition: &Transition| {
                 let choice = match transition.choice.unwrap_or(state.choice) {
                     ChoiceKind::Internal => "⊕",
                     ChoiceKind::External => "&",
-                    ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
+                    ChoiceKind::Mixed => {
+                        unreachable!("validated mixed transition has a direction")
+                    }
                 };
-                Box::new(Sequence::new(vec![
-                    Box::new(NonTerminal::new(format!("{} {choice}", state.name))) as Box<dyn Node>,
-                    Box::new(Terminal::new(transition.event.to_string())),
-                    Box::new(NonTerminal::new(transition.target.to_string())),
-                ])) as Box<dyn Node>
-            })
+                format!("{choice} {}", transition.event)
+            };
+            let self_loops = state
+                .transitions
+                .iter()
+                .filter(|transition| transition.target == state.name)
+                .map(|transition| Box::new(Terminal::new(labelled(transition))) as Box<dyn Node>)
+                .collect::<Vec<_>>();
+            let exits = state
+                .transitions
+                .iter()
+                .filter(|transition| transition.target != state.name)
+                .map(|transition| {
+                    Box::new(Sequence::new(vec![
+                        Box::new(Terminal::new(labelled(transition))) as Box<dyn Node>,
+                        Box::new(NonTerminal::new(transition.target.to_string())),
+                    ])) as Box<dyn Node>
+                })
+                .collect::<Vec<_>>();
+            let mut nodes = vec![
+                Box::new(Start) as Box<dyn Node>,
+                Box::new(NonTerminal::new(state.name.to_string())),
+            ];
+            if !self_loops.is_empty() {
+                nodes.push(Box::new(Repeat::new(Choice::new(self_loops), Empty)));
+            }
+            if exits.is_empty() {
+                nodes.push(Box::new(Terminal::new("end".to_owned())));
+            } else {
+                nodes.push(Box::new(Choice::new(exits)));
+            }
+            nodes.push(Box::new(End));
+            Box::new(Sequence::new(nodes)) as Box<dyn Node>
         })
         .collect::<Vec<_>>();
-    let root: Sequence<Box<dyn Node>> = Sequence::new(vec![
-        Box::new(Start),
-        Box::new(Choice::new(alternatives)),
-        Box::new(End),
-    ]);
+    let root = VerticalGrid::new(productions);
     Diagram::new_with_stylesheet(root, &Stylesheet::Light).to_string()
 }

@@ -50,6 +50,8 @@ fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.starts_with("<svg"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Building"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Sync"));
+    assert!(query::QUERY_RAILROAD_SVG.contains("class=\"repeat\""));
+    assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Parse"));
 }
 
 #[test]

@@ -64,6 +64,17 @@ fn generated_typed_sessions_carry_transport_and_cleanliness() {
 }
 
 #[test]
+fn generated_typed_sessions_change_transport_without_changing_state() {
+    struct Clean;
+
+    let open: duplex::TypedSession<u8, duplex::Open, Clean> =
+        duplex::TypedSession::with_transport(42);
+    let open: duplex::TypedSession<String, duplex::Open, Clean> =
+        open.map_transport(|transport| transport.to_string());
+    assert_eq!(open.close().into_transport(), "42");
+}
+
+#[test]
 fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.starts_with("<svg"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Building"));

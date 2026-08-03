@@ -437,12 +437,34 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
 
             impl<Transport, Phase, Cleanliness> TypedSession<Transport, Phase, Cleanliness> {
                 #[must_use]
+                pub fn map_transport<Next>(
+                    self,
+                    map: impl FnOnce(Transport) -> Next,
+                ) -> TypedSession<Next, Phase, Cleanliness> {
+                    TypedSession {
+                        transport: map(self.transport),
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+
+                #[must_use]
                 pub fn into_transport(self) -> Transport {
                     self.transport
                 }
             }
 
             impl<Transport, Phase, Cleanliness> DualTypedSession<Transport, Phase, Cleanliness> {
+                #[must_use]
+                pub fn map_transport<Next>(
+                    self,
+                    map: impl FnOnce(Transport) -> Next,
+                ) -> DualTypedSession<Next, Phase, Cleanliness> {
+                    DualTypedSession {
+                        transport: map(self.transport),
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+
                 #[must_use]
                 pub fn into_transport(self) -> Transport {
                     self.transport

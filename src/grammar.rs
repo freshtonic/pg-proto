@@ -695,6 +695,10 @@ mod tests {
 
     #[test]
     fn generated_pre_startup_requires_handshake_before_startup() {
+        struct Clean;
+        struct Tcp;
+        struct Tls(Tcp);
+
         let _typed = pre_startup::Session::new()
             .ssl_request()
             .accept()
@@ -707,6 +711,16 @@ mod tests {
         runtime.step(pre_startup::Event::Accept).unwrap();
         runtime.step(pre_startup::Event::HandshakeComplete).unwrap();
         runtime.step(pre_startup::Event::Startup).unwrap();
+
+        let pre_startup: pre_startup::TypedSession<Tcp, pre_startup::PreStartup, Clean> =
+            pre_startup::TypedSession::with_transport(Tcp);
+        let auth: pre_startup::TypedSession<Tls, pre_startup::Auth, Clean> = pre_startup
+            .ssl_request()
+            .accept()
+            .map_transport(Tls)
+            .complete()
+            .startup();
+        let Tls(_tcp) = auth.into_transport();
     }
 
     #[test]

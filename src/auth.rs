@@ -34,6 +34,14 @@ pub trait TlsServerEndPoint {
     fn tls_server_end_point(&self) -> &[u8];
 }
 
+impl<S: TlsServerEndPoint, Phase, Cleanliness> Conn<S, Phase, Cleanliness> {
+    /// Returns the peer-certificate binding for custom authentication policy.
+    #[must_use]
+    pub fn tls_server_end_point(&self) -> &[u8] {
+        self.transport().tls_server_end_point()
+    }
+}
+
 /// External choice offered by the backend during authentication.
 #[derive(Debug)]
 pub enum AuthOffer<S> {
@@ -140,7 +148,6 @@ impl<S: TlsServerEndPoint> Conn<S, SaslInitial, Pristine> {
         self,
         initial: &[u8],
     ) -> std::io::Result<(Conn<S, Sasl>, codec::Frame)> {
-        let _binding = self.transport().tls_server_end_point();
         sasl_initial(self, b"SCRAM-SHA-256-PLUS", initial)
     }
 }
@@ -232,5 +239,19 @@ mod tests {
         assert_eq!(first.body, Bytes::from_static(b"one"));
         assert_eq!(second.body, Bytes::from_static(b"two"));
         let _transport = conn.into_transport();
+    }
+
+    #[test]
+    fn scram_plus_exposes_binding_to_custom_authentication_logic() {
+        let conn: Conn<Tls, SaslInitial> = Conn::new(Tls(vec![1, 2, 3])).transition();
+        assert_eq!(conn.tls_server_end_point(), [1, 2, 3]);
+
+        let (sasl, frame) = conn.scram_sha_256_plus(b"client-first").unwrap();
+        assert_eq!(frame.tag, b'p');
+        assert_eq!(
+            frame.body,
+            Bytes::from_static(b"SCRAM-SHA-256-PLUS\0\0\0\0\x0cclient-first")
+        );
+        let _transport = sasl.into_transport();
     }
 }

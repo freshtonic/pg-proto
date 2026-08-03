@@ -1,0 +1,22 @@
+[package]
+name = "pg-proto-fsm"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Protocol grammar generator for pg-proto"
+
+[lib]
+proc-macro = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+railroad = { version = "0.3.8", default-features = false }
+syn = "3.0.3"

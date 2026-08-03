@@ -60,6 +60,15 @@ pub enum AuthOffer<S> {
     KerberosV5(Conn<S, Auth>),
 }
 
+#[derive(Debug)]
+pub enum AuthEvent<S> {
+    Authentication(AuthOffer<S>),
+    Negotiate {
+        conn: Conn<S, Auth>,
+        message: codec::NegotiateProtocolVersion,
+    },
+}
+
 impl<S> Conn<S, Startup, Pristine> {
     pub fn authentication(self) -> Conn<S, Auth> {
         self.transition()
@@ -67,6 +76,46 @@ impl<S> Conn<S, Startup, Pristine> {
 }
 
 impl<S> Conn<S, Auth, Pristine> {
+    /// Projects either protocol negotiation or an authentication request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication parsing error, or the unchanged connection and
+    /// message when the backend message is unrelated to startup authentication.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the exhaustive continuation guard above the internal
+    /// projection becomes inconsistent with [`Self::offer`].
+    pub fn offer_backend(
+        self,
+        message: codec::BackendMessage,
+    ) -> Result<AuthEvent<S>, (Self, codec::BackendMessage, Option<std::io::Error>)> {
+        match message {
+            codec::BackendMessage::Authentication(
+                authentication @ (codec::Authentication::GssContinue(_)
+                | codec::Authentication::SaslContinue(_)
+                | codec::Authentication::SaslFinal(_)),
+            ) => Err((
+                self,
+                codec::BackendMessage::Authentication(authentication),
+                Some(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "authentication continuation before mechanism selection",
+                )),
+            )),
+            codec::BackendMessage::Authentication(authentication) => Ok(AuthEvent::Authentication(
+                self.offer(authentication)
+                    .expect("non-continuation authentication is valid in Auth"),
+            )),
+            codec::BackendMessage::NegotiateProtocolVersion(message) => Ok(AuthEvent::Negotiate {
+                conn: self,
+                message,
+            }),
+            message => Err((self, message, None)),
+        }
+    }
+
     /// Applies one backend authentication request to the session state.
     ///
     /// # Errors
@@ -253,5 +302,32 @@ mod tests {
             Bytes::from_static(b"SCRAM-SHA-256-PLUS\0\0\0\0\x0cclient-first")
         );
         let _transport = sasl.into_transport();
+    }
+
+    #[test]
+    fn protocol_negotiation_is_an_auth_self_loop() {
+        let auth: Conn<(), Auth> = Conn::new(()).transition();
+        let negotiation = codec::NegotiateProtocolVersion {
+            newest: crate::startup::ProtocolVersion::V3_2,
+            unsupported_options: vec![Bytes::from_static(b"_pq_.feature")],
+        };
+        let AuthEvent::Negotiate { conn, message } = auth
+            .offer_backend(codec::BackendMessage::NegotiateProtocolVersion(
+                negotiation.clone(),
+            ))
+            .unwrap()
+        else {
+            panic!("negotiation projected to the wrong branch")
+        };
+        assert_eq!(message, negotiation);
+        let AuthEvent::Authentication(AuthOffer::Ok(ready)) = conn
+            .offer_backend(codec::BackendMessage::Authentication(
+                codec::Authentication::Ok,
+            ))
+            .unwrap()
+        else {
+            panic!("authentication projected to the wrong branch")
+        };
+        ready.into_transport();
     }
 }

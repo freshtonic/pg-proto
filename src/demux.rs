@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use bytes::Bytes;
 
-use crate::codec::{BackendMessage, Frame, TransactionStatus};
+use crate::codec::{BackendMessage, DiagnosticResponse, TransactionStatus};
 
 /// Position of a command within a connection's session.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -13,7 +13,7 @@ pub struct CommandIndex(pub u64);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaggedNotice {
     pub command: CommandIndex,
-    pub fields: Bytes,
+    pub fields: DiagnosticResponse,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,7 +34,7 @@ pub struct CancelKey {
 pub enum SessionItem {
     Message(BackendMessage),
     CommandComplete {
-        frame: Frame,
+        tag: Bytes,
         command: CommandIndex,
         notices: Vec<TaggedNotice>,
     },
@@ -106,12 +106,12 @@ impl Demux {
                 }
                 Some(SessionItem::Message(BackendMessage::ReadyForQuery(status)))
             }
-            BackendMessage::Recognised(frame) if frame.tag == b'C' => {
+            BackendMessage::CommandComplete(tag) => {
                 let command = self.command;
                 let notices = std::mem::take(&mut self.pending_notices);
                 self.command.0 = self.command.0.saturating_add(1);
                 Some(SessionItem::CommandComplete {
-                    frame,
+                    tag,
                     command,
                     notices,
                 })
@@ -153,28 +153,32 @@ mod tests {
     fn notices_are_attached_to_their_command_boundary() {
         let mut demux = Demux::default();
         assert_eq!(
-            demux.route(BackendMessage::NoticeResponse(Bytes::from_static(
-                b"notice"
-            ))),
+            demux.route(BackendMessage::NoticeResponse(DiagnosticResponse {
+                fields: vec![crate::codec::DiagnosticField {
+                    code: b'M',
+                    value: Bytes::from_static(b"notice"),
+                }],
+            })),
             None
         );
         let completion = demux
-            .route(BackendMessage::Recognised(Frame {
-                tag: b'C',
-                body: Bytes::from_static(b"SELECT 1\0"),
-            }))
+            .route(BackendMessage::CommandComplete(Bytes::from_static(
+                b"SELECT 1",
+            )))
             .expect("command completion advances the session");
         assert_eq!(
             completion,
             SessionItem::CommandComplete {
-                frame: Frame {
-                    tag: b'C',
-                    body: Bytes::from_static(b"SELECT 1\0"),
-                },
+                tag: Bytes::from_static(b"SELECT 1"),
                 command: CommandIndex(0),
                 notices: vec![TaggedNotice {
                     command: CommandIndex(0),
-                    fields: Bytes::from_static(b"notice"),
+                    fields: DiagnosticResponse {
+                        fields: vec![crate::codec::DiagnosticField {
+                            code: b'M',
+                            value: Bytes::from_static(b"notice"),
+                        }],
+                    },
                 }],
             }
         );

@@ -417,14 +417,49 @@ pub struct NegotiateProtocolVersion {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticResponse {
+    pub fields: Vec<DiagnosticField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticField {
+    pub code: u8,
+    pub value: Bytes,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopyResponse {
+    pub overall_format: u8,
+    pub column_formats: Vec<i16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataRow {
+    pub columns: Vec<Option<Bytes>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackendMessage {
     RowDescription(RowDescription),
     Authentication(Authentication),
+    ParseComplete,
+    BindComplete,
+    CloseComplete,
+    CommandComplete(Bytes),
+    CopyData(Bytes),
+    CopyDone,
+    CopyInResponse(CopyResponse),
+    CopyOutResponse(CopyResponse),
+    CopyBothResponse(CopyResponse),
+    DataRow(DataRow),
+    EmptyQueryResponse,
+    ErrorResponse(DiagnosticResponse),
+    NoData,
     ParameterStatus {
         name: Bytes,
         value: Bytes,
     },
-    NoticeResponse(Bytes),
+    NoticeResponse(DiagnosticResponse),
     NotificationResponse {
         process_id: u32,
         channel: Bytes,
@@ -435,9 +470,10 @@ pub enum BackendMessage {
         secret_key: Bytes,
     },
     ReadyForQuery(TransactionStatus),
+    ParameterDescription(Vec<u32>),
+    PortalSuspended,
+    FunctionCallResponse(Bytes),
     NegotiateProtocolVersion(NegotiateProtocolVersion),
-    /// A recognised message not yet lifted into a more specific representation.
-    Recognised(Frame),
 }
 
 impl BackendMessage {
@@ -450,6 +486,22 @@ impl BackendMessage {
         match self {
             Self::RowDescription(message) => message.to_frame(),
             Self::Authentication(message) => authentication_frame(message),
+            Self::ParseComplete => Ok(empty_message(b'1')),
+            Self::BindComplete => Ok(empty_message(b'2')),
+            Self::CloseComplete => Ok(empty_message(b'3')),
+            Self::CommandComplete(tag) => cstr_message(b'C', tag),
+            Self::CopyData(data) => Ok(Frame {
+                tag: b'd',
+                body: data.clone(),
+            }),
+            Self::CopyDone => Ok(empty_message(b'c')),
+            Self::CopyInResponse(response) => copy_response_frame(b'G', response),
+            Self::CopyOutResponse(response) => copy_response_frame(b'H', response),
+            Self::CopyBothResponse(response) => copy_response_frame(b'W', response),
+            Self::DataRow(row) => row.to_frame(),
+            Self::EmptyQueryResponse => Ok(empty_message(b'I')),
+            Self::ErrorResponse(response) => diagnostic_frame(b'E', response),
+            Self::NoData => Ok(empty_message(b'n')),
             Self::ParameterStatus { name, value } => {
                 let mut body = BytesMut::new();
                 put_cstr(name, &mut body)?;
@@ -459,10 +511,7 @@ impl BackendMessage {
                     body: body.freeze(),
                 })
             }
-            Self::NoticeResponse(body) => Ok(Frame {
-                tag: b'N',
-                body: body.clone(),
-            }),
+            Self::NoticeResponse(response) => diagnostic_frame(b'N', response),
             Self::NotificationResponse {
                 process_id,
                 channel,
@@ -496,8 +545,23 @@ impl BackendMessage {
                 tag: b'Z',
                 body: Bytes::copy_from_slice(&[status.as_byte()]),
             }),
+            Self::ParameterDescription(types) => {
+                let mut body = BytesMut::new();
+                put_count(types.len(), &mut body)?;
+                for oid in types {
+                    body.put_u32(*oid);
+                }
+                Ok(Frame {
+                    tag: b't',
+                    body: body.freeze(),
+                })
+            }
+            Self::PortalSuspended => Ok(empty_message(b's')),
+            Self::FunctionCallResponse(data) => Ok(Frame {
+                tag: b'V',
+                body: data.clone(),
+            }),
             Self::NegotiateProtocolVersion(message) => message.to_frame(),
-            Self::Recognised(frame) => Ok(frame.clone()),
         }
     }
 }
@@ -532,6 +596,49 @@ impl NegotiateProtocolVersion {
             body: body.freeze(),
         })
     }
+}
+
+impl DataRow {
+    /// # Errors
+    ///
+    /// Returns an error for too many columns or oversized values.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        put_count(self.columns.len(), &mut body)?;
+        for column in &self.columns {
+            put_nullable(column.as_ref(), &mut body)?;
+        }
+        Ok(Frame {
+            tag: b'D',
+            body: body.freeze(),
+        })
+    }
+}
+
+fn diagnostic_frame(tag: u8, response: &DiagnosticResponse) -> io::Result<Frame> {
+    let mut body = BytesMut::new();
+    for field in &response.fields {
+        if field.code == 0 {
+            return Err(invalid_input("diagnostic field code cannot be zero"));
+        }
+        body.put_u8(field.code);
+        put_cstr(&field.value, &mut body)?;
+    }
+    body.put_u8(0);
+    Ok(Frame {
+        tag,
+        body: body.freeze(),
+    })
+}
+
+fn copy_response_frame(tag: u8, response: &CopyResponse) -> io::Result<Frame> {
+    let mut body = BytesMut::new();
+    body.put_u8(response.overall_format);
+    put_i16_vec(&response.column_formats, &mut body)?;
+    Ok(Frame {
+        tag,
+        body: body.freeze(),
+    })
 }
 
 fn authentication_frame(authentication: &Authentication) -> io::Result<Frame> {
@@ -577,16 +684,32 @@ impl Direction for Backend {
 
     fn decode(frame: Frame) -> io::Result<Self::Message> {
         match frame.tag {
+            b'1' => decode_empty(&frame.body).map(|()| BackendMessage::ParseComplete),
+            b'2' => decode_empty(&frame.body).map(|()| BackendMessage::BindComplete),
+            b'3' => decode_empty(&frame.body).map(|()| BackendMessage::CloseComplete),
+            b'C' => decode_cstr_body(frame.body).map(BackendMessage::CommandComplete),
+            b'c' => decode_empty(&frame.body).map(|()| BackendMessage::CopyDone),
+            b'd' => Ok(BackendMessage::CopyData(frame.body)),
+            b'D' => decode_data_row(frame.body).map(BackendMessage::DataRow),
+            b'E' => decode_diagnostic(frame.body).map(BackendMessage::ErrorResponse),
+            b'G' => decode_copy_response(frame.body).map(BackendMessage::CopyInResponse),
+            b'H' => decode_copy_response(frame.body).map(BackendMessage::CopyOutResponse),
+            b'I' => decode_empty(&frame.body).map(|()| BackendMessage::EmptyQueryResponse),
+            b'n' => decode_empty(&frame.body).map(|()| BackendMessage::NoData),
+            b's' => decode_empty(&frame.body).map(|()| BackendMessage::PortalSuspended),
+            b't' => {
+                decode_parameter_description(frame.body).map(BackendMessage::ParameterDescription)
+            }
             b'T' => decode_row_description(frame.body).map(BackendMessage::RowDescription),
+            b'V' => Ok(BackendMessage::FunctionCallResponse(frame.body)),
+            b'W' => decode_copy_response(frame.body).map(BackendMessage::CopyBothResponse),
             b'R' => decode_authentication(frame.body).map(BackendMessage::Authentication),
             b'S' => decode_parameter_status(frame.body),
-            b'N' => Ok(BackendMessage::NoticeResponse(frame.body)),
+            b'N' => decode_diagnostic(frame.body).map(BackendMessage::NoticeResponse),
             b'A' => decode_notification(frame.body),
             b'K' => decode_backend_key_data(frame.body),
             b'Z' => decode_ready(frame.body),
             b'v' => decode_negotiate_protocol_version(frame.body),
-            b'1' | b'2' | b'3' | b'c' | b'C' | b'd' | b'D' | b'E' | b'G' | b'H' | b'I' | b'n'
-            | b's' | b't' | b'V' | b'W' => Ok(BackendMessage::Recognised(frame)),
             tag => Err(unknown_tag("backend", tag)),
         }
     }
@@ -736,6 +859,54 @@ fn decode_describe(mut body: Bytes) -> io::Result<Describe> {
     let name = take_cstr(&mut body)?;
     require_empty(&body)?;
     Ok(Describe { target, name })
+}
+
+fn decode_data_row(mut body: Bytes) -> io::Result<DataRow> {
+    let count = take_u16(&mut body)?;
+    let mut columns = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        columns.push(take_nullable(&mut body)?);
+    }
+    require_empty(&body)?;
+    Ok(DataRow { columns })
+}
+
+fn decode_diagnostic(mut body: Bytes) -> io::Result<DiagnosticResponse> {
+    let mut fields = Vec::new();
+    loop {
+        require(&body, 1)?;
+        let code = body.get_u8();
+        if code == 0 {
+            break;
+        }
+        fields.push(DiagnosticField {
+            code,
+            value: take_cstr(&mut body)?,
+        });
+    }
+    require_empty(&body)?;
+    Ok(DiagnosticResponse { fields })
+}
+
+fn decode_copy_response(mut body: Bytes) -> io::Result<CopyResponse> {
+    require(&body, 1)?;
+    let overall_format = body.get_u8();
+    let column_formats = take_i16_vec(&mut body)?;
+    require_empty(&body)?;
+    Ok(CopyResponse {
+        overall_format,
+        column_formats,
+    })
+}
+
+fn decode_parameter_description(mut body: Bytes) -> io::Result<Vec<u32>> {
+    let count = take_u16(&mut body)?;
+    let mut types = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        types.push(take_u32(&mut body)?);
+    }
+    require_empty(&body)?;
+    Ok(types)
 }
 
 fn decode_close(mut body: Bytes) -> io::Result<Close> {
@@ -1083,6 +1254,54 @@ mod tests {
                 .expect("reconstructable frontend message");
             assert_eq!(
                 Frontend::decode(frame).expect("decodable frontend message"),
+                message
+            );
+        }
+    }
+
+    #[test]
+    fn backend_message_family_round_trips_structurally() {
+        let diagnostic = DiagnosticResponse {
+            fields: vec![
+                DiagnosticField {
+                    code: b'S',
+                    value: Bytes::from_static(b"ERROR"),
+                },
+                DiagnosticField {
+                    code: b'M',
+                    value: Bytes::from_static(b"rewritable message"),
+                },
+            ],
+        };
+        let copy = CopyResponse {
+            overall_format: 0,
+            column_formats: vec![0, 1],
+        };
+        let messages = vec![
+            BackendMessage::ParseComplete,
+            BackendMessage::BindComplete,
+            BackendMessage::CloseComplete,
+            BackendMessage::CommandComplete(Bytes::from_static(b"SELECT 1")),
+            BackendMessage::CopyData(Bytes::from_static(b"row\n")),
+            BackendMessage::CopyDone,
+            BackendMessage::CopyInResponse(copy.clone()),
+            BackendMessage::CopyOutResponse(copy.clone()),
+            BackendMessage::CopyBothResponse(copy),
+            BackendMessage::DataRow(DataRow {
+                columns: vec![Some(Bytes::from_static(b"42")), None],
+            }),
+            BackendMessage::EmptyQueryResponse,
+            BackendMessage::ErrorResponse(diagnostic.clone()),
+            BackendMessage::NoticeResponse(diagnostic),
+            BackendMessage::NoData,
+            BackendMessage::ParameterDescription(vec![23, 25]),
+            BackendMessage::PortalSuspended,
+            BackendMessage::FunctionCallResponse(Bytes::from_static(b"result")),
+        ];
+        for message in messages {
+            let frame = message.to_frame().expect("reconstructable backend message");
+            assert_eq!(
+                Backend::decode(frame).expect("decodable backend message"),
                 message
             );
         }

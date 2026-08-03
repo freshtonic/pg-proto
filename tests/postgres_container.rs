@@ -107,7 +107,7 @@ async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<
                 SessionItem::Message(BackendMessage::RowDescription(_)) => {
                     saw_row_description = true;
                 }
-                SessionItem::Message(BackendMessage::Recognised(frame)) if frame.tag == b'D' => {
+                SessionItem::Message(BackendMessage::DataRow(_)) => {
                     saw_data_row = true;
                 }
                 SessionItem::CommandComplete { .. } => saw_command_complete = true,

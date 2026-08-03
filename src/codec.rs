@@ -113,8 +113,18 @@ pub enum FrontendMessage {
     Parse(Parse),
     Bind(Bind),
     Describe(Describe),
-    /// A recognised message not yet lifted into a more specific representation.
-    Recognised(Frame),
+    Close(Close),
+    Execute(Execute),
+    FunctionCall(FunctionCall),
+    Query(Bytes),
+    Flush,
+    Sync,
+    Terminate,
+    CopyData(Bytes),
+    CopyDone,
+    CopyFail(Bytes),
+    /// Context determines whether this is password, GSS, or a SASL response.
+    PasswordResponse(Bytes),
 }
 
 impl FrontendMessage {
@@ -128,7 +138,23 @@ impl FrontendMessage {
             Self::Parse(message) => message.to_frame(),
             Self::Bind(message) => message.to_frame(),
             Self::Describe(message) => message.to_frame(),
-            Self::Recognised(frame) => Ok(frame.clone()),
+            Self::Close(message) => message.to_frame(),
+            Self::Execute(message) => message.to_frame(),
+            Self::FunctionCall(message) => message.to_frame(),
+            Self::Query(query) => cstr_message(b'Q', query),
+            Self::Flush => Ok(empty_message(b'H')),
+            Self::Sync => Ok(empty_message(b'S')),
+            Self::Terminate => Ok(empty_message(b'X')),
+            Self::CopyData(data) => Ok(Frame {
+                tag: b'd',
+                body: data.clone(),
+            }),
+            Self::CopyDone => Ok(empty_message(b'c')),
+            Self::CopyFail(message) => cstr_message(b'f', message),
+            Self::PasswordResponse(data) => Ok(Frame {
+                tag: b'p',
+                body: data.clone(),
+            }),
         }
     }
 }
@@ -213,6 +239,26 @@ pub enum DescribeTarget {
     Portal,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Close {
+    pub target: DescribeTarget,
+    pub name: Bytes,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Execute {
+    pub portal: Bytes,
+    pub max_rows: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FunctionCall {
+    pub function_oid: u32,
+    pub argument_formats: Vec<i16>,
+    pub arguments: Vec<Option<Bytes>>,
+    pub result_format: i16,
+}
+
 impl Describe {
     /// Reconstructs a checked Describe frame.
     ///
@@ -233,6 +279,50 @@ impl Describe {
     }
 }
 
+impl Close {
+    /// # Errors
+    ///
+    /// Returns an error if the name contains a NUL byte.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        named_target_frame(b'C', self.target, &self.name)
+    }
+}
+
+impl Execute {
+    /// # Errors
+    ///
+    /// Returns an error if the portal name contains a NUL byte.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        put_cstr(&self.portal, &mut body)?;
+        body.put_i32(self.max_rows);
+        Ok(Frame {
+            tag: b'E',
+            body: body.freeze(),
+        })
+    }
+}
+
+impl FunctionCall {
+    /// # Errors
+    ///
+    /// Returns an error for excessive counts or oversized argument values.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        let mut body = BytesMut::new();
+        body.put_u32(self.function_oid);
+        put_i16_vec(&self.argument_formats, &mut body)?;
+        put_count(self.arguments.len(), &mut body)?;
+        for argument in &self.arguments {
+            put_nullable(argument.as_ref(), &mut body)?;
+        }
+        body.put_i16(self.result_format);
+        Ok(Frame {
+            tag: b'F',
+            body: body.freeze(),
+        })
+    }
+}
+
 impl Direction for Frontend {
     type Message = FrontendMessage;
 
@@ -241,9 +331,17 @@ impl Direction for Frontend {
             b'P' => decode_parse(frame.body).map(FrontendMessage::Parse),
             b'B' => decode_bind(frame.body).map(FrontendMessage::Bind),
             b'D' => decode_describe(frame.body).map(FrontendMessage::Describe),
-            b'C' | b'E' | b'F' | b'H' | b'Q' | b'S' | b'X' | b'c' | b'd' | b'f' | b'p' => {
-                Ok(FrontendMessage::Recognised(frame))
-            }
+            b'C' => decode_close(frame.body).map(FrontendMessage::Close),
+            b'E' => decode_execute(frame.body).map(FrontendMessage::Execute),
+            b'F' => decode_function_call(frame.body).map(FrontendMessage::FunctionCall),
+            b'H' => decode_empty(&frame.body).map(|()| FrontendMessage::Flush),
+            b'Q' => decode_cstr_body(frame.body).map(FrontendMessage::Query),
+            b'S' => decode_empty(&frame.body).map(|()| FrontendMessage::Sync),
+            b'X' => decode_empty(&frame.body).map(|()| FrontendMessage::Terminate),
+            b'c' => decode_empty(&frame.body).map(|()| FrontendMessage::CopyDone),
+            b'd' => Ok(FrontendMessage::CopyData(frame.body)),
+            b'f' => decode_cstr_body(frame.body).map(FrontendMessage::CopyFail),
+            b'p' => Ok(FrontendMessage::PasswordResponse(frame.body)),
             tag => Err(unknown_tag("frontend", tag)),
         }
     }
@@ -634,15 +732,61 @@ fn decode_bind(mut body: Bytes) -> io::Result<Bind> {
 }
 
 fn decode_describe(mut body: Bytes) -> io::Result<Describe> {
-    require(&body, 1)?;
-    let target = match body.get_u8() {
-        b'S' => DescribeTarget::Statement,
-        b'P' => DescribeTarget::Portal,
-        _ => return Err(invalid("invalid Describe target")),
-    };
+    let target = take_target(&mut body)?;
     let name = take_cstr(&mut body)?;
     require_empty(&body)?;
     Ok(Describe { target, name })
+}
+
+fn decode_close(mut body: Bytes) -> io::Result<Close> {
+    let target = take_target(&mut body)?;
+    let name = take_cstr(&mut body)?;
+    require_empty(&body)?;
+    Ok(Close { target, name })
+}
+
+fn decode_execute(mut body: Bytes) -> io::Result<Execute> {
+    let portal = take_cstr(&mut body)?;
+    let max_rows = take_i32(&mut body)?;
+    require_empty(&body)?;
+    Ok(Execute { portal, max_rows })
+}
+
+fn decode_function_call(mut body: Bytes) -> io::Result<FunctionCall> {
+    let function_oid = take_u32(&mut body)?;
+    let argument_formats = take_i16_vec(&mut body)?;
+    let count = take_u16(&mut body)?;
+    let mut arguments = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        arguments.push(take_nullable(&mut body)?);
+    }
+    let result_format = take_i16(&mut body)?;
+    require_empty(&body)?;
+    Ok(FunctionCall {
+        function_oid,
+        argument_formats,
+        arguments,
+        result_format,
+    })
+}
+
+fn decode_cstr_body(mut body: Bytes) -> io::Result<Bytes> {
+    let value = take_cstr(&mut body)?;
+    require_empty(&body)?;
+    Ok(value)
+}
+
+fn decode_empty(body: &Bytes) -> io::Result<()> {
+    require_empty(body)
+}
+
+fn take_target(body: &mut Bytes) -> io::Result<DescribeTarget> {
+    require(body, 1)?;
+    match body.get_u8() {
+        b'S' => Ok(DescribeTarget::Statement),
+        b'P' => Ok(DescribeTarget::Portal),
+        _ => Err(invalid("invalid statement or portal target")),
+    }
 }
 
 fn decode_row_description(mut body: Bytes) -> io::Result<RowDescription> {
@@ -668,10 +812,33 @@ fn take_i16_vec(body: &mut Bytes) -> io::Result<Vec<i16>> {
     (0..count).map(|_| take_i16(body)).collect()
 }
 
+fn take_nullable(body: &mut Bytes) -> io::Result<Option<Bytes>> {
+    let length = take_i32(body)?;
+    if length == -1 {
+        return Ok(None);
+    }
+    let length = usize::try_from(length).map_err(|_| invalid("negative value length"))?;
+    require(body, length)?;
+    Ok(Some(body.split_to(length)))
+}
+
 fn put_i16_vec(values: &[i16], body: &mut BytesMut) -> io::Result<()> {
     put_count(values.len(), body)?;
     for value in values {
         body.put_i16(*value);
+    }
+    Ok(())
+}
+
+fn put_nullable(value: Option<&Bytes>, body: &mut BytesMut) -> io::Result<()> {
+    match value {
+        None => body.put_i32(-1),
+        Some(value) => {
+            let length =
+                i32::try_from(value.len()).map_err(|_| invalid_input("value is too large"))?;
+            body.put_i32(length);
+            body.extend_from_slice(value);
+        }
     }
     Ok(())
 }
@@ -690,6 +857,35 @@ fn put_cstr(value: &[u8], body: &mut BytesMut) -> io::Result<()> {
     body.extend_from_slice(value);
     body.put_u8(0);
     Ok(())
+}
+
+fn named_target_frame(tag: u8, target: DescribeTarget, name: &[u8]) -> io::Result<Frame> {
+    let mut body = BytesMut::new();
+    body.put_u8(match target {
+        DescribeTarget::Statement => b'S',
+        DescribeTarget::Portal => b'P',
+    });
+    put_cstr(name, &mut body)?;
+    Ok(Frame {
+        tag,
+        body: body.freeze(),
+    })
+}
+
+fn cstr_message(tag: u8, value: &[u8]) -> io::Result<Frame> {
+    let mut body = BytesMut::new();
+    put_cstr(value, &mut body)?;
+    Ok(Frame {
+        tag,
+        body: body.freeze(),
+    })
+}
+
+fn empty_message(tag: u8) -> Frame {
+    Frame {
+        tag,
+        body: Bytes::new(),
+    }
 }
 
 fn take_cstr(body: &mut Bytes) -> io::Result<Bytes> {
@@ -765,7 +961,7 @@ mod tests {
         };
         assert!(matches!(
             Frontend::decode(frontend_frame),
-            Ok(FrontendMessage::Recognised(_))
+            Ok(FrontendMessage::Sync)
         ));
         assert_eq!(
             Backend::decode(Frame {
@@ -853,5 +1049,42 @@ mod tests {
             Backend::decode(frame).expect("decodable RowDescription"),
             BackendMessage::RowDescription(description)
         );
+    }
+
+    #[test]
+    fn frontend_message_family_round_trips_structurally() {
+        let messages = vec![
+            FrontendMessage::Close(Close {
+                target: DescribeTarget::Portal,
+                name: Bytes::from_static(b"p"),
+            }),
+            FrontendMessage::Execute(Execute {
+                portal: Bytes::from_static(b"p"),
+                max_rows: 10,
+            }),
+            FrontendMessage::FunctionCall(FunctionCall {
+                function_oid: 42,
+                argument_formats: vec![1],
+                arguments: vec![Some(Bytes::from_static(b"arg")), None],
+                result_format: 1,
+            }),
+            FrontendMessage::Query(Bytes::from_static(b"select 1")),
+            FrontendMessage::Flush,
+            FrontendMessage::Sync,
+            FrontendMessage::Terminate,
+            FrontendMessage::CopyData(Bytes::from_static(b"row\n")),
+            FrontendMessage::CopyDone,
+            FrontendMessage::CopyFail(Bytes::from_static(b"cancelled")),
+            FrontendMessage::PasswordResponse(Bytes::from_static(b"opaque response")),
+        ];
+        for message in messages {
+            let frame = message
+                .to_frame()
+                .expect("reconstructable frontend message");
+            assert_eq!(
+                Frontend::decode(frame).expect("decodable frontend message"),
+                message
+            );
+        }
     }
 }

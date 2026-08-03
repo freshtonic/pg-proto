@@ -174,6 +174,8 @@ protocol! {
         }
         Simple internal {
             Continue(continue_response) => Simple,
+            CopyIn(copy_in) => SimpleCopyIn,
+            CopyOut(copy_out) => SimpleCopyOut,
             Ready(ready) => Ready,
             Error(error) => SimpleError,
         }
@@ -204,6 +206,8 @@ protocol! {
         }
         ExecuteResponse internal {
             Continue(continue_response) => ExecuteResponse,
+            CopyIn(copy_in) => ExtendedCopyIn,
+            CopyOut(copy_out) => ExtendedCopyOut,
             CommandComplete(command_complete) => Building,
             PortalSuspended(portal_suspended) => Building,
             Error(error) => ExtendedError,
@@ -225,6 +229,47 @@ protocol! {
         }
         FunctionReady internal {
             Ready(ready) => Ready,
+        }
+        SimpleCopyIn external {
+            Data(data) => SimpleCopyIn,
+            Done(done) => SimpleCopyInDone,
+            Fail(fail) => SimpleCopyInFailed,
+        }
+        SimpleCopyInDone internal {
+            CommandComplete(command_complete) => SimpleCopyReady,
+        }
+        SimpleCopyInFailed internal {
+            Error(error) => SimpleCopyReady,
+        }
+        SimpleCopyOut internal {
+            Data(data) => SimpleCopyOut,
+            Done(done) => SimpleCopyOutDone,
+            Error(error) => SimpleCopyReady,
+        }
+        SimpleCopyOutDone internal {
+            CommandComplete(command_complete) => SimpleCopyReady,
+        }
+        SimpleCopyReady internal {
+            Ready(ready) => Ready,
+        }
+        ExtendedCopyIn external {
+            Data(data) => ExtendedCopyIn,
+            Done(done) => ExtendedCopyInDone,
+            Fail(fail) => ExtendedCopyInFailed,
+        }
+        ExtendedCopyInDone internal {
+            CommandComplete(command_complete) => Building,
+        }
+        ExtendedCopyInFailed internal {
+            Error(error) => ExtendedError,
+        }
+        ExtendedCopyOut internal {
+            Data(data) => ExtendedCopyOut,
+            Done(done) => ExtendedCopyOutDone,
+            Error(error) => ExtendedError,
+        }
+        ExtendedCopyOutDone internal {
+            CommandComplete(command_complete) => Building,
         }
         Terminated external {}
     }
@@ -295,6 +340,40 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), backend::RuntimeState::Terminated);
+    }
+
+    #[test]
+    fn generated_backend_copy_resumes_its_enclosing_session() {
+        let _simple = backend::Session::new()
+            .query()
+            .copy_in()
+            .data()
+            .done()
+            .command_complete()
+            .ready();
+        let _extended = backend::Session::new()
+            .execute()
+            .copy_out()
+            .data()
+            .done()
+            .command_complete()
+            .sync()
+            .ready();
+
+        let mut runtime = backend::RuntimeFsm::new();
+        for event in [
+            backend::Event::Execute,
+            backend::Event::CopyOut,
+            backend::Event::Data,
+            backend::Event::Done,
+            backend::Event::CommandComplete,
+        ] {
+            runtime.step(event).unwrap();
+        }
+        assert_eq!(runtime.state(), backend::RuntimeState::Building);
+        runtime.step(backend::Event::Sync).unwrap();
+        runtime.step(backend::Event::Ready).unwrap();
+        assert_eq!(runtime.state(), backend::RuntimeState::Ready);
     }
 
     #[test]

@@ -53,7 +53,13 @@ where
         Some(&Bytes::from_static(b"proxy_test"))
     );
 
-    let (mut startup_ready, frame) = startup.0.begin_server_auth().authentication_ok()?;
+    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } = startup
+        .0
+        .validate_protocol(startup.1, pg_proto::startup::ProtocolVersion::V3_2)
+    else {
+        return Err(std::io::Error::other("unsupported startup protocol"));
+    };
+    let (mut startup_ready, frame) = conn.begin_server_auth().authentication_ok()?;
     startup_ready.push_frame(frame)?;
     for (name, value) in [
         (b"server_version".as_slice(), b"18.0".as_slice()),

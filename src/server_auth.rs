@@ -8,15 +8,21 @@ use crate::{
     Conn,
     auth::Ready,
     codec::{
-        Authentication, BackendMessage, Frame, FrontendMessage, NegotiateProtocolVersion,
-        TransactionStatus,
+        Authentication, BackendMessage, DiagnosticResponse, Frame, FrontendMessage,
+        NegotiateProtocolVersion, TransactionStatus,
     },
-    pre_startup::Startup,
-    startup::ProtocolVersion,
+    pre_startup::{Startup, Terminated},
+    startup::{ProtocolVersion, StartupMessage},
 };
 
 #[derive(Debug)]
 pub enum ServerAuth {}
+
+#[derive(Debug)]
+pub enum ServerStartupValidated {}
+
+#[derive(Debug)]
+pub enum ServerStartupRejected {}
 
 #[derive(Debug)]
 pub enum ServerPassword {}
@@ -32,6 +38,19 @@ pub enum ServerAuthResponse {}
 
 #[derive(Debug)]
 pub enum ServerStartupReady {}
+
+#[derive(Debug)]
+pub enum ServerProtocolOffer<S, C> {
+    Supported {
+        conn: Conn<S, ServerStartupValidated, C>,
+        message: StartupMessage,
+        negotiate_to: Option<ProtocolVersion>,
+    },
+    Rejected {
+        conn: Conn<S, ServerStartupRejected, C>,
+        message: StartupMessage,
+    },
+}
 
 /// A decoded SASL initial response selected by the client.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,9 +69,49 @@ pub type SaslInitialProjection<S, C> =
     ServerProjection<(Conn<S, ServerSasl, C>, SaslInitialResponse), S, ServerSaslInitial, C>;
 
 impl<S, C> Conn<S, Startup, C> {
-    /// Begins proxy-side authentication of the connected client.
+    /// Validates the startup protocol before authentication can begin.
+    pub fn validate_protocol(
+        self,
+        message: StartupMessage,
+        newest: ProtocolVersion,
+    ) -> ServerProtocolOffer<S, C> {
+        if message.version.major == newest.major {
+            let negotiate_to = (message.version.minor > newest.minor).then_some(newest);
+            ServerProtocolOffer::Supported {
+                conn: self.transition(),
+                message,
+                negotiate_to,
+            }
+        } else {
+            ServerProtocolOffer::Rejected {
+                conn: self.transition(),
+                message,
+            }
+        }
+    }
+}
+
+impl<S, C> Conn<S, ServerStartupValidated, C> {
+    /// Begins proxy-side authentication of a protocol-compatible client.
     pub fn begin_server_auth(self) -> Conn<S, ServerAuth, C> {
         self.transition()
+    }
+}
+
+impl<S, C> Conn<S, ServerStartupRejected, C> {
+    /// Rejects an unsupported major protocol version and terminates the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, Terminated, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::ErrorResponse(response).to_frame()?,
+        ))
     }
 }
 
@@ -364,11 +423,28 @@ fn sasl_initial(mut body: Bytes) -> Result<SaslInitialResponse, Bytes> {
 mod tests {
     use super::*;
     use crate::Pristine;
+    use std::collections::BTreeMap;
+
+    fn validated_startup() -> Conn<(), ServerStartupValidated, Pristine> {
+        let startup: Conn<(), Startup, Pristine> = Conn::new(()).transition();
+        let message = StartupMessage {
+            version: ProtocolVersion::V3_2,
+            parameters: BTreeMap::new(),
+        };
+        let ServerProtocolOffer::Supported { conn, .. } =
+            startup.validate_protocol(message, ProtocolVersion::V3_2)
+        else {
+            panic!("supported protocol was rejected")
+        };
+        conn
+    }
 
     #[test]
     fn cleartext_response_returns_to_independent_policy_choice() {
-        let startup: Conn<(), Startup, Pristine> = Conn::new(()).transition();
-        let (password, request) = startup.begin_server_auth().request_cleartext().unwrap();
+        let (password, request) = validated_startup()
+            .begin_server_auth()
+            .request_cleartext()
+            .unwrap();
         assert_eq!(
             request,
             authentication_frame(Authentication::CleartextPassword).unwrap()
@@ -387,8 +463,7 @@ mod tests {
 
     #[test]
     fn sasl_is_a_recursive_server_sub_session() {
-        let startup: Conn<(), Startup, Pristine> = Conn::new(()).transition();
-        let (initial, _) = startup
+        let (initial, _) = validated_startup()
             .begin_server_auth()
             .request_sasl(vec![Bytes::from_static(b"SCRAM-SHA-256")])
             .unwrap();
@@ -412,8 +487,10 @@ mod tests {
 
     #[test]
     fn startup_completion_mints_keys_and_requires_ready() {
-        let startup: Conn<(), Startup, Pristine> = Conn::new(()).transition();
-        let (startup_ready, _) = startup.begin_server_auth().authentication_ok().unwrap();
+        let (startup_ready, _) = validated_startup()
+            .begin_server_auth()
+            .authentication_ok()
+            .unwrap();
         let (startup_ready, parameter) = startup_ready
             .parameter_status(
                 Bytes::from_static(b"server_version"),
@@ -428,5 +505,34 @@ mod tests {
         let (ready, frame) = startup_ready.ready().unwrap();
         assert_eq!(frame.body, Bytes::from_static(b"I"));
         ready.into_transport();
+    }
+
+    #[test]
+    fn protocol_validation_negotiates_minor_and_rejects_major() {
+        let startup: Conn<(), Startup> = Conn::new(()).transition();
+        let message = StartupMessage {
+            version: ProtocolVersion { major: 3, minor: 9 },
+            parameters: BTreeMap::new(),
+        };
+        let ServerProtocolOffer::Supported {
+            conn, negotiate_to, ..
+        } = startup.validate_protocol(message, ProtocolVersion::V3_2)
+        else {
+            panic!("compatible major was rejected")
+        };
+        assert_eq!(negotiate_to, Some(ProtocolVersion::V3_2));
+        conn.into_transport();
+
+        let startup: Conn<(), Startup> = Conn::new(()).transition();
+        let message = StartupMessage {
+            version: ProtocolVersion { major: 4, minor: 0 },
+            parameters: BTreeMap::new(),
+        };
+        let ServerProtocolOffer::Rejected { conn, .. } =
+            startup.validate_protocol(message, ProtocolVersion::V3_2)
+        else {
+            panic!("unsupported major was accepted")
+        };
+        conn.into_transport();
     }
 }

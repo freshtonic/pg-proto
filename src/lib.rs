@@ -1,6 +1,8 @@
 //! Session-typed `PostgreSQL` wire protocol primitives.
 
+pub mod codec;
 pub mod pre_startup;
+pub mod startup;
 
 use std::marker::PhantomData;
 

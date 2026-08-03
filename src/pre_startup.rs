@@ -3,7 +3,7 @@
 //! These packets precede normal message framing. Encryption acceptance is a raw
 //! byte, and a successful negotiation changes the connection's transport type.
 
-use crate::{Conn, Pristine};
+use crate::{Conn, Pristine, startup::StartupMessage};
 
 const SSL_REQUEST_CODE: u32 = 80_877_103;
 const GSSENC_REQUEST_CODE: u32 = 80_877_104;
@@ -71,8 +71,16 @@ impl<S> Conn<S, PreStartup, Pristine> {
         (self.transition(), request_packet(GSSENC_REQUEST_CODE))
     }
 
-    pub fn startup(self) -> Conn<S, Startup> {
-        self.transition()
+    /// Encodes and enters the startup phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the startup parameters cannot be encoded.
+    pub fn startup(
+        self,
+        message: &StartupMessage,
+    ) -> std::io::Result<(Conn<S, Startup>, bytes::Bytes)> {
+        Ok((self.transition(), message.encode()?))
     }
 
     pub fn cancel_request(
@@ -167,6 +175,10 @@ mod tests {
             panic!("unexpected negotiation branch")
         };
         let upgraded: Conn<Tls, PreStartup> = handshake.finish_tls(|Tcp| Tls);
-        let _startup: Conn<Tls, Startup> = upgraded.startup();
+        let message = StartupMessage {
+            version: crate::startup::ProtocolVersion::V3_0,
+            parameters: std::collections::BTreeMap::new(),
+        };
+        let (_startup, _) = upgraded.startup(&message).expect("valid startup message");
     }
 }

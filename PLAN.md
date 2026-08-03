@@ -173,6 +173,10 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Provide a technical README covering the crate's purpose, typestate value,
+  use cases, usage, rustdoc entry points, examples, supported PostgreSQL versions,
+  and known limitations.
+
 - [x] Provide runnable logging proxy examples and a populated customer-orders
   container demonstration.
   - [x] Forward typed frontend/backend messages while logging inbound SQL and

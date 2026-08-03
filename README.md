@@ -1,171 +1,206 @@
 # pg-proto
 
-A session-typed implementation of the `PostgreSQL` frontend/backend wire protocol
-for proxies. Protocol sequencing is represented by consuming transitions on
-`Conn<Transport, Phase, Cleanliness>` rather than a runtime connection-state enum.
+`pg-proto` is an asynchronous Rust implementation of the PostgreSQL
+frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
+and protocol-aware test infrastructure.
 
-The crate currently includes:
+Its distinguishing feature is that PostgreSQL's connection state machine is
+represented in Rust's type system. Operations consume a
+`Conn<Transport, Phase, Cleanliness>` and return a connection in its next phase.
+Code which tries to issue a query during `COPY IN`, execute before binding, send
+a startup packet while TLS negotiation is pending, or release a dirty connection
+to a pool does not compile.
 
-- direction-parameterised, reconstructable frontend and backend codecs;
-- typed SSL/GSS/cancellation/startup choice before normal framing;
-- client and server rustls upgrades which change the transport type;
-- cleartext, MD5, GSS, SSPI, Kerberos, SCRAM-SHA-256, and
-  SCRAM-SHA-256-PLUS authentication projections;
-- a filtered async-message demultiplexer with positionally tagged notices;
-- client and server simple, extended, error-draining, and COPY sessions;
-- transaction and parameter cleanliness evidence for pool release;
-- conservative query/resource tainting with explicit stateless-query escape hatches;
-- connection-branded prepared statements and portals with checked name rewriting;
-- exact phase/cleanliness erasure with checked re-entry at storage boundaries;
-- ordered `ParameterStatus` and notification sinks for proxy forwarding;
-- a grammar proc macro which emits transport-carrying two-index typestates, a
-  runtime FSM, and railroad SVG with choice, loop, and cleanliness effects,
-  embedded on each generated role's rustdoc page;
-- compile-fail tests for illegal protocol transitions; and
-- Testcontainers coverage against the official PostgreSQL 18 image.
+Most PostgreSQL protocol libraries decode messages but retain the session phase
+in a runtime enum. `pg-proto` is useful when protocol correctness is part of the
+architecture rather than merely an implementation detail: the legal next
+operations are visible in function signatures, illegal compositions are rejected
+at compile time, and proxy policy can still inspect, replace, or reject complete
+typed messages.
 
-Security assumptions, safe defaults, and downstream responsibilities are
-recorded in [`SECURITY.md`](SECURITY.md).
-The required server matrix is documented in
-[`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md).
+## What it provides
 
-See [`MIGRATION.md`](MIGRATION.md) for moving a runtime-enum proxy to the typed
-API. Public API documentation is built with warnings denied in CI.
+- Direction-parameterised frontend and backend codecs. Ambiguous tags such as
+  `S` and `E` cannot be decoded in the wrong direction.
+- Typed pre-startup handling for `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
+  and `StartupMessage`, including transport-changing rustls upgrades.
+- Independent client-facing and upstream authentication sessions, including
+  cleartext, MD5, SCRAM-SHA-256, and SCRAM-SHA-256-PLUS with channel binding.
+- Simple and extended query sessions, pipelining, error draining, function calls,
+  COPY IN/OUT/BOTH, and physical replication framing.
+- Lossless, reconstructable `Parse`, `Bind`, `Describe`, `Execute`,
+  `RowDescription`, and `DataRow` values for SQL and result rewriting.
+- A demultiplexer for asynchronous notices, notifications, and parameter status
+  updates without polluting the causal session type.
+- Positionally tagged notices and transaction/parameter evidence for pooling
+  decisions.
+- Connection-branded prepared statements and portals with name rewriting.
+- Exact typestate erasure and checked re-entry at storage and pool boundaries.
+- A protocol grammar macro which emits typestates, their duals, a runtime FSM for
+  differential testing, and railroad diagrams embedded in rustdoc.
 
-The frontend and backend roles deliberately do not share an authentication
-mechanism. A proxy can terminate client authentication with one policy while it
-independently authenticates to the upstream server with another.
+The crate owns protocol representation and ordering. Applications retain control
+of listeners, credentials, authorisation, SQL transformation, routing, pooling,
+cancellation storage, telemetry, and failure policy.
 
-## Library and application boundary
+## Why use it?
 
-`pg-proto` owns wire encoding, protocol ordering, transport upgrades, typed
-resources, and observable cleanliness evidence. A proxy built with it owns
-listeners, upstream selection and pooling, credentials, authorisation, SQL or
-row transformation, cancellation-key storage, buffering policy, telemetry, and
-failure presentation. [`Intermediary`] merely retains two independently typed
-sessions and lends both to application callbacks; it neither forwards nor
-modifies a message implicitly.
+PostgreSQL infrastructure tends to fail at phase boundaries rather than while
+decoding an individual frame. A pooler may return a connection while it is still
+in a transaction, a proxy may forward `Query` while a COPY exchange is active,
+or an extended-query error path may forget to discard messages until `Sync`.
+Typestate makes these transitions explicit and turns many such bugs into type
+errors.
 
-The runnable [`proxy_skeleton` example] shows the composition points for message
-policy, cancellation storage, and pool cleanliness. The more detailed
-[`rewriting_intermediary` example] reconstructs modified `Parse`, `Bind`,
-`Describe`, and `RowDescription` frames.
+The phase index is orthogonal to connection cleanliness. A connection can be
+protocol-ready but unsuitable for unconditional pool release because of an open
+transaction, changed GUC, prepared statement, portal, `LISTEN`, or advisory lock.
+Only `Conn<_, Ready, Pristine>` exposes unconditional release.
 
-Two end-to-end examples demonstrate real forwarding: the
-[`SQL logging proxy`](examples/sql_logging_proxy/README.md) prints inbound SQL and
-result row counts, while the
-[`protocol logging proxy`](examples/protocol_logging_proxy/README.md) prints every
-decoded message in both directions. Their integration test starts an official
-PostgreSQL test container populated with customer and order data.
+## What can be built with it?
 
-[`Intermediary`]: crate::intermediary::Intermediary
-[`proxy_skeleton` example]: examples/proxy_skeleton.rs
-[`rewriting_intermediary` example]: examples/rewriting_intermediary.rs
+- A TLS-terminating PostgreSQL proxy which authenticates each side independently
+  and inspects plaintext SQL and result rows.
+- A transaction or session pooler whose release policy consumes explicit
+  protocol and cleanliness evidence.
+- A SQL firewall, audit gateway, query rewriter, or column-encryption proxy.
+- A sharding/router layer which rewrites prepared-statement and portal names.
+- A logical or physical replication relay with typed COPY-BOTH half-closes.
+- A PostgreSQL-compatible server, mock backend, recorder, replay tool, or protocol
+  conformance harness.
+- A driver or administrative client which benefits from compile-time sequencing.
 
-## Inspecting and rewriting messages
+## Usage
 
-The wire transport first returns a fully typed message without advancing the
-session. Proxy policy can inspect, modify, or replace it and then explicitly
-project the chosen message into the typestate machine:
+The generated grammar witnesses make the sequencing model easy to see. Every
+method consumes the previous phase; uncommenting an operation which is illegal
+in the current phase produces a compiler error.
 
 ```rust
-use pg_proto::{
-    Conn,
-    auth::Ready,
-    codec::{Frontend, FrontendMessage, Parse},
-    server_session::{ServerExtendedOffer, ServerReadyOffer},
-    transport::Buffered,
-};
+use pg_proto::grammar::frontend::Session;
 
-async fn intercept_parse<S, C>(
-    mut client: Conn<Buffered<S, Frontend>, Ready, C>,
-) -> std::io::Result<ServerExtendedOffer<Buffered<S, Frontend>, C>>
-where
-    S: tokio::io::AsyncRead + Unpin,
-{
-    let mut message = client.receive_frontend_wire().await?;
-    if let FrontendMessage::Parse(Parse { query, .. }) = &mut message {
-        *query = bytes::Bytes::from_static(b"select encrypted_column from records");
-    }
-    match client.offer_frontend(message) {
-        Ok(ServerReadyOffer::Extended(next)) => Ok(next),
-        Ok(_) => panic!("expected extended-query input"),
-        Err(_) => Err(std::io::Error::other("message is illegal while ready")),
-    }
-}
+let ready = Session::new();
+let building = ready.begin_extended().parse().bind().execute();
+let ready = building.sync().ready();
+
+// `building.query()` would not compile: Query is unavailable during an
+// extended-query pipeline, which must leave through Sync.
+let _terminated = ready.terminate();
 ```
 
-`Parse`, `Bind`, `Describe`, and `RowDescription` retain all names, values,
-format codes, and OIDs needed to reconstruct rewritten frames.
-
-## Connection-branded statements and portals
-
-For locally constructed extended-query traffic, `with_connection_resources`
-shares a generative brand between the connection and its statement/portal
-namespace. A token cannot be used by another connection, while rewritten client
-and upstream names remain available to proxy policy:
+A proxy can inspect or replace a typed message before reconstructing its checked
+wire frame:
 
 ```rust
+use std::convert::Infallible;
+
 use bytes::Bytes;
 use pg_proto::{
-    Conn,
-    auth::Ready,
-    resources::with_connection_resources,
+    codec::{FrontendMessage, Parse},
+    intermediary::Intermediary,
 };
 
-fn build_pipeline<S>(ready: Conn<S, Ready>) -> std::io::Result<Conn<S, pg_proto::session::BoundBuilding, pg_proto::Dirty>> {
-    with_connection_resources(ready.begin_extended(), |connection| {
-        let (connection, statement, _parse) = connection
-            .prepare(
-                Bytes::from_static(b"client_statement"),
-                Bytes::from_static(b"proxy_17_statement"),
-                Bytes::from_static(b"select $1::int4"),
-                vec![23],
-            )
-            .map_err(std::io::Error::other)?;
-        let (connection, portal, _bind) = connection
-            .bind(
-                &statement,
-                Bytes::from_static(b"client_portal"),
-                Bytes::from_static(b"proxy_17_portal"),
-                vec![1],
-                vec![Some(Bytes::from_static(b"\0\0\0*"))],
-                vec![1],
-            )
-            .map_err(std::io::Error::other)?;
-        let (connection, _execute) = connection
-            .execute(&portal, 0)
-            .map_err(std::io::Error::other)?;
-        Ok(connection.into_connection())
+let mut proxy = Intermediary::new((), ());
+let message = FrontendMessage::Parse(Parse {
+    statement: Bytes::from_static(b"report"),
+    query: Bytes::from_static(b"select email from customers"),
+    parameter_types: vec![],
+});
+
+let rewritten = proxy
+    .inspect(message, |(), (), message| {
+        let FrontendMessage::Parse(mut parse) = message else {
+            unreachable!("the caller selected a Parse message")
+        };
+        parse.query = Bytes::from_static(
+            b"select decrypt_email(email) from customers where active",
+        );
+        Ok::<_, Infallible>(FrontendMessage::Parse(parse))
     })
-}
+    .unwrap();
+
+let frame = rewritten.to_frame()?;
+# Ok::<(), std::io::Error>(())
 ```
 
-The returned frames are still fully typed and may be inspected or replaced
-before buffering. Calling `into_connection` is the explicit escape from
-resource-aware handling back to the ordinary typestate API.
+For a complete networked example, see the TLS-terminating
+[`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion
+[`protocol logging proxy`](examples/protocol_logging_proxy/README.md) prints every
+decoded message in both directions. More focused examples live in the
+[`examples/`](examples/) directory, including message rewriting and the neutral
+proxy composition boundary.
+
+## Rustdoc entry points
+
+- [Crate overview and `Conn`](https://docs.rs/pg-proto/latest/pg_proto/)
+- [Frontend/backend messages and codecs](https://docs.rs/pg-proto/latest/pg_proto/codec/)
+- [Buffered network transport and interception](https://docs.rs/pg-proto/latest/pg_proto/transport/)
+- [Pre-startup and TLS negotiation](https://docs.rs/pg-proto/latest/pg_proto/pre_startup/)
+- [Upstream/client-role authentication](https://docs.rs/pg-proto/latest/pg_proto/auth/)
+- [Downstream/server-role authentication](https://docs.rs/pg-proto/latest/pg_proto/server_auth/)
+- [Client-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/session/)
+- [Server-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/server_session/)
+- [Proxy-side composition hooks](https://docs.rs/pg-proto/latest/pg_proto/intermediary/)
+- [Prepared-statement and portal resources](https://docs.rs/pg-proto/latest/pg_proto/resources/)
+- [Generated protocol grammars and railroad diagrams](https://docs.rs/pg-proto/latest/pg_proto/grammar/)
+
+Until the first crates.io release, build the same documentation locally:
+
+```console
+cargo doc --workspace --no-deps --open
+```
+
+## Supported PostgreSQL versions
+
+PostgreSQL **14, 15, 16, 17, and 18** are supported. Each version runs the same
+live suite against its official Alpine image. PostgreSQL 14–17 negotiate a
+requested protocol 3.2 startup down to 3.0; PostgreSQL 18 reports protocol 3.2.
+Both behaviours are covered explicitly.
+
+Run a selected version locally with a Docker-compatible runtime:
+
+```console
+PG_PROTO_POSTGRES_VERSION=18 \
+  cargo test --test postgres_container -- --ignored
+```
+
+See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
+matrix.
+
+## Known limitations
+
+- The API is pre-1.0 and may change as it is integrated into a production proxy.
+- Kerberos V5, GSSAPI, SSPI, and GSS token exchanges are represented by the
+  protocol API, but the crate does not ship platform credential-provider engines.
+  GSS encryption negotiation is modelled; a production GSSENC transport adapter
+  remains application work.
+- Pool scheduling, routing, SQL parsing, policy, credential storage, certificate
+  provisioning, and cancellation-key persistence are intentionally not included.
+- Rust is affine rather than linear: callers can abandon a session by dropping
+  it. `Conn` is `#[must_use]` and has a debug-only drop bomb, but release builds
+  cannot make deliberate connection abandonment impossible.
+- Unknown future PostgreSQL message tags are rejected by the typed codec until
+  their direction and semantics are added.
+- Formal multiparty verification is not provided. Client and server roles are
+  dual generated APIs with differential runtime-FSM testing, not a machine-checked
+  proof of a complete three-party proxy.
+
+Security assumptions and downstream responsibilities are documented in
+[`SECURITY.md`](SECURITY.md). The audited proxy capability boundary is in
+[`PROXY_COMPATIBILITY.md`](PROXY_COMPATIBILITY.md), and migration from a
+runtime-enum implementation is covered by [`MIGRATION.md`](MIGRATION.md).
 
 ## Verification
 
-Run the deterministic suite with `cargo test`. Run the live PostgreSQL matrix
-when a Docker-compatible runtime is available:
+The ordinary suite includes unit, fixture, property-style differential,
+compile-fail, and documentation tests:
+
+```console
+cargo test --workspace
+```
+
+Live PostgreSQL tests require a Docker-compatible runtime:
 
 ```console
 cargo test --test postgres_container -- --ignored
 ```
-
-Set `PG_PROTO_POSTGRES_VERSION` to `14`, `15`, `16`, `17`, or `18` to select
-the official image tag. Versions 14–18 are the required support matrix and each
-runs the complete live suite in CI.
-
-Layer 2 covers the client and server pre-startup, authentication, query, reset,
-error-draining, and COPY grammars. One declaration emits transport-carrying
-typestate and dual APIs, an executable runtime FSM for differential testing, and
-railroad SVG. Generated transitions preserve or replace the orthogonal
-cleanliness index explicitly, and transport mapping represents in-place TLS
-upgrades without weakening the phase index.
-
-Formal multiparty verification remains optional research work. Building a proxy
-does not: the neutral composition API and acceptance harness verify that
-downstream policy can combine the two generated roles without moving application
-behaviour into this crate.

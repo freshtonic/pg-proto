@@ -77,7 +77,9 @@ work using that feature is complete.
     - [ ] Replace handwritten matching with generated projection.
       - [x] Route server-role Ready and extended-query request dispatch through
         generated state-aware projection.
-      - [ ] Route error-drain and COPY dispatch through generated projection.
+      - [x] Route extended error-drain and simple/extended COPY IN dispatch
+        through generated projection.
+      - [ ] Route COPY BOTH dispatch through generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

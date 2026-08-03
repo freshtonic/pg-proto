@@ -689,23 +689,27 @@ impl<S, C> Conn<S, ServerExecute, C> {
     }
 }
 
-impl<S, C, Resume> Conn<S, ServerCopyIn<Resume>, C> {
+impl<S, C> Conn<S, ServerCopyIn<CopySimple>, C> {
     /// Projects one inspected frontend message inside COPY IN.
     ///
     /// # Errors
     ///
     /// Returns the unchanged state and message for anything other than COPY data,
     /// completion, or failure.
-    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, Resume> {
-        match message {
-            FrontendMessage::CopyData(data) => Ok(ServerCopyInOffer::Data { conn: self, data }),
-            FrontendMessage::CopyDone => Ok(ServerCopyInOffer::Done(self.transition())),
-            FrontendMessage::CopyFail(message) => Ok(ServerCopyInOffer::Fail {
-                conn: self.transition(),
-                message,
-            }),
-            other => Err(Box::new((self, other))),
-        }
+    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, CopySimple> {
+        project_copy_in(self, backend::RuntimeState::SimpleCopyIn, message)
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyIn<CopyExtended>, C> {
+    /// Projects one inspected frontend message inside extended-query COPY IN.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged state and message for anything other than COPY data,
+    /// completion, or failure.
+    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, CopyExtended> {
+        project_copy_in(self, backend::RuntimeState::ExtendedCopyIn, message)
     }
 }
 
@@ -1036,11 +1040,33 @@ impl<S, C> Conn<S, ServerExtendedError, C> {
     /// Discards one pipelined message; only `Sync` exits error recovery.
     #[must_use]
     pub fn discard(self, message: &FrontendMessage) -> ServerDiscard<S, C> {
-        if *message == FrontendMessage::Sync {
-            ServerDiscard::Sync(self.transition())
-        } else {
-            ServerDiscard::Continue(self)
+        match backend::project_external(backend::RuntimeState::ExtendedError, message) {
+            Some(backend::Event::Sync) => ServerDiscard::Sync(self.transition()),
+            Some(backend::Event::Discard) | None => ServerDiscard::Continue(self),
+            Some(_) => unreachable!("extended-error grammar has only discard and sync events"),
         }
+    }
+}
+
+fn project_copy_in<S, C, Resume>(
+    conn: Conn<S, ServerCopyIn<Resume>, C>,
+    state: backend::RuntimeState,
+    message: FrontendMessage,
+) -> CopyInProjection<S, C, Resume> {
+    match (backend::project_external(state, &message), message) {
+        (Some(backend::Event::Data), FrontendMessage::CopyData(data)) => {
+            Ok(ServerCopyInOffer::Data { conn, data })
+        }
+        (Some(backend::Event::Done), FrontendMessage::CopyDone) => {
+            Ok(ServerCopyInOffer::Done(conn.transition()))
+        }
+        (Some(backend::Event::Fail), FrontendMessage::CopyFail(message)) => {
+            Ok(ServerCopyInOffer::Fail {
+                conn: conn.transition(),
+                message,
+            })
+        }
+        (_, other) => Err(Box::new((conn, other))),
     }
 }
 

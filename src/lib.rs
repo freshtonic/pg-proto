@@ -9,6 +9,7 @@ pub mod grammar;
 pub mod pre_startup;
 pub mod replication;
 pub mod resources;
+pub mod scram;
 pub mod server_auth;
 pub mod server_session;
 pub mod session;

@@ -3,6 +3,7 @@ use pg_proto::{
     Conn,
     codec::{BackendMessage, DataRow, FieldDescription, RowDescription, TransactionStatus},
     pre_startup::PreStartupOffer,
+    scram::{SCRAM_SHA_256, ScramServer, ServerChannelBinding},
     server_session::{ServerReadyOffer, ServerReadyState},
     transport::Buffered,
 };
@@ -27,6 +28,96 @@ async fn typed_server_role_serves_an_independent_client() {
     drop(client);
     server.await.unwrap().unwrap();
     let _ = driver.await;
+}
+
+#[tokio::test]
+async fn typed_server_scram_authenticates_an_independent_client() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(serve_scram_startup(server_io));
+    let mut config = tokio_postgres::Config::new();
+    config.user("proxy_test").password("secret");
+    let (client, connection) = config.connect_raw(client_io, NoTls).await.unwrap();
+    let driver = tokio::spawn(connection);
+
+    drop(client);
+    server.await.unwrap().unwrap();
+    let _ = driver.await;
+}
+
+async fn serve_scram_startup<S>(stream: S) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut pre_startup = Conn::new(Buffered::new_frontend(stream));
+    let (startup, message) = loop {
+        let message = pre_startup.receive_pre_startup_wire().await?;
+        match pre_startup.offer_pre_startup(message) {
+            PreStartupOffer::Ssl(decision) => {
+                pre_startup = decision.decline_ssl();
+                pre_startup.flush().await?;
+            }
+            PreStartupOffer::Startup { conn, message } => break (conn, message),
+            offer => {
+                abort_pre_startup_offer(offer);
+                return Err(std::io::Error::other("unexpected pre-startup branch"));
+            }
+        }
+    };
+    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } =
+        startup.validate_protocol(message, pg_proto::startup::ProtocolVersion::V3_2)
+    else {
+        return Err(std::io::Error::other("unsupported startup protocol"));
+    };
+
+    let (mut initial, offer) = conn
+        .begin_server_auth()
+        .request_sasl(vec![Bytes::from_static(SCRAM_SHA_256)])?;
+    initial.push_frame(offer)?;
+    initial.flush().await?;
+    let response = initial.receive_frontend_wire().await?;
+    let (mut sasl, initial_response) = initial.receive_initial(response).map_err(|rejected| {
+        let (conn, _) = *rejected;
+        let _transport = conn.into_transport();
+        std::io::Error::other("invalid SASL initial response")
+    })?;
+    let verifier = ScramServer::with_parameters(
+        b"secret",
+        b"independent client salt".to_vec(),
+        pg_proto::scram::DEFAULT_ITERATIONS,
+        ServerChannelBinding::None,
+    )?;
+    let client_first = initial_response
+        .response
+        .as_deref()
+        .ok_or_else(|| std::io::Error::other("client omitted SCRAM initial data"))?;
+    let (exchange, challenge) = verifier.start(&initial_response.mechanism, client_first)?;
+    let (next, frame) = sasl.continue_with(challenge)?;
+    sasl = next;
+    sasl.push_frame(frame)?;
+    sasl.flush().await?;
+
+    let response = sasl.receive_frontend_wire().await?;
+    let (sasl, client_final) = sasl.receive_response(response).map_err(|rejected| {
+        let (conn, _) = *rejected;
+        let _transport = conn.into_transport();
+        std::io::Error::other("invalid SASL response")
+    })?;
+    let server_final = exchange.finish(&client_final)?;
+    let (auth, final_frame) = sasl.finish(server_final)?;
+    let (mut startup_ready, ok_frame) = auth.authentication_ok()?;
+    startup_ready.push_frame(final_frame)?;
+    startup_ready.push_frame(ok_frame)?;
+    let (next, parameter) = startup_ready.parameter_status(
+        Bytes::from_static(b"client_encoding"),
+        Bytes::from_static(b"UTF8"),
+    )?;
+    startup_ready = next;
+    startup_ready.push_frame(parameter)?;
+    let (mut ready, ready_frame) = startup_ready.ready()?;
+    ready.push_frame(ready_frame)?;
+    ready.flush().await?;
+    let _transport = ready.into_transport();
+    Ok(())
 }
 
 async fn serve_one_query<S>(stream: S) -> std::io::Result<()>

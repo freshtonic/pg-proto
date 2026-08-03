@@ -422,7 +422,12 @@ fn sasl_initial(mut body: Bytes) -> Result<SaslInitialResponse, Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Pristine;
+    use crate::{
+        Pristine,
+        scram::{SCRAM_SHA_256, ScramServer, ServerChannelBinding},
+    };
+    use bytes::{BufMut as _, BytesMut};
+    use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
     use std::collections::BTreeMap;
 
     fn validated_startup() -> Conn<(), ServerStartupValidated, Pristine> {
@@ -534,5 +539,51 @@ mod tests {
             panic!("unsupported major was accepted")
         };
         conn.into_transport();
+    }
+
+    #[test]
+    fn scram_server_engine_completes_the_typed_authentication_session() {
+        let (initial_state, offer_frame) = validated_startup()
+            .begin_server_auth()
+            .request_sasl(vec![Bytes::from_static(SCRAM_SHA_256)])
+            .unwrap();
+        assert_eq!(offer_frame.tag, b'R');
+
+        let mut client = ScramSha256::new(b"secret", ChannelBinding::unsupported());
+        let mut initial_body = BytesMut::new();
+        initial_body.extend_from_slice(SCRAM_SHA_256);
+        initial_body.put_u8(0);
+        initial_body.put_i32(i32::try_from(client.message().len()).unwrap());
+        initial_body.extend_from_slice(client.message());
+        let (sasl, initial) = initial_state
+            .receive_initial(FrontendMessage::PasswordResponse(initial_body.freeze()))
+            .unwrap();
+
+        let verifier = ScramServer::with_parameters(
+            b"secret",
+            b"fixed test salt".to_vec(),
+            crate::scram::DEFAULT_ITERATIONS,
+            ServerChannelBinding::None,
+        )
+        .unwrap();
+        let (exchange, challenge) = verifier
+            .start(&initial.mechanism, initial.response.as_deref().unwrap())
+            .unwrap();
+        let (sasl, challenge_frame) = sasl.continue_with(challenge.clone()).unwrap();
+        assert_eq!(challenge_frame.tag, b'R');
+        client.update(&challenge).unwrap();
+
+        let (sasl, response) = sasl
+            .receive_response(FrontendMessage::PasswordResponse(Bytes::copy_from_slice(
+                client.message(),
+            )))
+            .unwrap();
+        let server_final = exchange.finish(&response).unwrap();
+        client.finish(&server_final).unwrap();
+        let (auth, final_frame) = sasl.finish(server_final).unwrap();
+        assert_eq!(final_frame.tag, b'R');
+        let (startup_ready, ok) = auth.authentication_ok().unwrap();
+        assert_eq!(ok.tag, b'R');
+        startup_ready.into_transport();
     }
 }

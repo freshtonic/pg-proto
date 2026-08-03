@@ -1,6 +1,7 @@
 //! Server-role query sessions used when a proxy terminates the client protocol.
 
 use std::io;
+use std::marker::PhantomData;
 
 use bytes::Bytes;
 
@@ -8,8 +9,8 @@ use crate::{
     Conn, Dirty,
     auth::Ready,
     codec::{
-        BackendMessage, Bind, Close, Describe, DiagnosticResponse, Execute, Frame, FrontendMessage,
-        Parse, RowDescription, TransactionStatus,
+        BackendMessage, Bind, Close, CopyResponse, Describe, DiagnosticResponse, Execute, Frame,
+        FrontendMessage, Parse, RowDescription, TransactionStatus,
     },
     pre_startup::Terminated,
 };
@@ -43,6 +44,41 @@ pub enum ServerSync {}
 
 #[derive(Debug)]
 pub enum ServerExtendedError {}
+
+#[derive(Debug)]
+pub enum CopySimple {}
+
+#[derive(Debug)]
+pub enum CopyExtended {}
+
+#[derive(Debug)]
+pub struct ServerCopyIn<Resume>(PhantomData<Resume>);
+
+#[derive(Debug)]
+pub struct ServerCopyInDone<Resume>(PhantomData<Resume>);
+
+#[derive(Debug)]
+pub struct ServerCopyInFailed<Resume>(PhantomData<Resume>);
+
+/// Client choice inside a server-role COPY IN sub-session.
+#[derive(Debug)]
+pub enum ServerCopyInOffer<S, C, Resume> {
+    Data {
+        conn: Conn<S, ServerCopyIn<Resume>, C>,
+        data: Bytes,
+    },
+    Done(Conn<S, ServerCopyInDone<Resume>, C>),
+    Fail {
+        conn: Conn<S, ServerCopyInFailed<Resume>, C>,
+        message: Bytes,
+    },
+}
+
+pub type CopyInProjection<S, C, Resume> = Result<
+    ServerCopyInOffer<S, C, Resume>,
+    Box<(Conn<S, ServerCopyIn<Resume>, C>, FrontendMessage)>,
+>;
+pub type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C>, Frame)>;
 
 /// External choice offered by a client while the server role is ready.
 #[derive(Debug)]
@@ -173,6 +209,18 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
         Ok((
             self.transition(),
             BackendMessage::ErrorResponse(response).to_frame()?,
+        ))
+    }
+
+    /// Starts a simple-query COPY IN sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopySimple> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyInResponse(response).to_frame()?,
         ))
     }
 
@@ -374,6 +422,100 @@ impl<S, C> Conn<S, ServerExecute, C> {
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
         extended_error(self, response)
     }
+
+    /// Starts an extended-query COPY IN sub-session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the format count overflows the protocol field.
+    pub fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopyExtended> {
+        Ok((
+            self.transition(),
+            BackendMessage::CopyInResponse(response).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C, Resume> Conn<S, ServerCopyIn<Resume>, C> {
+    /// Projects one inspected frontend message inside COPY IN.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged state and message for anything other than COPY data,
+    /// completion, or failure.
+    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, Resume> {
+        match message {
+            FrontendMessage::CopyData(data) => Ok(ServerCopyInOffer::Data { conn: self, data }),
+            FrontendMessage::CopyDone => Ok(ServerCopyInOffer::Done(self.transition())),
+            FrontendMessage::CopyFail(message) => Ok(ServerCopyInOffer::Fail {
+                conn: self.transition(),
+                message,
+            }),
+            other => Err(Box::new((self, other))),
+        }
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyInDone<CopySimple>, C> {
+    /// Completes simple-query COPY IN before `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyInDone<CopyExtended>, C> {
+    /// Completes extended-query COPY IN and returns to the building loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command tag contains a NUL byte.
+    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::CommandComplete(tag).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyInFailed<CopySimple>, C> {
+    /// Reports a client COPY failure before simple-query readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, ServerSimpleError, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::ErrorResponse(response).to_frame()?,
+        ))
+    }
+}
+
+impl<S, C> Conn<S, ServerCopyInFailed<CopyExtended>, C> {
+    /// Reports a client COPY failure and discards the pipeline until `Sync`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a diagnostic field is invalid.
+    pub fn error(
+        self,
+        response: DiagnosticResponse,
+    ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
+        extended_error(self, response)
+    }
 }
 
 impl<S, C> Conn<S, ServerExtendedError, C> {
@@ -560,6 +702,43 @@ mod tests {
         };
         let ServerDiscard::Sync(sync) = error.discard(&FrontendMessage::Sync) else {
             panic!("sync did not exit error recovery")
+        };
+        let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
+        let ServerReadyState::Ready(ready) = state else {
+            panic!("idle sync was marked dirty")
+        };
+        ready.into_transport();
+    }
+
+    #[test]
+    fn extended_copy_in_is_a_nested_client_choice() {
+        let execute: Conn<(), ServerExecute> = Conn::new(()).transition();
+        let (copy, response) = execute
+            .copy_in(CopyResponse {
+                overall_format: 0,
+                column_formats: vec![],
+            })
+            .unwrap();
+        assert_eq!(response.tag, b'G');
+        let ServerCopyInOffer::Data { conn: copy, data } = copy
+            .offer_frontend(FrontendMessage::CopyData(Bytes::from_static(b"one\n")))
+            .unwrap()
+        else {
+            panic!("COPY data projected to the wrong branch")
+        };
+        assert_eq!(data, Bytes::from_static(b"one\n"));
+        let ServerCopyInOffer::Done(done) = copy.offer_frontend(FrontendMessage::CopyDone).unwrap()
+        else {
+            panic!("COPY completion projected to the wrong branch")
+        };
+        let (building, complete) = done
+            .command_complete(Bytes::from_static(b"COPY 1"))
+            .unwrap();
+        assert_eq!(complete.tag, b'C');
+        let ServerExtendedOffer::Sync(sync) =
+            building.offer_frontend(FrontendMessage::Sync).unwrap()
+        else {
+            panic!("sync projected to the wrong branch")
         };
         let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
         let ServerReadyState::Ready(ready) = state else {

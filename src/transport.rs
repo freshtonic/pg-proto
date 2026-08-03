@@ -1,8 +1,9 @@
 //! Buffered, cancellation-safe outbound transport.
 
-use std::io;
+use std::{io, sync::Arc};
 
 use bytes::{Buf, BytesMut};
+use rustls::{ClientConfig, pki_types::ServerName};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -11,7 +12,11 @@ use crate::{
     auth::TlsServerEndPoint,
     codec::{Backend, BackendMessage, Direction, Frame, Frontend, FrontendMessage, PgCodec},
     demux::{CancelKey, Demux, Notification, SessionItem},
-    pre_startup::{PreStartup, PreStartupMessage, decode_pre_startup},
+    pre_startup::{
+        AwaitingSslReply, EncryptionReply, Negotiation, PreStartup, PreStartupMessage,
+        TlsHandshake, decode_pre_startup, ssl_request_packet,
+    },
+    tls::ClientTls,
 };
 
 /// Transport wrapper which retains bytes until each write has completed.
@@ -67,6 +72,10 @@ impl<S, D> Buffered<S, D> {
         self.io
     }
 
+    fn push_raw(&mut self, bytes: &[u8]) {
+        self.outbound.extend_from_slice(bytes);
+    }
+
     #[must_use]
     pub const fn demux(&self) -> &Demux {
         &self.demux
@@ -74,6 +83,31 @@ impl<S, D> Buffered<S, D> {
 
     pub const fn demux_mut(&mut self) -> &mut Demux {
         &mut self.demux
+    }
+}
+
+impl<S, D> Buffered<S, D>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    async fn connect_tls(
+        self,
+        server_name: ServerName<'static>,
+        config: Arc<ClientConfig>,
+    ) -> io::Result<Buffered<ClientTls<S>, D>> {
+        if !self.outbound.is_empty() || !self.inbound.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS upgrade requires empty plaintext buffers",
+            ));
+        }
+        Ok(Buffered {
+            io: crate::tls::connect(self.io, server_name, config).await?,
+            outbound: self.outbound,
+            inbound: self.inbound,
+            inbound_codec: self.inbound_codec,
+            demux: self.demux,
+        })
     }
 }
 
@@ -126,6 +160,14 @@ impl<S: AsyncRead + Unpin, D: Direction> Buffered<S, D> {
                 ));
             }
         }
+    }
+}
+
+impl<S: AsyncRead + Unpin> Buffered<S, Backend> {
+    async fn receive_encryption_reply(&mut self) -> io::Result<EncryptionReply> {
+        let byte = self.io.read_u8().await?;
+        EncryptionReply::try_from(byte)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid encryption reply"))
     }
 }
 
@@ -193,6 +235,52 @@ impl<S, D, Phase, Cleanliness> Conn<Buffered<S, D>, Phase, Cleanliness> {
     #[must_use]
     pub fn pending_output(&self) -> &[u8] {
         self.transport().pending()
+    }
+}
+
+impl<S, Cleanliness> Conn<Buffered<S, Backend>, PreStartup, Cleanliness> {
+    /// Buffers an `SSLRequest` and enters the raw single-byte reply phase.
+    pub fn request_ssl(mut self) -> Conn<Buffered<S, Backend>, AwaitingSslReply, Cleanliness> {
+        self.transport_mut().push_raw(&ssl_request_packet());
+        self.transition()
+    }
+}
+
+impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslReply, Cleanliness> {
+    /// Receives and projects the server's raw SSL decision byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
+    pub async fn receive_ssl_reply(
+        mut self,
+    ) -> io::Result<Negotiation<Buffered<S, Backend>, TlsHandshake>> {
+        let reply = self.transport_mut().receive_encryption_reply().await?;
+        Ok(match reply {
+            EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
+            EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
+            EncryptionReply::LegacyError => Negotiation::LegacyError(self.transition()),
+        })
+    }
+}
+
+impl<S, Cleanliness> Conn<Buffered<S, Backend>, TlsHandshake, Cleanliness>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Completes a client-side TLS handshake and changes the transport type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a TLS handshake, certificate, channel-binding, or buffer-state error.
+    pub async fn connect_tls(
+        self,
+        server_name: ServerName<'static>,
+        config: Arc<ClientConfig>,
+    ) -> io::Result<Conn<Buffered<ClientTls<S>, Backend>, PreStartup, Cleanliness>> {
+        let transport = self.into_transport();
+        Ok(Conn::new(transport.connect_tls(server_name, config).await?)
+            .transition::<PreStartup, Cleanliness>())
     }
 }
 

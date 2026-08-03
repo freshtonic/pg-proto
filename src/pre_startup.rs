@@ -238,7 +238,7 @@ pub enum Negotiation<S, Handshake> {
 
 impl<S> Conn<S, PreStartup, Pristine> {
     pub fn ssl_request(self) -> (Conn<S, AwaitingSslReply>, [u8; 8]) {
-        (self.transition(), request_packet(SSL_REQUEST_CODE))
+        (self.transition(), ssl_request_packet())
     }
 
     pub fn gssenc_request(self) -> (Conn<S, AwaitingGssReply>, [u8; 8]) {
@@ -381,6 +381,10 @@ impl<S, C> Conn<S, GssHandshake, C> {
     ) -> Conn<Gss, PreStartup, C> {
         self.map_transport(upgrade).transition()
     }
+}
+
+pub(crate) const fn ssl_request_packet() -> [u8; 8] {
+    request_packet(SSL_REQUEST_CODE)
 }
 
 const fn request_packet(code: u32) -> [u8; 8] {

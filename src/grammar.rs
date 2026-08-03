@@ -159,13 +159,84 @@ protocol! {
     }
 }
 
+protocol! {
+    pub mod backend {
+        initial Ready;
+        Ready external {
+            Query(query) => Simple,
+            Parse(parse) => ParseResponse,
+            Bind(bind) => BindResponse,
+            Describe(describe) => DescribeResponse,
+            Execute(execute) => ExecuteResponse,
+            Close(close) => CloseResponse,
+            FunctionCall(function_call) => FunctionResponse,
+            Terminate(terminate) => Terminated,
+        }
+        Simple internal {
+            Continue(continue_response) => Simple,
+            Ready(ready) => Ready,
+            Error(error) => SimpleError,
+        }
+        SimpleError internal {
+            Ready(ready) => Ready,
+        }
+        Building external {
+            Parse(parse) => ParseResponse,
+            Bind(bind) => BindResponse,
+            Describe(describe) => DescribeResponse,
+            Execute(execute) => ExecuteResponse,
+            Close(close) => CloseResponse,
+            Flush(flush) => Building,
+            Sync(sync) => SyncResponse,
+        }
+        ParseResponse internal {
+            Complete(complete) => Building,
+            Error(error) => ExtendedError,
+        }
+        BindResponse internal {
+            Complete(complete) => Building,
+            Error(error) => ExtendedError,
+        }
+        DescribeResponse internal {
+            RowDescription(row_description) => Building,
+            NoData(no_data) => Building,
+            Error(error) => ExtendedError,
+        }
+        ExecuteResponse internal {
+            Continue(continue_response) => ExecuteResponse,
+            CommandComplete(command_complete) => Building,
+            PortalSuspended(portal_suspended) => Building,
+            Error(error) => ExtendedError,
+        }
+        CloseResponse internal {
+            Complete(complete) => Building,
+            Error(error) => ExtendedError,
+        }
+        ExtendedError external {
+            Discard(discard) => ExtendedError,
+            Sync(sync) => SyncResponse,
+        }
+        SyncResponse internal {
+            Ready(ready) => Ready,
+        }
+        FunctionResponse internal {
+            Result(result) => FunctionReady,
+            Error(error) => FunctionReady,
+        }
+        FunctionReady internal {
+            Ready(ready) => Ready,
+        }
+        Terminated external {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use bytes::Bytes;
 
-    use super::{authentication, frontend, pre_startup};
+    use super::{authentication, backend, frontend, pre_startup};
     use crate::{
         Conn,
         auth::AuthOffer,
@@ -198,6 +269,32 @@ mod tests {
             runtime.step(event).unwrap();
         }
         assert_eq!(runtime.state(), RuntimeState::Ready);
+    }
+
+    #[test]
+    fn generated_backend_discards_failed_pipeline_until_sync() {
+        let _typed = backend::Session::new()
+            .parse()
+            .error()
+            .discard()
+            .discard()
+            .sync()
+            .ready()
+            .terminate();
+
+        let mut runtime = backend::RuntimeFsm::new();
+        for event in [
+            backend::Event::Parse,
+            backend::Event::Error,
+            backend::Event::Discard,
+            backend::Event::Discard,
+            backend::Event::Sync,
+            backend::Event::Ready,
+            backend::Event::Terminate,
+        ] {
+            runtime.step(event).unwrap();
+        }
+        assert_eq!(runtime.state(), backend::RuntimeState::Terminated);
     }
 
     #[test]

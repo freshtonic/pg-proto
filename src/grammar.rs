@@ -111,6 +111,36 @@ protocol! {
 }
 
 protocol! {
+    pub mod server_pre_startup {
+        initial PreStartup;
+        PreStartup external {
+            SslRequest(ssl_request) => SslDecision,
+            GssRequest(gss_request) => GssDecision,
+            Cancel(cancel) => Terminated,
+            Startup(startup) => Auth,
+        }
+        SslDecision internal {
+            Accept(accept) => TlsHandshake,
+            Reject(reject) => PreStartup,
+            LegacyError(legacy_error) => Terminated,
+        }
+        GssDecision internal {
+            Accept(accept) => GssHandshake,
+            Reject(reject) => PreStartup,
+            LegacyError(legacy_error) => Terminated,
+        }
+        TlsHandshake internal {
+            HandshakeComplete(complete) => PreStartup,
+        }
+        GssHandshake internal {
+            HandshakeComplete(complete) => PreStartup,
+        }
+        Auth internal {}
+        Terminated internal {}
+    }
+}
+
+protocol! {
     pub mod authentication {
         initial Auth;
         Auth external {
@@ -382,7 +412,9 @@ mod tests {
 
     use bytes::Bytes;
 
-    use super::{authentication, backend, frontend, pre_startup, server_authentication};
+    use super::{
+        authentication, backend, frontend, pre_startup, server_authentication, server_pre_startup,
+    };
     use crate::{
         Conn,
         auth::AuthOffer,
@@ -607,6 +639,33 @@ mod tests {
         runtime.step(pre_startup::Event::Accept).unwrap();
         runtime.step(pre_startup::Event::HandshakeComplete).unwrap();
         runtime.step(pre_startup::Event::Startup).unwrap();
+    }
+
+    #[test]
+    fn generated_server_pre_startup_is_the_client_facing_dual() {
+        let _plaintext = server_pre_startup::Session::new()
+            .ssl_request()
+            .reject()
+            .startup();
+        let _encrypted = server_pre_startup::Session::new()
+            .ssl_request()
+            .accept()
+            .complete()
+            .startup();
+
+        let mut runtime = server_pre_startup::RuntimeFsm::new();
+        assert_eq!(runtime.choice(), server_pre_startup::ChoiceKind::External);
+        runtime.step(server_pre_startup::Event::SslRequest).unwrap();
+        assert_eq!(runtime.choice(), server_pre_startup::ChoiceKind::Internal);
+        assert!(runtime.step(server_pre_startup::Event::Startup).is_err());
+        runtime.step(server_pre_startup::Event::Reject).unwrap();
+        runtime.step(server_pre_startup::Event::Startup).unwrap();
+        assert_eq!(runtime.state(), server_pre_startup::RuntimeState::Auth);
+
+        assert_eq!(
+            pre_startup::RuntimeFsm::new().dual_event_choice(pre_startup::Event::SslRequest),
+            Some(pre_startup::ChoiceKind::External)
+        );
     }
 
     #[test]

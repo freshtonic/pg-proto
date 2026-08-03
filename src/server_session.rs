@@ -220,11 +220,11 @@ pub enum ServerReadyOffer<S, C> {
 #[derive(Debug)]
 pub enum ServerExtendedOffer<S, C> {
     Parse {
-        conn: Conn<S, ServerParse, C>,
+        conn: Conn<S, ServerParse, Dirty>,
         message: Parse,
     },
     Bind {
-        conn: Conn<S, ServerBind, C>,
+        conn: Conn<S, ServerBind, Dirty>,
         message: Bind,
     },
     Describe {
@@ -1176,6 +1176,10 @@ mod tests {
 
     #[test]
     fn extended_pipeline_rewrites_parse_and_exits_only_through_sync() {
+        fn require_dirty<S>(conn: Conn<S, Ready, Dirty>) {
+            conn.into_transport();
+        }
+
         let ready: Conn<(), Ready> = Conn::new(()).transition();
         let parse = Parse {
             statement: Bytes::from_static(b"statement"),
@@ -1213,9 +1217,9 @@ mod tests {
         };
         let (state, _) = sync.ready(TransactionStatus::Idle).unwrap();
         let ServerReadyState::Ready(ready) = state else {
-            panic!("idle sync was marked dirty")
+            panic!("idle sync unexpectedly changed transaction state")
         };
-        ready.into_transport();
+        require_dirty(ready);
     }
 
     #[test]

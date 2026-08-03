@@ -108,5 +108,6 @@ work using that feature is complete.
 - [x] Retain connection-branded namespaces through extended-query response and
   error-drain consumption, invalidating unnamed portals at idle transaction
   boundaries.
-- [ ] Cover the complete branded cycle against live PostgreSQL and add explicit
-  unnamed-resource boundary regression tests.
+- [x] Cover the complete asynchronous branded cycle against live PostgreSQL 18.
+- [ ] Add explicit unnamed-resource boundary regression tests to the branded
+  connection API.

@@ -1,6 +1,9 @@
 //! Branded prepared-statement and portal resources with proxy name rewriting.
 
-use std::{cell::Cell, collections::HashMap, error::Error, fmt, io, marker::PhantomData};
+use std::{
+    cell::Cell, collections::HashMap, error::Error, fmt, future::Future, io, marker::PhantomData,
+    pin::Pin,
+};
 
 use bytes::Bytes;
 
@@ -30,6 +33,24 @@ pub fn with_connection_resources<S, P, C, R>(
         conn,
         resources: ResourceScope::new(),
     })
+}
+
+/// Runs an asynchronous operation with one brand shared by its connection and
+/// resource namespace.
+///
+/// The boxed future may retain branded tokens across await points, while its
+/// output cannot contain the generative lifetime.
+pub async fn with_connection_resources_async<S, P, C, R>(
+    conn: Conn<S, P, C>,
+    operation: impl for<'id> FnOnce(
+        ResourceConnection<'id, S, P, C>,
+    ) -> Pin<Box<dyn Future<Output = R> + 'id>>,
+) -> R {
+    operation(ResourceConnection {
+        conn,
+        resources: ResourceScope::new(),
+    })
+    .await
 }
 
 /// A connection paired with its generative statement and portal namespace.

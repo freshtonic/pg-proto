@@ -7,7 +7,7 @@ use pg_proto::{
     codec::{BackendMessage, NegotiateProtocolVersion},
     demux::SessionItem,
     pre_startup::{Negotiation, Startup},
-    resources::with_connection_resources,
+    resources::{ResourceAwaitingTransition, ResourceReadyState, with_connection_resources_async},
     session::{
         AwaitingReadyTransition, CopyOutTransition, DrainingTransition, ReadyState,
         SimpleTransition,
@@ -474,61 +474,76 @@ async fn extended_query_pipeline_matches_postgres_18() -> Result<(), Box<dyn Err
     let port = postgres.get_host_port_ipv4(5432).await?;
     let ready = trust_ready(port).await?;
 
-    let bound = with_connection_resources(ready.begin_extended(), |connection| {
-        let (mut connection, statement, frame) = connection.prepare(
-            Bytes::from_static(b"client_answer"),
-            Bytes::from_static(b"answer"),
-            Bytes::from_static(b"SELECT $1::int4"),
-            vec![23],
-        )?;
-        connection.connection_mut().push_frame(frame)?;
-        let (mut connection, portal, frame) = connection.bind(
-            &statement,
-            Bytes::from_static(b"client_answer_portal"),
-            Bytes::from_static(b"answer_portal"),
-            vec![0],
-            vec![Some(Bytes::from_static(b"42"))],
-            vec![0],
-        )?;
-        connection.connection_mut().push_frame(frame)?;
-        let (mut connection, frame) = connection.describe_portal(&portal)?;
-        connection.connection_mut().push_frame(frame)?;
-        let (mut connection, frame) = connection.execute(&portal, 0)?;
-        connection.connection_mut().push_frame(frame)?;
-        Ok::<_, pg_proto::resources::ResourceProtocolError>(connection.into_connection())
-    })?;
-    let (mut awaiting, frame) = bound.push_sync();
-    awaiting.push_frame(frame)?;
-    awaiting.flush().await?;
+    let (ready, parse_complete, bind_complete, row_description, data_row) =
+        with_connection_resources_async(ready.begin_extended(), |connection| {
+            Box::pin(async move {
+                let mut parse_complete = false;
+                let mut bind_complete = false;
+                let mut row_description = false;
+                let mut data_row = false;
+                let (mut connection, statement, frame) = connection.prepare(
+                    Bytes::from_static(b"client_answer"),
+                    Bytes::from_static(b"answer"),
+                    Bytes::from_static(b"SELECT $1::int4"),
+                    vec![23],
+                )?;
+                connection.connection_mut().push_frame(frame)?;
+                let (mut connection, portal, frame) = connection.bind(
+                    &statement,
+                    Bytes::from_static(b"client_answer_portal"),
+                    Bytes::from_static(b"answer_portal"),
+                    vec![0],
+                    vec![Some(Bytes::from_static(b"42"))],
+                    vec![0],
+                )?;
+                connection.connection_mut().push_frame(frame)?;
+                let (mut connection, frame) = connection.describe_portal(&portal)?;
+                connection.connection_mut().push_frame(frame)?;
+                let (mut connection, frame) = connection.execute(&portal, 0)?;
+                connection.connection_mut().push_frame(frame)?;
+                let (mut awaiting, frame) = connection.sync();
+                awaiting.connection_mut().push_frame(frame)?;
+                awaiting.connection_mut().flush().await?;
 
-    let mut parse_complete = false;
-    let mut bind_complete = false;
-    let mut row_description = false;
-    let mut data_row = false;
-    let ready = loop {
-        let item = awaiting.receive().await?;
-        match awaiting.offer(item) {
-            AwaitingReadyTransition::Continue(next, item) => {
-                awaiting = next;
-                match item {
-                    SessionItem::Message(BackendMessage::ParseComplete) => parse_complete = true,
-                    SessionItem::Message(BackendMessage::BindComplete) => bind_complete = true,
-                    SessionItem::Message(BackendMessage::RowDescription(_)) => {
-                        row_description = true;
+                loop {
+                    let item = awaiting.connection_mut().receive().await?;
+                    match awaiting.offer(item) {
+                        ResourceAwaitingTransition::Continue(next, item) => {
+                            awaiting = next;
+                            match item {
+                                SessionItem::Message(BackendMessage::ParseComplete) => {
+                                    parse_complete = true;
+                                }
+                                SessionItem::Message(BackendMessage::BindComplete) => {
+                                    bind_complete = true;
+                                }
+                                SessionItem::Message(BackendMessage::RowDescription(_)) => {
+                                    row_description = true;
+                                }
+                                SessionItem::Message(BackendMessage::DataRow(_)) => data_row = true,
+                                _ => {}
+                            }
+                        }
+                        ResourceAwaitingTransition::Ready(ResourceReadyState::Clean(ready)) => {
+                            break Ok::<_, Box<dyn Error>>((
+                                ready.into_connection(),
+                                parse_complete,
+                                bind_complete,
+                                row_description,
+                                data_row,
+                            ));
+                        }
+                        ResourceAwaitingTransition::Ready(ResourceReadyState::Dirty { .. }) => {
+                            break Err("extended query left a dirty connection".into());
+                        }
+                        ResourceAwaitingTransition::Error(_, error) => {
+                            break Err(format!("extended query failed: {error:?}").into());
+                        }
                     }
-                    SessionItem::Message(BackendMessage::DataRow(_)) => data_row = true,
-                    _ => {}
                 }
-            }
-            AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) => break ready,
-            AwaitingReadyTransition::Ready(ReadyState::Dirty { .. }) => {
-                return Err("extended query left a dirty connection".into());
-            }
-            AwaitingReadyTransition::Error(_, error) => {
-                return Err(format!("extended query failed: {error:?}").into());
-            }
-        }
-    };
+            })
+        })
+        .await?;
     assert!(parse_complete && bind_complete && row_description && data_row);
     let _transport = ready.into_transport();
     Ok(())

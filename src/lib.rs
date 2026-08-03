@@ -1,5 +1,6 @@
 //! Session-typed `PostgreSQL` wire protocol primitives.
 
+pub mod auth;
 pub mod codec;
 pub mod demux;
 pub mod pre_startup;
@@ -28,6 +29,10 @@ impl<Transport, Phase, Cleanliness> Conn<Transport, Phase, Cleanliness> {
     /// Returns the underlying transport when deliberately leaving the typed API.
     pub fn into_transport(self) -> Transport {
         self.transport
+    }
+
+    pub(crate) const fn transport(&self) -> &Transport {
+        &self.transport
     }
 }
 

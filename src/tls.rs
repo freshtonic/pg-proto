@@ -170,7 +170,11 @@ pub fn channel_binding(certificate: &CertificateDer<'_>) -> io::Result<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Conn, pre_startup::Negotiation, transport::Buffered};
+    use crate::{
+        Conn,
+        pre_startup::{Negotiation, PreStartupOffer},
+        transport::Buffered,
+    };
     use rcgen::generate_simple_self_signed;
     use rustls::{RootCertStore, pki_types::PrivateKeyDer};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -253,6 +257,61 @@ mod tests {
             .unwrap();
         let client = pre_startup.into_transport().into_inner();
         let server = server.await.unwrap();
+
+        assert_eq!(client.tls_server_end_point(), expected);
+        assert_eq!(server.tls_server_end_point(), expected);
+    }
+
+    #[tokio::test]
+    async fn server_role_terminates_tls_before_accepting_startup() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let generated = generate_simple_self_signed(["localhost".into()]).unwrap();
+        let certificate = CertificateDer::from(generated.cert.der().to_vec());
+        let key = PrivateKeyDer::try_from(generated.signing_key.serialize_der()).unwrap();
+        let server_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.clone()], key)
+                .unwrap(),
+        );
+        let mut roots = RootCertStore::empty();
+        roots.add(certificate.clone()).unwrap();
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let expected = channel_binding(&certificate).unwrap();
+        let (mut client_io, server_io) = tokio::io::duplex(16 * 1024);
+
+        let client = tokio::spawn(async move {
+            client_io
+                .write_all(&[0, 0, 0, 8, 4, 210, 22, 47])
+                .await
+                .unwrap();
+            assert_eq!(client_io.read_u8().await.unwrap(), b'S');
+            connect(
+                client_io,
+                ServerName::try_from("localhost").unwrap(),
+                client_config,
+            )
+            .await
+            .unwrap()
+        });
+
+        let mut pre_startup = Conn::new(Buffered::new_frontend(server_io));
+        let message = pre_startup.receive_pre_startup_wire().await.unwrap();
+        let PreStartupOffer::Ssl(decision) = pre_startup.offer_pre_startup(message) else {
+            panic!("test client did not request TLS")
+        };
+        let mut handshake = decision.approve_ssl();
+        handshake.flush().await.unwrap();
+        let pre_startup = handshake
+            .accept_tls(server_config, certificate)
+            .await
+            .unwrap();
+        let server = pre_startup.into_transport().into_inner();
+        let client = client.await.unwrap();
 
         assert_eq!(client.tls_server_end_point(), expected);
         assert_eq!(server.tls_server_end_point(), expected);

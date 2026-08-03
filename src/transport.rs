@@ -3,7 +3,10 @@
 use std::{io, sync::Arc};
 
 use bytes::{Buf, BytesMut};
-use rustls::{ClientConfig, pki_types::ServerName};
+use rustls::{
+    ClientConfig, ServerConfig,
+    pki_types::{CertificateDer, ServerName},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -14,9 +17,9 @@ use crate::{
     demux::{CancelKey, Demux, Notification, SessionItem},
     pre_startup::{
         AwaitingSslReply, EncryptionReply, Negotiation, PreStartup, PreStartupMessage,
-        TlsHandshake, decode_pre_startup, ssl_request_packet,
+        ServerSslDecision, TlsHandshake, decode_pre_startup, ssl_request_packet,
     },
-    tls::ClientTls,
+    tls::{ClientTls, ServerTls},
 };
 
 /// Transport wrapper which retains bytes until each write has completed.
@@ -103,6 +106,26 @@ where
         }
         Ok(Buffered {
             io: crate::tls::connect(self.io, server_name, config).await?,
+            outbound: self.outbound,
+            inbound: self.inbound,
+            inbound_codec: self.inbound_codec,
+            demux: self.demux,
+        })
+    }
+
+    async fn accept_tls(
+        self,
+        config: Arc<ServerConfig>,
+        leaf_certificate: CertificateDer<'static>,
+    ) -> io::Result<Buffered<ServerTls<S>, D>> {
+        if !self.outbound.is_empty() || !self.inbound.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS upgrade requires empty plaintext buffers",
+            ));
+        }
+        Ok(Buffered {
+            io: crate::tls::accept(self.io, config, &leaf_certificate).await?,
             outbound: self.outbound,
             inbound: self.inbound,
             inbound_codec: self.inbound_codec,
@@ -246,6 +269,20 @@ impl<S, Cleanliness> Conn<Buffered<S, Backend>, PreStartup, Cleanliness> {
     }
 }
 
+impl<S, Cleanliness> Conn<Buffered<S, Frontend>, ServerSslDecision, Cleanliness> {
+    /// Buffers the server's raw `S` response and enters the TLS handshake phase.
+    pub fn approve_ssl(mut self) -> Conn<Buffered<S, Frontend>, TlsHandshake, Cleanliness> {
+        self.transport_mut().push_raw(b"S");
+        self.transition()
+    }
+
+    /// Buffers the server's raw `N` response and returns to pre-startup choice.
+    pub fn decline_ssl(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
+        self.transport_mut().push_raw(b"N");
+        self.transition()
+    }
+}
+
 impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslReply, Cleanliness> {
     /// Receives and projects the server's raw SSL decision byte.
     ///
@@ -281,6 +318,28 @@ where
         let transport = self.into_transport();
         Ok(Conn::new(transport.connect_tls(server_name, config).await?)
             .transition::<PreStartup, Cleanliness>())
+    }
+}
+
+impl<S, Cleanliness> Conn<Buffered<S, Frontend>, TlsHandshake, Cleanliness>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Completes a server-side TLS handshake and changes the transport type.
+    ///
+    /// # Errors
+    ///
+    /// Returns a TLS handshake, certificate, channel-binding, or buffer-state error.
+    pub async fn accept_tls(
+        self,
+        config: Arc<ServerConfig>,
+        leaf_certificate: CertificateDer<'static>,
+    ) -> io::Result<Conn<Buffered<ServerTls<S>, Frontend>, PreStartup, Cleanliness>> {
+        let transport = self.into_transport();
+        Ok(
+            Conn::new(transport.accept_tls(config, leaf_certificate).await?)
+                .transition::<PreStartup, Cleanliness>(),
+        )
     }
 }
 

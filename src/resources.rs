@@ -1,6 +1,6 @@
 //! Branded prepared-statement and portal resources with proxy name rewriting.
 
-use std::{cell::Cell, collections::HashSet, marker::PhantomData};
+use std::{cell::Cell, collections::HashMap, marker::PhantomData};
 
 use bytes::Bytes;
 
@@ -9,8 +9,9 @@ use crate::codec::{Bind, Close, Describe, DescribeTarget, Execute, Parse};
 /// Runs an operation with a fresh resource brand which cannot escape the closure.
 pub fn with_resources<R>(operation: impl for<'id> FnOnce(ResourceScope<'id>) -> R) -> R {
     operation(ResourceScope {
-        statements: HashSet::new(),
-        portals: HashSet::new(),
+        statements: HashMap::new(),
+        portals: HashMap::new(),
+        next_generation: 0,
         _brand: PhantomData,
     })
 }
@@ -18,8 +19,9 @@ pub fn with_resources<R>(operation: impl for<'id> FnOnce(ResourceScope<'id>) -> 
 /// Connection-local statement and portal namespaces.
 #[derive(Debug)]
 pub struct ResourceScope<'id> {
-    statements: HashSet<Bytes>,
-    portals: HashSet<Bytes>,
+    statements: HashMap<Bytes, u64>,
+    portals: HashMap<Bytes, u64>,
+    next_generation: u64,
     _brand: PhantomData<Cell<&'id ()>>,
 }
 
@@ -28,6 +30,7 @@ pub struct ResourceScope<'id> {
 pub struct PreparedStatement<'id> {
     client_name: Bytes,
     upstream_name: Bytes,
+    generation: u64,
     _brand: PhantomData<Cell<&'id ()>>,
 }
 
@@ -36,6 +39,7 @@ pub struct PreparedStatement<'id> {
 pub struct Portal<'id> {
     client_name: Bytes,
     upstream_name: Bytes,
+    generation: u64,
     _brand: PhantomData<Cell<&'id ()>>,
 }
 
@@ -60,12 +64,19 @@ impl<'id> ResourceScope<'id> {
         query: Bytes,
         parameter_types: Vec<u32>,
     ) -> Result<(PreparedStatement<'id>, Parse), ResourceError> {
-        if !self.statements.insert(upstream_name.clone()) {
+        let generation = self.allocate(&upstream_name, true)?;
+        if self
+            .statements
+            .insert(upstream_name.clone(), generation)
+            .is_some()
+            && !upstream_name.is_empty()
+        {
             return Err(ResourceError::StatementNameCollision);
         }
         let statement = PreparedStatement {
             client_name,
             upstream_name: upstream_name.clone(),
+            generation,
             _brand: PhantomData,
         };
         let message = Parse {
@@ -90,15 +101,22 @@ impl<'id> ResourceScope<'id> {
         parameters: Vec<Option<Bytes>>,
         result_formats: Vec<i16>,
     ) -> Result<(Portal<'id>, Bind), ResourceError> {
-        if !self.statements.contains(&statement.upstream_name) {
+        if self.statements.get(&statement.upstream_name) != Some(&statement.generation) {
             return Err(ResourceError::UnknownStatement);
         }
-        if !self.portals.insert(upstream_name.clone()) {
+        let generation = self.allocate(&upstream_name, false)?;
+        if self
+            .portals
+            .insert(upstream_name.clone(), generation)
+            .is_some()
+            && !upstream_name.is_empty()
+        {
             return Err(ResourceError::PortalNameCollision);
         }
         let portal = Portal {
             client_name,
             upstream_name: upstream_name.clone(),
+            generation,
             _brand: PhantomData,
         };
         let message = Bind {
@@ -120,9 +138,10 @@ impl<'id> ResourceScope<'id> {
         &mut self,
         statement: PreparedStatement<'id>,
     ) -> Result<Close, ResourceError> {
-        if !self.statements.remove(&statement.upstream_name) {
+        if self.statements.get(&statement.upstream_name) != Some(&statement.generation) {
             return Err(ResourceError::UnknownStatement);
         }
+        self.statements.remove(&statement.upstream_name);
         Ok(Close {
             target: DescribeTarget::Statement,
             name: statement.upstream_name,
@@ -135,13 +154,34 @@ impl<'id> ResourceScope<'id> {
     ///
     /// Rejects a token which has already been closed.
     pub fn close_portal(&mut self, portal: Portal<'id>) -> Result<Close, ResourceError> {
-        if !self.portals.remove(&portal.upstream_name) {
+        if self.portals.get(&portal.upstream_name) != Some(&portal.generation) {
             return Err(ResourceError::UnknownPortal);
         }
+        self.portals.remove(&portal.upstream_name);
         Ok(Close {
             target: DescribeTarget::Portal,
             name: portal.upstream_name,
         })
+    }
+}
+
+impl ResourceScope<'_> {
+    fn allocate(&mut self, name: &Bytes, statement: bool) -> Result<u64, ResourceError> {
+        let resources = if statement {
+            &self.statements
+        } else {
+            &self.portals
+        };
+        if !name.is_empty() && resources.contains_key(name) {
+            return Err(if statement {
+                ResourceError::StatementNameCollision
+            } else {
+                ResourceError::PortalNameCollision
+            });
+        }
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.saturating_add(1);
+        Ok(generation)
     }
 }
 
@@ -229,6 +269,62 @@ mod tests {
 
             resources.close_portal(portal).unwrap();
             resources.close_statement(statement).unwrap();
+        });
+    }
+
+    #[test]
+    fn unnamed_resources_replace_the_previous_unnamed_resource() {
+        with_resources(|mut resources| {
+            let (obsolete, _) = resources
+                .prepare(
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::from_static(b"select 1"),
+                    vec![],
+                )
+                .unwrap();
+            let (replacement, _) = resources
+                .prepare(
+                    Bytes::new(),
+                    Bytes::new(),
+                    Bytes::from_static(b"select 2"),
+                    vec![],
+                )
+                .expect("unnamed Parse replaces the prior unnamed statement");
+            assert_eq!(
+                resources
+                    .bind(
+                        &obsolete,
+                        Bytes::new(),
+                        Bytes::new(),
+                        vec![],
+                        vec![],
+                        vec![],
+                    )
+                    .unwrap_err(),
+                ResourceError::UnknownStatement
+            );
+
+            let (_, _) = resources
+                .bind(
+                    &replacement,
+                    Bytes::new(),
+                    Bytes::new(),
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .unwrap();
+            resources
+                .bind(
+                    &replacement,
+                    Bytes::new(),
+                    Bytes::new(),
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .expect("unnamed Bind replaces the prior unnamed portal");
         });
     }
 }

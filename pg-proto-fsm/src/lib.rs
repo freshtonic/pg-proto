@@ -823,5 +823,22 @@ fn railroad_svg(states: &[State]) -> String {
         })
         .collect::<Vec<_>>();
     let root = VerticalGrid::new(productions);
-    Diagram::new_with_stylesheet(root, &Stylesheet::Light).to_string()
+    let mut diagram = Diagram::new_with_stylesheet(root, &Stylesheet::Light);
+    let width = diagram.width();
+    let height = diagram.height();
+    diagram
+        .attr("width".to_owned())
+        .or_insert_with(|| width.to_string());
+    diagram
+        .attr("height".to_owned())
+        .or_insert_with(|| height.to_string());
+    diagram
+        .attr("style".to_owned())
+        .or_insert_with(|| "display: block; max-width: none".to_owned());
+
+    // rustdoc feeds doc attributes through a Markdown parser. Newlines inside
+    // the SVG's style element would be interpreted as Markdown paragraphs,
+    // producing invalid CSS. Keeping the embedded SVG on one line makes it a
+    // single raw HTML block while retaining intrinsic dimensions for scrolling.
+    diagram.to_string().replace(['\r', '\n'], " ")
 }

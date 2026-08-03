@@ -59,6 +59,8 @@ work using that feature is complete.
 - [x] Runtime FSM with per-transition internal/external direction.
 - [x] Railroad SVG with sequence, choice, recursion, and cleanliness effects.
 - [x] Embed each generated role's railroad SVG on its rustdoc module page.
+- [x] Keep embedded rustdoc diagrams styled and legible by preventing Markdown
+  from corrupting their CSS and preserving their intrinsic dimensions.
 - [x] Client/server pre-startup, authentication, query, reset, error, COPY, and
   replication grammar coverage.
 - [x] Attach typed message payloads and fallible transition results to generated

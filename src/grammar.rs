@@ -45,22 +45,23 @@ protocol! {
             Ready(ready) => Ready,
             Error(error) => Draining,
         }
-        CopyIn internal {
-            CopyData(copy_data) => CopyIn,
-            CopyDone(copy_done) => AwaitingReady,
-            CopyFail(copy_fail) => AwaitingReady,
+        CopyIn mixed {
+            internal CopyData(copy_data) => CopyIn,
+            internal CopyDone(copy_done) => AwaitingReady,
+            internal CopyFail(copy_fail) => AwaitingReady,
+            external Error(error) => Draining,
         }
         CopyOut external {
             CopyData(copy_data) => CopyOut,
             CopyDone(copy_done) => AwaitingReady,
             Error(error) => Draining,
         }
-        CopyBoth internal {
-            SendCopyData(send_copy_data) => CopyBoth,
-            ReceiveCopyData(receive_copy_data) => CopyBoth,
-            SendCopyDone(send_copy_done) => CopyBothClientDone,
-            ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
-            Error(error) => Draining,
+        CopyBoth mixed {
+            internal SendCopyData(send_copy_data) => CopyBoth,
+            external ReceiveCopyData(receive_copy_data) => CopyBoth,
+            internal SendCopyDone(send_copy_done) => CopyBothClientDone,
+            external ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
+            external Error(error) => Draining,
         }
         CopyBothClientDone external {
             ReceiveCopyData(receive_copy_data) => CopyBothClientDone,
@@ -474,10 +475,29 @@ mod tests {
         runtime.step(Event::Query).unwrap();
         runtime.step(Event::CopyIn).unwrap();
         assert!(runtime.step(Event::Query).is_err());
+        assert_eq!(
+            runtime.event_choice(Event::Error),
+            Some(frontend::ChoiceKind::External)
+        );
+        runtime.step(Event::Error).unwrap();
+        assert_eq!(runtime.state(), RuntimeState::Draining);
     }
 
     #[test]
     fn generated_copy_both_waits_for_both_half_closes() {
+        let mut directions = RuntimeFsm::new();
+        directions.step(Event::Query).unwrap();
+        directions.step(Event::CopyBoth).unwrap();
+        assert_eq!(directions.choice(), frontend::ChoiceKind::Mixed);
+        assert_eq!(
+            directions.event_choice(Event::SendCopyData),
+            Some(frontend::ChoiceKind::Internal)
+        );
+        assert_eq!(
+            directions.event_choice(Event::ReceiveCopyData),
+            Some(frontend::ChoiceKind::External)
+        );
+
         let mut client_first = RuntimeFsm::new();
         for event in [
             Event::Query,

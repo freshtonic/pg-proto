@@ -5,6 +5,7 @@ pub mod cancel;
 pub mod codec;
 pub mod credentials;
 pub mod demux;
+pub mod erased;
 pub mod grammar;
 pub mod pre_startup;
 pub mod replication;

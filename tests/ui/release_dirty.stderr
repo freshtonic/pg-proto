@@ -2,6 +2,10 @@ error[E0599]: no method named `release` found for struct `Conn<S, pg_proto::auth
  --> tests/ui/release_dirty.rs:4:19
   |
 4 |     let _ = ready.release();
-  |                   ^^^^^^^ method not found in `Conn<S, pg_proto::auth::Ready, pg_proto::Dirty>`
+  |                   ^^^^^^^
   |
-  = note: the method was found for `Conn<S, pg_proto::auth::Ready>`
+help: there is a method `erase` with a similar name
+  |
+4 -     let _ = ready.release();
+4 +     let _ = ready.erase();
+  |

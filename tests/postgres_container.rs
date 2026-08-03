@@ -30,14 +30,23 @@ use testcontainers_modules::{
     testcontainers::{CopyTargetOptions, ImageExt, runners::AsyncRunner},
 };
 
+fn postgres_tag() -> String {
+    let version = std::env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
+    assert!(
+        matches!(version.as_str(), "14" | "15" | "16" | "17" | "18"),
+        "unsupported PostgreSQL test version"
+    );
+    format!("{version}-alpine")
+}
+
 /// Exercises our bytes directly against the official `PostgreSQL` image. Kept
 /// ignored so ordinary unit tests do not require a local container runtime.
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn startup_and_protocol_negotiation_match_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn startup_and_protocol_negotiation_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
@@ -161,7 +170,12 @@ async fn run_select_42(
 
 fn assert_negotiation(negotiation: Option<NegotiateProtocolVersion>) {
     let negotiation = negotiation.expect("server did not negotiate protocol 3.2 options");
-    assert_eq!(negotiation.newest, ProtocolVersion::V3_2);
+    let expected = if postgres_tag().starts_with("18-") {
+        ProtocolVersion::V3_2
+    } else {
+        ProtocolVersion::V3_0
+    };
+    assert_eq!(negotiation.newest, expected);
     assert_eq!(
         negotiation.unsupported_options,
         [Bytes::from_static(b"_pq_.pg_proto_probe")]
@@ -170,8 +184,8 @@ fn assert_negotiation(negotiation: Option<NegotiateProtocolVersion>) {
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default().with_tag("18-alpine").start().await?;
+async fn scram_sha_256_matches_postgres() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default().with_tag(postgres_tag()).start().await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
     let startup = connected_startup(port).await?;
     let mut auth = startup.authentication();
@@ -238,14 +252,14 @@ async fn scram_sha_256_matches_postgres_18() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
 #[allow(clippy::too_many_lines)]
-async fn scram_sha_256_plus_over_typed_tls_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn scram_sha_256_plus_over_typed_tls_matches_postgres() -> Result<(), Box<dyn Error>> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let generated = generate_simple_self_signed(["localhost".into()])?;
     let certificate_pem = generated.cert.pem();
     let private_key_pem = generated.signing_key.serialize_pem();
     let certificate = CertificateDer::from(generated.cert.der().to_vec());
     let postgres = Postgres::default()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .with_user("postgres:root")
         .with_copy_to(
             CopyTargetOptions::new("/tmp/server.crt").with_mode(0o644),
@@ -398,9 +412,9 @@ async fn finish_startup(
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn cleartext_password_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn cleartext_password_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "password")
         .start()
         .await?;
@@ -414,12 +428,12 @@ async fn cleartext_password_matches_postgres_18() -> Result<(), Box<dyn Error>> 
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn md5_password_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn md5_password_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_init_sql(
             b"SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';".to_vec(),
         )
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .with_env_var("POSTGRES_HOST_AUTH_METHOD", "md5")
         .start()
         .await?;
@@ -465,10 +479,10 @@ async fn submit_password(
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn extended_query_pipeline_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn extended_query_pipeline_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
@@ -561,10 +575,10 @@ async fn trust_ready(
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn async_sinks_match_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn async_sinks_match_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
@@ -657,10 +671,10 @@ async fn loop_until_ready(
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn error_response_drains_to_ready_on_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
@@ -702,10 +716,10 @@ async fn error_response_drains_to_ready_on_postgres_18() -> Result<(), Box<dyn E
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn copy_out_nested_session_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn copy_out_nested_session_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
@@ -763,11 +777,11 @@ async fn copy_out_nested_session_matches_postgres_18() -> Result<(), Box<dyn Err
 
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
-async fn copy_in_nested_session_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+async fn copy_in_nested_session_matches_postgres() -> Result<(), Box<dyn Error>> {
     let postgres = Postgres::default()
         .with_init_sql(b"CREATE TABLE copy_test(value integer);".to_vec())
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(postgres_tag())
         .start()
         .await?;
     let port = postgres.get_host_port_ipv4(5432).await?;

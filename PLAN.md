@@ -149,8 +149,9 @@ neutral composition harnesses and examples.
 - [x] Testcontainers tests against the official PostgreSQL 18 image.
 - [x] Add recorded traffic fixtures for every supported authentication and query
   family, with sensitive fields removed.
-- [ ] Run compatibility tests across every PostgreSQL major version supported by
-  CipherStash.
+- [x] Run compatibility tests across every PostgreSQL major version supported by
+  CipherStash. The complete ten-test live suite passed locally on official 14,
+  15, 16, and 17 Alpine images on 4 August 2026; CI preserves that matrix.
 - [ ] Add fuzzing for both directional codecs, pre-startup decoding, SCRAM, and
   runtime FSM projection.
 - [ ] Establish performance and monomorphisation budgets against pgcat/proxy

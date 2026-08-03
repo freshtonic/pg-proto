@@ -138,6 +138,10 @@ when a Docker-compatible runtime is available:
 cargo test --test postgres_container -- --ignored
 ```
 
+Set `PG_PROTO_POSTGRES_VERSION` to `14`, `15`, `16`, `17`, or `18` to select
+the official image tag. CI runs the audited CipherStash support matrix (14–17);
+18 remains an additional forward-compatibility target.
+
 Layer 2 covers the client and server pre-startup, authentication, query, reset,
 error-draining, and COPY grammars. One declaration emits transport-carrying
 typestate and dual APIs, an executable runtime FSM for differential testing, and

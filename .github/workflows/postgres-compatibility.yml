@@ -1,0 +1,24 @@
+name: PostgreSQL compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches the audited CipherStash Proxy CI support declaration.
+        version: [14, 15, 16, 17]
+    env:
+      PG_PROTO_POSTGRES_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --test postgres_container -- --ignored

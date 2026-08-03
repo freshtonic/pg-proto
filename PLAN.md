@@ -125,5 +125,7 @@ work using that feature is complete.
     and recursive SASL authentication transitions.
   - [x] Apply structured request, response, error, transaction-status, and COPY
     payloads across the backend-role query grammar.
-  - [ ] Apply payloads to pre-startup, startup metadata, asynchronous projection,
-    and remaining generic continuation transitions.
+  - [x] Apply payloads to pre-startup cancellation/startup and server startup
+    metadata, protocol negotiation, cancellation keys, and readiness status.
+  - [ ] Apply payloads to asynchronous projection and remaining generic
+    continuation transitions.

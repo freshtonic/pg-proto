@@ -98,8 +98,8 @@ protocol! {
         PreStartup internal {
             SslRequest(ssl_request) => AwaitingSslReply,
             GssRequest(gss_request) => AwaitingGssReply,
-            Cancel(cancel) => Terminated,
-            Startup(startup) => Auth,
+            Cancel(cancel: (u32, bytes::Bytes)) => Terminated,
+            Startup(startup: crate::startup::StartupMessage) => Auth,
         }
         AwaitingSslReply external {
             Accept(accept) => TlsHandshake,
@@ -128,8 +128,8 @@ protocol! {
         PreStartup external {
             SslRequest(ssl_request) => SslDecision,
             GssRequest(gss_request) => GssDecision,
-            Cancel(cancel) => Terminated,
-            Startup(startup) => Auth,
+            Cancel(cancel: (u32, bytes::Bytes)) => Terminated,
+            Startup(startup: crate::startup::StartupMessage) => Auth,
         }
         SslDecision internal {
             Accept(accept) => TlsHandshake,
@@ -408,10 +408,10 @@ protocol! {
             Error(error) => Terminated,
         }
         StartupReady internal {
-            ParameterStatus(parameter_status) => StartupReady,
-            BackendKeyData(backend_key_data) => StartupReady,
-            NegotiateProtocol(negotiate_protocol) => StartupReady,
-            Ready(ready) => Ready,
+            ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady,
+            BackendKeyData(backend_key_data: (u32, bytes::Bytes)) => StartupReady,
+            NegotiateProtocol(negotiate_protocol: crate::codec::NegotiateProtocolVersion) => StartupReady,
+            Ready(ready: crate::codec::TransactionStatus) => Ready,
         }
         Ready external {}
         Terminated external {}
@@ -767,12 +767,25 @@ mod tests {
 
         let pre_startup: pre_startup::TypedSession<Tcp, pre_startup::PreStartup, Clean> =
             pre_startup::TypedSession::with_transport(Tcp);
-        let auth: pre_startup::TypedSession<Tls, pre_startup::Auth, Clean> = pre_startup
+        let startup = crate::startup::StartupMessage {
+            version: crate::startup::ProtocolVersion::V3_0,
+            parameters: BTreeMap::new(),
+        };
+        let auth = pre_startup
             .ssl_request()
             .accept()
             .map_transport(Tls)
             .complete()
-            .startup();
+            .startup(startup, |_, startup| {
+                Ok::<_, std::convert::Infallible>(startup)
+            });
+        let (auth, _startup): (
+            pre_startup::TypedSession<Tls, pre_startup::Auth, Clean>,
+            crate::startup::StartupMessage,
+        ) = match auth {
+            Ok(success) => success,
+            Err((_session, never)) => match never {},
+        };
         let Tls(_tcp) = auth.into_transport();
     }
 

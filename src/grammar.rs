@@ -512,6 +512,17 @@ mod tests {
     };
     use frontend::{Event, RuntimeFsm, RuntimeState, Session};
 
+    #[test]
+    fn railroad_labels_use_variant_syntax_and_link_payload_types() {
+        let svg = frontend::FRONTEND_RAILROAD_SVG;
+        assert!(svg.contains("◁ ReceiveCopyData(bytes::Bytes)"));
+        assert!(svg.contains(
+            "xlink:href=\"https://docs.rs/bytes/1/bytes/struct.Bytes.html\" class=\"link\""
+        ));
+        assert!(svg.contains("▷ Query(bytes::Bytes) [Dirty]"));
+        assert!(!svg.contains("&amp; ReceiveCopyData"));
+    }
+
     macro_rules! exhaust_generated_runtime {
         ($module:ident, $depth:expr) => {{
             fn visit(runtime: $module::RuntimeFsm, depth: usize) {

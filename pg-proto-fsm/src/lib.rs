@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use railroad::{
-    Choice, Diagram, Empty, End, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet, Terminal,
-    VerticalGrid,
+    Choice, Diagram, Empty, End, Link, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet,
+    Terminal, VerticalGrid,
 };
 use syn::{
     Ident, Pat, Result, Token, Type, Visibility, braced,
@@ -445,8 +445,8 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
          <div class=\"pg-proto-railroad\" style=\"overflow-x: auto\">\n\
          {svg}\n\
          </div>\n\n\
-         `⊕` denotes an internal choice made by this role; `&` denotes an \
-         external choice offered by its peer. Repeated rails are protocol \
+         `▷` denotes a choice or action initiated by this role; `◁` denotes one \
+         received from or offered by its peer. Repeated rails are protocol \
          self-loops and bracketed labels are cleanliness effects."
     );
 
@@ -767,19 +767,24 @@ fn validate(protocol: &Protocol) -> Result<()> {
 }
 
 fn railroad_svg(states: &[State]) -> String {
+    const SVG_GUTTER: i64 = 12;
+
     let productions = states
         .iter()
         .map(|state| {
             let labelled = |transition: &Transition| {
                 let choice = match transition.choice.unwrap_or(state.choice) {
-                    ChoiceKind::Internal => "⊕",
-                    ChoiceKind::External => "&",
+                    ChoiceKind::Internal => "▷",
+                    ChoiceKind::External => "◁",
                     ChoiceKind::Mixed => {
                         unreachable!("validated mixed transition has a direction")
                     }
                 };
                 let event = match &transition.payload {
-                    Some(payload) => format!("{}: {}", transition.event, quote!(#payload)),
+                    Some(payload) => {
+                        let payload = quote!(#payload).to_string().replace(' ', "");
+                        format!("{}({payload})", transition.event)
+                    }
                     None => transition.event.to_string(),
                 };
                 match &transition.cleanliness {
@@ -793,7 +798,7 @@ fn railroad_svg(states: &[State]) -> String {
                 .transitions
                 .iter()
                 .filter(|transition| transition.target == state.name)
-                .map(|transition| Box::new(Terminal::new(labelled(transition))) as Box<dyn Node>)
+                .map(|transition| transition_node(labelled(transition), transition))
                 .collect::<Vec<_>>();
             let exits = state
                 .transitions
@@ -801,7 +806,7 @@ fn railroad_svg(states: &[State]) -> String {
                 .filter(|transition| transition.target != state.name)
                 .map(|transition| {
                     Box::new(Sequence::new(vec![
-                        Box::new(Terminal::new(labelled(transition))) as Box<dyn Node>,
+                        transition_node(labelled(transition), transition),
                         Box::new(NonTerminal::new(transition.target.to_string())),
                     ])) as Box<dyn Node>
                 })
@@ -824,8 +829,14 @@ fn railroad_svg(states: &[State]) -> String {
         .collect::<Vec<_>>();
     let root = VerticalGrid::new(productions);
     let mut diagram = Diagram::new_with_stylesheet(root, &Stylesheet::Light);
-    let width = diagram.width();
-    let height = diagram.height();
+    diagram.add_css(
+        "svg.railroad a.link text { text-decoration: underline; } \
+         svg.railroad a.link:hover text { text-decoration-thickness: 2px; }",
+    );
+    let content_width = diagram.width();
+    let content_height = diagram.height();
+    let width = content_width + SVG_GUTTER;
+    let height = content_height + SVG_GUTTER;
     diagram
         .attr("width".to_owned())
         .or_insert_with(|| width.to_string());
@@ -835,10 +846,45 @@ fn railroad_svg(states: &[State]) -> String {
     diagram
         .attr("style".to_owned())
         .or_insert_with(|| "display: block; max-width: none".to_owned());
+    diagram
+        .attr("data-content-width".to_owned())
+        .or_insert_with(|| content_width.to_string());
+    diagram
+        .attr("data-content-height".to_owned())
+        .or_insert_with(|| content_height.to_string());
+
+    let svg = diagram.to_string().replace(
+        &format!("viewBox=\"0 0 {content_width} {content_height}\""),
+        &format!("viewBox=\"0 0 {width} {height}\""),
+    );
 
     // rustdoc feeds doc attributes through a Markdown parser. Newlines inside
     // the SVG's style element would be interpreted as Markdown paragraphs,
     // producing invalid CSS. Keeping the embedded SVG on one line makes it a
     // single raw HTML block while retaining intrinsic dimensions for scrolling.
-    diagram.to_string().replace(['\r', '\n'], " ")
+    svg.replace(['\r', '\n'], " ")
+}
+
+fn transition_node(label: String, transition: &Transition) -> Box<dyn Node> {
+    let terminal = Terminal::new(label);
+    match transition.payload.as_ref().and_then(payload_doc_url) {
+        Some(url) => Box::new(Link::new(terminal, url)),
+        None => Box::new(terminal),
+    }
+}
+
+fn payload_doc_url(payload: &Type) -> Option<String> {
+    let payload = quote!(#payload).to_string().replace(' ', "");
+    if payload.contains("bytes::Bytes") {
+        return Some("https://docs.rs/bytes/1/bytes/struct.Bytes.html".to_owned());
+    }
+    let (module, name) = payload.strip_prefix("crate::")?.rsplit_once("::")?;
+    let kind = match (module, name) {
+        ("codec", "BackendMessage" | "TransactionStatus") => "enum",
+        ("codec", _) | ("server_auth", "SaslInitialResponse") | ("startup", "StartupMessage") => {
+            "struct"
+        }
+        _ => return None,
+    };
+    Some(format!("../../{module}/{kind}.{name}.html"))
 }

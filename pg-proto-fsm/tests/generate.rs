@@ -116,8 +116,19 @@ fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.contains("Building"));
     assert!(query::QUERY_RAILROAD_SVG.contains("Sync"));
     assert!(query::QUERY_RAILROAD_SVG.contains("class=\"repeat\""));
-    assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Parse"));
-    assert!(query::QUERY_RAILROAD_SVG.contains("⊕ Query: u8 [Dirty]"));
+    assert!(query::QUERY_RAILROAD_SVG.contains("▷ Parse"));
+    assert!(query::QUERY_RAILROAD_SVG.contains("▷ Query(u8) [Dirty]"));
+    let width = svg_attribute(query::QUERY_RAILROAD_SVG, "width");
+    let content_width = svg_attribute(query::QUERY_RAILROAD_SVG, "data-content-width");
+    assert_eq!(width, content_width + 12);
+}
+
+fn svg_attribute(svg: &str, name: &str) -> i64 {
+    let prefix = format!(" {name}=\"");
+    svg.split_once(&prefix)
+        .and_then(|(_, value)| value.split_once('"'))
+        .and_then(|(value, _)| value.parse().ok())
+        .expect("numeric SVG attribute")
 }
 
 #[test]
@@ -157,8 +168,8 @@ fn mixed_states_retain_each_transition_direction() {
     runtime.step(duplex::Event::Receive).unwrap();
     runtime.step(duplex::Event::Close).unwrap();
     assert_eq!(runtime.state(), duplex::RuntimeState::Closed);
-    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('⊕'));
-    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('&'));
+    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('▷'));
+    assert!(duplex::DUPLEX_RAILROAD_SVG.contains('◁'));
 }
 
 #[test]

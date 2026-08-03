@@ -12,6 +12,7 @@ use crate::{
         FunctionCall, Parse, TransactionStatus,
     },
     demux::SessionItem,
+    pre_startup::Terminated,
 };
 
 #[derive(Debug)]
@@ -124,6 +125,11 @@ pub enum ResetCompleteTransition<S> {
 }
 
 impl<S, C> Conn<S, Ready, C> {
+    /// Gracefully terminates a ready session without waiting for a backend reply.
+    pub fn push_terminate(self) -> (Conn<S, Terminated, C>, Frame) {
+        (self.transition(), empty_frame(b'X'))
+    }
+
     /// Buffers a simple query and enters its response phase.
     ///
     /// # Errors
@@ -625,6 +631,15 @@ mod tests {
             panic!("function call did not return to ready")
         };
         ready.into_transport();
+    }
+
+    #[test]
+    fn ready_session_can_terminate_gracefully() {
+        let ready: Conn<(), Ready> = Conn::new(()).transition();
+        let (terminated, frame) = ready.push_terminate();
+        assert_eq!(frame.tag, b'X');
+        assert!(frame.body.is_empty());
+        terminated.into_transport();
     }
 
     #[test]

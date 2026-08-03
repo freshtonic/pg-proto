@@ -7,7 +7,7 @@ use bytes::Bytes;
 use crate::{
     Conn, Dirty,
     codec::{Bind, Close, Describe, DescribeTarget, Execute, Frame, Parse},
-    session::{BoundBuilding, Building},
+    session::{AwaitingReady, BoundBuilding, Building},
 };
 
 /// Runs an operation with a fresh resource brand which cannot escape the closure.
@@ -63,6 +63,24 @@ pub type PrepareResult<'id, S> = Result<
 >;
 
 pub type BindResult<'id, S> = Result<
+    (
+        ResourceConnection<'id, S, BoundBuilding, Dirty>,
+        Portal<'id>,
+        Frame,
+    ),
+    ResourceProtocolError,
+>;
+
+pub type BoundPrepareResult<'id, S> = Result<
+    (
+        ResourceConnection<'id, S, BoundBuilding, Dirty>,
+        PreparedStatement<'id>,
+        Frame,
+    ),
+    ResourceProtocolError,
+>;
+
+pub type RebindResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
         Portal<'id>,
@@ -300,6 +318,16 @@ impl<'id> ResourceScope<'id> {
         }
         Ok(portal.describe())
     }
+
+    fn describe_statement(
+        &self,
+        statement: &PreparedStatement<'id>,
+    ) -> Result<Describe, ResourceError> {
+        if self.statements.get(&statement.upstream_name) != Some(&statement.generation) {
+            return Err(ResourceError::UnknownStatement);
+        }
+        Ok(statement.describe())
+    }
 }
 
 impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
@@ -355,9 +383,126 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
         let (conn, frame) = conn.push_bind(&message)?;
         Ok((ResourceConnection { conn, resources }, portal, frame))
     }
+
+    /// Describes only a live statement from this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale statement or invalid wire value.
+    pub fn describe_statement(
+        self,
+        statement: &PreparedStatement<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let message = self.resources.describe_statement(statement)?;
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_describe(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
+    /// Closes a live statement and invalidates its token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale statement or invalid wire value.
+    pub fn close_statement(
+        self,
+        statement: PreparedStatement<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let message = resources.close_statement(statement)?;
+        let (conn, frame) = conn.push_close(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
+    /// Emits Flush without changing resource or phase evidence.
+    #[must_use]
+    pub fn flush(self) -> (Self, Frame) {
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_flush();
+        (Self { conn, resources }, frame)
+    }
+
+    /// Emits Sync while retaining the namespace through response consumption.
+    #[must_use]
+    pub fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_sync();
+        (ResourceConnection { conn, resources }, frame)
+    }
 }
 
 impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
+    /// Creates another prepared statement while retaining executable portals.
+    ///
+    /// # Errors
+    ///
+    /// Returns namespace or wire reconstruction errors.
+    pub fn prepare(
+        self,
+        client_name: Bytes,
+        upstream_name: Bytes,
+        query: Bytes,
+        parameter_types: Vec<u32>,
+    ) -> BoundPrepareResult<'id, S> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let (statement, message) =
+            resources.prepare(client_name, upstream_name, query, parameter_types)?;
+        let (conn, frame) = conn.push_parse(&message)?;
+        Ok((ResourceConnection { conn, resources }, statement, frame))
+    }
+
+    /// Creates another portal while retaining prior live portals.
+    ///
+    /// # Errors
+    ///
+    /// Returns namespace or wire reconstruction errors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind(
+        self,
+        statement: &PreparedStatement<'id>,
+        client_name: Bytes,
+        upstream_name: Bytes,
+        parameter_formats: Vec<i16>,
+        parameters: Vec<Option<Bytes>>,
+        result_formats: Vec<i16>,
+    ) -> RebindResult<'id, S> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let (portal, message) = resources.bind(
+            statement,
+            client_name,
+            upstream_name,
+            parameter_formats,
+            parameters,
+            result_formats,
+        )?;
+        let (conn, frame) = conn.push_bind(&message)?;
+        Ok((ResourceConnection { conn, resources }, portal, frame))
+    }
+
+    /// Describes only a live statement from this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale statement or invalid wire value.
+    pub fn describe_statement(
+        self,
+        statement: &PreparedStatement<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let message = self.resources.describe_statement(statement)?;
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_describe(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
     /// Describes only a live portal from this connection.
     ///
     /// # Errors
@@ -387,6 +532,55 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_execute(&message)?;
         Ok((Self { conn, resources }, frame))
+    }
+
+    /// Closes a live statement and invalidates its token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale statement or invalid wire value.
+    pub fn close_statement(
+        self,
+        statement: PreparedStatement<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let message = resources.close_statement(statement)?;
+        let (conn, frame) = conn.push_close(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
+    /// Closes a live portal and invalidates its token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale portal or invalid wire value.
+    pub fn close_portal(self, portal: Portal<'id>) -> Result<(Self, Frame), ResourceProtocolError> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let message = resources.close_portal(portal)?;
+        let (conn, frame) = conn.push_close(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
+    /// Emits Flush without changing resource or phase evidence.
+    #[must_use]
+    pub fn flush(self) -> (Self, Frame) {
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_flush();
+        (Self { conn, resources }, frame)
+    }
+
+    /// Emits Sync while retaining the namespace through response consumption.
+    #[must_use]
+    pub fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
+        let Self { conn, resources } = self;
+        let (conn, frame) = conn.push_sync();
+        (ResourceConnection { conn, resources }, frame)
     }
 }
 
@@ -486,9 +680,45 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(bind.tag, b'B');
+            let (connection, describe) = connection.describe_portal(&portal).unwrap();
+            assert_eq!(describe.tag, b'D');
             let (connection, execute) = connection.execute(&portal, 0).unwrap();
             assert_eq!(execute.tag, b'E');
-            connection.into_connection().into_transport();
+            let (connection, second_statement, parse) = connection
+                .prepare(
+                    Bytes::from_static(b"client_statement_2"),
+                    Bytes::from_static(b"proxy_statement_2"),
+                    Bytes::from_static(b"select 2"),
+                    vec![],
+                )
+                .unwrap();
+            assert_eq!(parse.tag, b'P');
+            let (connection, second_portal, bind) = connection
+                .bind(
+                    &second_statement,
+                    Bytes::from_static(b"client_portal_2"),
+                    Bytes::from_static(b"proxy_portal_2"),
+                    vec![],
+                    vec![],
+                    vec![],
+                )
+                .unwrap();
+            assert_eq!(bind.tag, b'B');
+            let (connection, describe) = connection.describe_statement(&second_statement).unwrap();
+            assert_eq!(describe.tag, b'D');
+            let (connection, flush) = connection.flush();
+            assert_eq!(flush.tag, b'H');
+            let (connection, close) = connection.close_portal(second_portal).unwrap();
+            assert_eq!(close.tag, b'C');
+            let (connection, close) = connection.close_portal(portal).unwrap();
+            assert_eq!(close.tag, b'C');
+            let (connection, close) = connection.close_statement(second_statement).unwrap();
+            assert_eq!(close.tag, b'C');
+            let (connection, close) = connection.close_statement(statement).unwrap();
+            assert_eq!(close.tag, b'C');
+            let (awaiting, sync) = connection.sync();
+            assert_eq!(sync.tag, b'S');
+            awaiting.into_connection().into_transport();
         });
     }
 

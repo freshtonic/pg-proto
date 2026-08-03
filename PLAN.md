@@ -103,5 +103,7 @@ work using that feature is complete.
 
 ## Current work
 
-- [ ] Extend connection-branded resources across the complete extended-query
-  cycle while retaining proxy message interception.
+- [x] Extend connection-branded outbound construction across repeated Parse/Bind,
+  both Describe and Close targets, Execute, Flush, and Sync.
+- [ ] Retain connection-branded namespaces through extended-query response
+  consumption and apply protocol-boundary invalidation.

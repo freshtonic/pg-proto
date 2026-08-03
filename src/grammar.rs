@@ -6,9 +6,9 @@ protocol! {
     pub mod frontend {
         initial Ready;
         Ready internal {
-            Query(query) => Simple [Dirty],
+            Query(query: bytes::Bytes) => Simple [Dirty],
             BeginExtended(begin_extended) => Building,
-            FunctionCall(function_call) => FunctionCalling [Dirty],
+            FunctionCall(function_call: crate::codec::FunctionCall) => FunctionCalling [Dirty],
             Reset(reset) => Resetting [Dirty],
             Terminate(terminate) => Terminated,
         }
@@ -47,30 +47,30 @@ protocol! {
             Error(error) => Draining,
         }
         CopyIn mixed {
-            internal CopyData(copy_data) => CopyIn,
+            internal CopyData(copy_data: bytes::Bytes) => CopyIn,
             internal CopyDone(copy_done) => AwaitingReady,
-            internal CopyFail(copy_fail) => AwaitingReady,
+            internal CopyFail(copy_fail: bytes::Bytes) => AwaitingReady,
             external Error(error) => Draining,
         }
         CopyOut external {
-            CopyData(copy_data) => CopyOut,
+            CopyData(copy_data: bytes::Bytes) => CopyOut,
             CopyDone(copy_done) => AwaitingReady,
             Error(error) => Draining,
         }
         CopyBoth mixed {
-            internal SendCopyData(send_copy_data) => CopyBoth,
-            external ReceiveCopyData(receive_copy_data) => CopyBoth,
+            internal SendCopyData(send_copy_data: bytes::Bytes) => CopyBoth,
+            external ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBoth,
             internal SendCopyDone(send_copy_done) => CopyBothClientDone,
             external ReceiveCopyDone(receive_copy_done) => CopyBothServerDone,
             external Error(error) => Draining,
         }
         CopyBothClientDone external {
-            ReceiveCopyData(receive_copy_data) => CopyBothClientDone,
+            ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBothClientDone,
             ReceiveCopyDone(receive_copy_done) => AwaitingReady,
             Error(error) => Draining,
         }
         CopyBothServerDone internal {
-            SendCopyData(send_copy_data) => CopyBothServerDone,
+            SendCopyData(send_copy_data: bytes::Bytes) => CopyBothServerDone,
             SendCopyDone(send_copy_done) => AwaitingReady,
         }
         Draining external {
@@ -678,11 +678,20 @@ mod tests {
 
     #[test]
     fn generated_transport_session_tracks_cleanliness_effects() {
+        #[derive(Debug)]
         struct InitiallyClean;
 
         let ready: frontend::TypedSession<(), frontend::Ready, InitiallyClean> =
             frontend::TypedSession::with_transport(());
-        let dirty: frontend::TypedSession<(), frontend::Simple, frontend::Dirty> = ready.query();
+        let (dirty, query): (
+            frontend::TypedSession<(), frontend::Simple, frontend::Dirty>,
+            Bytes,
+        ) = ready
+            .query(Bytes::from_static(b"select 1"), |(), query| {
+                Ok::<_, std::convert::Infallible>(query)
+            })
+            .expect("query handler is infallible");
+        assert_eq!(query, Bytes::from_static(b"select 1"));
         let dirty: frontend::TypedSession<(), frontend::Ready, frontend::Dirty> = dirty.ready();
         assert_eq!(dirty.into_transport(), ());
 

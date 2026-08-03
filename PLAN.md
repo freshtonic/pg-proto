@@ -119,5 +119,7 @@ work using that feature is complete.
     proc macro and railroad output.
   - [x] Apply payloads to frontend Parse, Bind, Describe, Execute, and Close
     transitions, including state-preserving reconstruction failure.
-  - [ ] Apply payloads to frontend query, COPY, function-call, and authentication
+  - [x] Apply payloads to frontend simple query, COPY data/failure, and
+    function-call transitions.
+  - [ ] Apply payloads to frontend authentication and remaining control
     transitions.

@@ -281,6 +281,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             })
         });
         quote! {
+            /// Projects a role-initiated wire message into its protocol event.
             #[must_use]
             pub fn project_internal(
                 state: RuntimeState,
@@ -292,6 +293,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             }
 
+            /// Projects a peer-initiated wire message into its protocol event.
             #[must_use]
             pub fn project_external(
                 state: RuntimeState,
@@ -310,6 +312,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             let method = &transition.method;
             let target = &transition.target;
             quote! {
+                #[doc = concat!("Applies `", stringify!(#method), "` and enters [`", stringify!(#target), "`].")]
                 #[must_use]
                 pub const fn #method(self) -> Session<#target> {
                     Session { _phase: ::core::marker::PhantomData }
@@ -328,6 +331,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             let method = &transition.method;
             let target = &transition.target;
             quote! {
+                #[doc = concat!("Applies the dual `", stringify!(#method), "` transition and enters [`", stringify!(#target), "`].")]
                 #[must_use]
                 pub const fn #method(self) -> DualSession<#target> {
                     DualSession { _phase: ::core::marker::PhantomData }
@@ -351,6 +355,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
             if let Some(payload) = &transition.payload {
                 quote! {
+                    #[doc = concat!("Handles the payload for `", stringify!(#method), "`; success enters [`", stringify!(#target), "`] and failure returns the unchanged session.")]
                     pub fn #method<Output, Error>(
                         mut self,
                         payload: #payload,
@@ -373,6 +378,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             } else {
                 quote! {
+                    #[doc = concat!("Applies `", stringify!(#method), "` and enters [`", stringify!(#target), "`].")]
                     #[must_use]
                     pub fn #method(self) -> TypedSession<Transport, #target, #cleanliness> {
                         TypedSession {
@@ -400,6 +406,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
             if let Some(payload) = &transition.payload {
                 quote! {
+                    #[doc = concat!("Handles the dual payload for `", stringify!(#method), "`; success enters [`", stringify!(#target), "`] and failure returns the unchanged session.")]
                     pub fn #method<Output, Error>(
                         mut self,
                         payload: #payload,
@@ -422,6 +429,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             } else {
                 quote! {
+                    #[doc = concat!("Applies the dual `", stringify!(#method), "` transition and enters [`", stringify!(#target), "`].")]
                     #[must_use]
                     pub fn #method(self) -> DualTypedSession<Transport, #target, #cleanliness> {
                         DualTypedSession {
@@ -455,27 +463,46 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
         #[doc = #module_doc]
         #visibility mod #module {
             #(
+                #[doc = concat!("Protocol phase marker for `", stringify!(#state_names), "`.")]
                 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
                 pub enum #state_names {}
             )*
 
             #(
+                #[doc = concat!("Cleanliness marker for `", stringify!(#cleanliness_names), "`.")]
                 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
                 pub enum #cleanliness_names {}
             )*
 
+            /// Runtime representation of a generated protocol phase.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub enum RuntimeState { #(#state_names),* }
+            pub enum RuntimeState {
+                #(#[doc = concat!("The [`", stringify!(#state_names), "`] phase.")] #state_names),*
+            }
 
+            /// Events accepted by the generated protocol grammar.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub enum Event { #(#events),* }
+            pub enum Event {
+                #(#[doc = concat!("The `", stringify!(#events), "` transition event.")] #events),*
+            }
 
+            /// Complete event alphabet for exhaustive and differential testing.
             pub const ALL_EVENTS: &[Event] = &[#(Event::#events),*];
 
+            /// Which role selects a transition at a protocol state.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub enum ChoiceKind { Internal, External, Mixed }
+            pub enum ChoiceKind {
+                /// This role selects the transition.
+                Internal,
+                /// The peer selects the transition.
+                External,
+                /// Legal transitions include choices by both roles.
+                Mixed,
+            }
 
+            /// Directional operations on [`ChoiceKind`].
             impl ChoiceKind {
+                /// Returns the choice direction seen by the peer role.
                 #[must_use]
                 pub const fn dual(self) -> Self {
                     match self {
@@ -486,18 +513,25 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 }
             }
 
+            /// One edge in the generated runtime transition table.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct RuntimeTransition {
+                /// Phase from which the event is legal.
                 pub source: RuntimeState,
+                /// Event which advances the protocol.
                 pub event: Event,
+                /// Phase entered after the event.
                 pub target: RuntimeState,
+                /// Role which selects this event.
                 pub choice: ChoiceKind,
             }
 
+            /// Canonical runtime transition table generated from the grammar.
             pub const TRANSITIONS: &[RuntimeTransition] = &[#(#transition_descriptors),*];
 
             #projection_functions
 
+            /// Looks up one legal transition from `state` for `event`.
             #[must_use]
             pub fn transition(
                 state: RuntimeState,
@@ -509,38 +543,49 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     .find(|transition| transition.source == state && transition.event == event)
             }
 
+            /// Rejected runtime transition with the unchanged state and event.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct TransitionError {
+                /// State in which the event was rejected.
                 pub state: RuntimeState,
+                /// Event which was not legal in `state`.
                 pub event: Event,
             }
 
+            /// Failure to project or apply a wire message in a runtime state.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ProjectionError {
+                /// State in which projection or advancement failed.
                 pub state: RuntimeState,
             }
 
+            /// Executable runtime mirror of the generated typestate API.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct RuntimeFsm {
                 state: RuntimeState,
             }
 
+            /// Runtime state-machine construction, inspection, and advancement.
             impl RuntimeFsm {
+                /// Creates an FSM in the grammar's initial state.
                 #[must_use]
                 pub const fn new() -> Self {
                     Self { state: RuntimeState::#initial }
                 }
 
+                /// Returns the current runtime phase.
                 #[must_use]
                 pub const fn state(&self) -> RuntimeState {
                     self.state
                 }
 
+                /// Returns who selects transitions in the current phase.
                 #[must_use]
                 pub const fn choice(&self) -> ChoiceKind {
                     match self.state { #(#choice_arms),* }
                 }
 
+                /// Returns the current phase's choice as seen by the peer.
                 #[must_use]
                 pub const fn dual_choice(&self) -> ChoiceKind {
                     self.choice().dual()
@@ -561,6 +606,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     }
                 }
 
+                /// Advances the FSM with `event` without changing it on error.
                 pub fn step(&mut self, event: Event) -> Result<(), TransitionError> {
                     match transition(self.state, event) {
                         Some(transition) => {
@@ -596,6 +642,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 fn default() -> Self { Self::new() }
             }
 
+            /// Zero-sized typestate witness for this protocol role.
             #[must_use]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct Session<Phase> {
@@ -609,6 +656,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 _phase: ::core::marker::PhantomData<Phase>,
             }
 
+            /// Transport-carrying typestate for this protocol role.
             #[must_use = "dropping a generated typed session abandons its protocol state"]
             #[derive(Debug)]
             pub struct TypedSession<Transport, Phase, Cleanliness = ()> {
@@ -616,6 +664,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 _state: ::core::marker::PhantomData<(Phase, Cleanliness)>,
             }
 
+            /// Transport-carrying typestate for the peer role.
             #[must_use = "dropping a generated dual session abandons its protocol state"]
             #[derive(Debug)]
             pub struct DualTypedSession<Transport, Phase, Cleanliness = ()> {
@@ -624,6 +673,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl Session<#initial> {
+                /// Creates a witness in the grammar's initial phase.
                 #[must_use]
                 pub const fn new() -> Self {
                     Self { _phase: ::core::marker::PhantomData }
@@ -631,6 +681,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl DualSession<#initial> {
+                /// Creates a dual witness in the grammar's initial phase.
                 #[must_use]
                 pub const fn new() -> Self {
                     Self { _phase: ::core::marker::PhantomData }
@@ -638,6 +689,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl<Transport, Cleanliness> TypedSession<Transport, #initial, Cleanliness> {
+                /// Attaches `transport` to a session in the initial phase.
                 #[must_use]
                 pub const fn with_transport(transport: Transport) -> Self {
                     Self { transport, _state: ::core::marker::PhantomData }
@@ -645,6 +697,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl<Transport, Cleanliness> DualTypedSession<Transport, #initial, Cleanliness> {
+                /// Attaches `transport` to a dual session in the initial phase.
                 #[must_use]
                 pub const fn with_transport(transport: Transport) -> Self {
                     Self { transport, _state: ::core::marker::PhantomData }
@@ -652,6 +705,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl<Transport, Phase, Cleanliness> TypedSession<Transport, Phase, Cleanliness> {
+                /// Replaces the transport representation without changing protocol indices.
                 #[must_use]
                 pub fn map_transport<Next>(
                     self,
@@ -663,6 +717,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     }
                 }
 
+                /// Deliberately leaves the generated typestate API and returns its transport.
                 #[must_use]
                 pub fn into_transport(self) -> Transport {
                     self.transport
@@ -670,6 +725,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
 
             impl<Transport, Phase, Cleanliness> DualTypedSession<Transport, Phase, Cleanliness> {
+                /// Replaces the dual transport representation without changing protocol indices.
                 #[must_use]
                 pub fn map_transport<Next>(
                     self,
@@ -681,6 +737,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     }
                 }
 
+                /// Deliberately leaves the generated dual API and returns its transport.
                 #[must_use]
                 pub fn into_transport(self) -> Transport {
                     self.transport

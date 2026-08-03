@@ -6,6 +6,7 @@ pub mod demux;
 pub mod pre_startup;
 pub mod session;
 pub mod startup;
+pub mod tls;
 pub mod transport;
 
 use std::marker::PhantomData;

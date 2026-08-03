@@ -25,6 +25,8 @@ The crate currently includes:
 
 Security assumptions, safe defaults, and downstream responsibilities are
 recorded in [`SECURITY.md`](SECURITY.md).
+The required server matrix is documented in
+[`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md).
 
 See [`MIGRATION.md`](MIGRATION.md) for moving a runtime-enum proxy to the typed
 API. Public API documentation is built with warnings denied in CI.
@@ -145,8 +147,8 @@ cargo test --test postgres_container -- --ignored
 ```
 
 Set `PG_PROTO_POSTGRES_VERSION` to `14`, `15`, `16`, `17`, or `18` to select
-the official image tag. CI runs the audited CipherStash support matrix (14–17);
-18 remains an additional forward-compatibility target.
+the official image tag. Versions 14–18 are the required support matrix and each
+runs the complete live suite in CI.
 
 Layer 2 covers the client and server pre-startup, authentication, query, reset,
 error-draining, and COPY grammars. One declaration emits transport-carrying

@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Matches the audited CipherStash Proxy CI support declaration.
-        version: [14, 15, 16, 17]
+        # Required pg-proto and next-Proxy compatibility contract.
+        version: [14, 15, 16, 17, 18]
     env:
       PG_PROTO_POSTGRES_VERSION: ${{ matrix.version }}
     steps:

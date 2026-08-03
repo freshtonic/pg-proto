@@ -152,8 +152,9 @@ neutral composition harnesses and examples.
 - [x] Add recorded traffic fixtures for every supported authentication and query
   family, with sensitive fields removed.
 - [x] Run compatibility tests across every PostgreSQL major version supported by
-  CipherStash. The complete ten-test live suite passed locally on official 14,
-  15, 16, and 17 Alpine images on 4 August 2026; CI preserves that matrix.
+  the next CipherStash Proxy. The complete ten-test live suite passed locally on
+  official 14, 15, 16, 17, and 18 Alpine images on 4 August 2026; CI preserves
+  that required matrix.
 - [x] Add fuzzing for both directional codecs, pre-startup decoding, SCRAM, and
   runtime FSM projection.
 - [x] Establish performance and monomorphisation budgets against pgcat/proxy
@@ -207,7 +208,5 @@ library boundary established above.
   typed protocol loops are complete.
 - [ ] Implement CipherStash-specific routing, EQL transformation, credential
   management, and pool policy in the next Proxy, using `pg-proto` as a library.
-- [ ] Add PostgreSQL 18 to the required compatibility matrix when CipherStash
-  declares it supported; it remains an available forward-compatibility target.
 - [ ] Pursue formal multiparty/proxy verification if its additional assurance
   justifies the research and maintenance cost.

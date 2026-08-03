@@ -12,6 +12,7 @@ use crate::{
         FunctionCall, Parse, TransactionStatus,
     },
     demux::SessionItem,
+    grammar::frontend,
     pre_startup::Terminated,
     replication::{BackendReplication, FrontendReplication},
 };
@@ -243,14 +244,18 @@ impl<S, C> Conn<S, FunctionCalling, C> {
         self,
         message: BackendMessage,
     ) -> Result<FunctionCallTransition<S, C>, (Self, BackendMessage)> {
-        match message {
-            BackendMessage::FunctionCallResponse(value) => {
-                Ok(FunctionCallTransition::Response(self.transition(), value))
-            }
-            BackendMessage::ErrorResponse(error) => {
+        match (
+            frontend::project_external(frontend::RuntimeState::FunctionCalling, &message),
+            message,
+        ) {
+            (
+                Some(frontend::Event::FunctionResponse),
+                BackendMessage::FunctionCallResponse(value),
+            ) => Ok(FunctionCallTransition::Response(self.transition(), value)),
+            (Some(frontend::Event::Error), BackendMessage::ErrorResponse(error)) => {
                 Ok(FunctionCallTransition::Error(self.transition(), error))
             }
-            other => Err((self, other)),
+            (_, other) => Err((self, other)),
         }
     }
 }
@@ -394,34 +399,47 @@ impl<S, C> Conn<S, SimpleQuery, C> {
     ///
     /// Returns the unchanged connection and item if it is illegal in this phase.
     pub fn offer(self, item: SessionItem) -> Result<SimpleTransition<S, C>, (Self, SessionItem)> {
-        match item {
-            SessionItem::Message(BackendMessage::CopyInResponse(response)) => {
-                Ok(SimpleTransition::CopyIn(self.transition(), response))
-            }
-            SessionItem::Message(BackendMessage::CopyOutResponse(response)) => {
-                Ok(SimpleTransition::CopyOut(self.transition(), response))
-            }
-            SessionItem::Message(BackendMessage::CopyBothResponse(response)) => {
-                Ok(SimpleTransition::CopyBoth(self.transition(), response))
-            }
-            SessionItem::ReadyForQuery {
-                status,
-                parameters_changed,
-            } => Ok(SimpleTransition::Ready(ready_state(
+        match (
+            project_session_item(frontend::RuntimeState::Simple, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::CopyIn),
+                SessionItem::Message(BackendMessage::CopyInResponse(response)),
+            ) => Ok(SimpleTransition::CopyIn(self.transition(), response)),
+            (
+                Some(frontend::Event::CopyOut),
+                SessionItem::Message(BackendMessage::CopyOutResponse(response)),
+            ) => Ok(SimpleTransition::CopyOut(self.transition(), response)),
+            (
+                Some(frontend::Event::CopyBoth),
+                SessionItem::Message(BackendMessage::CopyBothResponse(response)),
+            ) => Ok(SimpleTransition::CopyBoth(self.transition(), response)),
+            (
+                Some(frontend::Event::Ready),
+                SessionItem::ReadyForQuery {
+                    status,
+                    parameters_changed,
+                },
+            ) => Ok(SimpleTransition::Ready(ready_state(
                 self,
                 status,
                 parameters_changed,
             ))),
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                Ok(SimpleTransition::Error(self.transition(), error))
-            }
-            item @ (SessionItem::CommandComplete { .. }
-            | SessionItem::Message(
-                BackendMessage::RowDescription(_)
-                | BackendMessage::DataRow(_)
-                | BackendMessage::EmptyQueryResponse,
-            )) => Ok(SimpleTransition::Continue(self, item)),
-            item => Err((self, item)),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => Ok(SimpleTransition::Error(self.transition(), error)),
+            (
+                Some(frontend::Event::Continue),
+                item @ (SessionItem::CommandComplete { .. }
+                | SessionItem::Message(
+                    BackendMessage::RowDescription(_)
+                    | BackendMessage::DataRow(_)
+                    | BackendMessage::EmptyQueryResponse,
+                )),
+            ) => Ok(SimpleTransition::Continue(self, item)),
+            (_, item) => Err((self, item)),
         }
     }
 }
@@ -467,11 +485,15 @@ impl<S, C> Conn<S, CopyIn, C> {
     ///
     /// Returns the live connection and item when it is not an error response.
     pub fn offer(self, item: SessionItem) -> Result<CopyInTransition<S, C>, (Self, SessionItem)> {
-        match item {
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                Ok(CopyInTransition::Error(self.transition(), error))
-            }
-            item => Err((self, item)),
+        match (
+            project_session_item(frontend::RuntimeState::CopyIn, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => Ok(CopyInTransition::Error(self.transition(), error)),
+            (_, item) => Err((self, item)),
         }
     }
 }
@@ -486,17 +508,23 @@ impl<S, C> Conn<S, CopyBothClientDone, C> {
         self,
         item: SessionItem,
     ) -> Result<CopyBothClientDoneReceive<S, C>, (Self, SessionItem)> {
-        match item {
-            SessionItem::Message(BackendMessage::CopyData(data)) => {
-                Ok(CopyBothClientDoneReceive::Data(self, data))
-            }
-            SessionItem::Message(BackendMessage::CopyDone) => {
-                Ok(CopyBothClientDoneReceive::Done(self.transition()))
-            }
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                Ok(CopyBothClientDoneReceive::Error(self.transition(), error))
-            }
-            item => Err((self, item)),
+        match (
+            project_session_item(frontend::RuntimeState::CopyBothClientDone, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::ReceiveCopyData),
+                SessionItem::Message(BackendMessage::CopyData(data)),
+            ) => Ok(CopyBothClientDoneReceive::Data(self, data)),
+            (
+                Some(frontend::Event::ReceiveCopyDone),
+                SessionItem::Message(BackendMessage::CopyDone),
+            ) => Ok(CopyBothClientDoneReceive::Done(self.transition())),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => Ok(CopyBothClientDoneReceive::Error(self.transition(), error)),
+            (_, item) => Err((self, item)),
         }
     }
 }
@@ -549,17 +577,22 @@ impl<S, C> Conn<S, CopyOut, C> {
     ///
     /// Returns the unchanged connection and item when it is illegal in COPY OUT.
     pub fn offer(self, item: SessionItem) -> Result<CopyOutTransition<S, C>, (Self, SessionItem)> {
-        match item {
-            SessionItem::Message(BackendMessage::CopyData(data)) => {
-                Ok(CopyOutTransition::Data(self, data))
-            }
-            SessionItem::Message(BackendMessage::CopyDone) => {
+        match (
+            project_session_item(frontend::RuntimeState::CopyOut, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::CopyData),
+                SessionItem::Message(BackendMessage::CopyData(data)),
+            ) => Ok(CopyOutTransition::Data(self, data)),
+            (Some(frontend::Event::CopyDone), SessionItem::Message(BackendMessage::CopyDone)) => {
                 Ok(CopyOutTransition::Done(self.transition()))
             }
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                Ok(CopyOutTransition::Error(self.transition(), error))
-            }
-            item => Err((self, item)),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => Ok(CopyOutTransition::Error(self.transition(), error)),
+            (_, item) => Err((self, item)),
         }
     }
 }
@@ -590,17 +623,23 @@ impl<S, C> Conn<S, CopyBoth, C> {
     ///
     /// Returns the unchanged connection and item when it is illegal in COPY BOTH.
     pub fn offer(self, item: SessionItem) -> Result<CopyBothReceive<S, C>, (Self, SessionItem)> {
-        match item {
-            SessionItem::Message(BackendMessage::CopyData(data)) => {
-                Ok(CopyBothReceive::Data(self, data))
-            }
-            SessionItem::Message(BackendMessage::CopyDone) => {
-                Ok(CopyBothReceive::Done(self.transition()))
-            }
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                Ok(CopyBothReceive::Error(self.transition(), error))
-            }
-            item => Err((self, item)),
+        match (
+            project_session_item(frontend::RuntimeState::CopyBoth, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::ReceiveCopyData),
+                SessionItem::Message(BackendMessage::CopyData(data)),
+            ) => Ok(CopyBothReceive::Data(self, data)),
+            (
+                Some(frontend::Event::ReceiveCopyDone),
+                SessionItem::Message(BackendMessage::CopyDone),
+            ) => Ok(CopyBothReceive::Done(self.transition())),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => Ok(CopyBothReceive::Error(self.transition(), error)),
+            (_, item) => Err((self, item)),
         }
     }
 }
@@ -626,12 +665,18 @@ impl<S, C> CopyBothReceive<S, C> {
 impl<S, C> Conn<S, Draining, C> {
     /// `ReadyForQuery` is the sole exit from error draining.
     pub fn offer(self, item: SessionItem) -> DrainingTransition<S, C> {
-        match item {
-            SessionItem::ReadyForQuery {
-                status,
-                parameters_changed,
-            } => DrainingTransition::Ready(ready_state(self, status, parameters_changed)),
-            item => DrainingTransition::Continue(self, item),
+        match (
+            project_session_item(frontend::RuntimeState::Draining, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::Ready),
+                SessionItem::ReadyForQuery {
+                    status,
+                    parameters_changed,
+                },
+            ) => DrainingTransition::Ready(ready_state(self, status, parameters_changed)),
+            (_, item) => DrainingTransition::Continue(self, item),
         }
     }
 }
@@ -639,15 +684,22 @@ impl<S, C> Conn<S, Draining, C> {
 impl<S, C> Conn<S, AwaitingReady, C> {
     /// Consumes responses after Sync until `ReadyForQuery` proves readiness.
     pub fn offer(self, item: SessionItem) -> AwaitingReadyTransition<S, C> {
-        match item {
-            SessionItem::ReadyForQuery {
-                status,
-                parameters_changed,
-            } => AwaitingReadyTransition::Ready(ready_state(self, status, parameters_changed)),
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                AwaitingReadyTransition::Error(self.transition(), error)
-            }
-            item => AwaitingReadyTransition::Continue(self, item),
+        match (
+            project_session_item(frontend::RuntimeState::AwaitingReady, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::Ready),
+                SessionItem::ReadyForQuery {
+                    status,
+                    parameters_changed,
+                },
+            ) => AwaitingReadyTransition::Ready(ready_state(self, status, parameters_changed)),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => AwaitingReadyTransition::Error(self.transition(), error),
+            (_, item) => AwaitingReadyTransition::Continue(self, item),
         }
     }
 }
@@ -656,14 +708,20 @@ impl<S> Conn<S, Resetting, Dirty> {
     /// Waits for evidence that `DISCARD ALL` itself completed.
     #[must_use]
     pub fn offer(self, item: SessionItem) -> ResettingTransition<S> {
-        match item {
-            SessionItem::CommandComplete { tag, .. } if tag == b"DISCARD ALL".as_slice() => {
+        match (
+            project_session_item(frontend::RuntimeState::Resetting, &item),
+            item,
+        ) {
+            (Some(frontend::Event::DiscardComplete), SessionItem::CommandComplete { tag, .. })
+                if tag == b"DISCARD ALL".as_slice() =>
+            {
                 ResettingTransition::Complete(self.transition())
             }
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                ResettingTransition::Error(self.transition(), error)
-            }
-            item => ResettingTransition::Continue(self, item),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => ResettingTransition::Error(self.transition(), error),
+            (_, item) => ResettingTransition::Continue(self, item),
         }
     }
 }
@@ -672,23 +730,33 @@ impl<S> Conn<S, ResetComplete, Dirty> {
     /// Restores `Pristine` only from idle readiness and the startup parameter baseline.
     #[must_use]
     pub fn offer(self, item: SessionItem) -> ResetCompleteTransition<S> {
-        match item {
-            SessionItem::ReadyForQuery {
-                status: TransactionStatus::Idle,
-                parameters_changed: false,
-            } => ResetCompleteTransition::Ready(self.transition()),
-            SessionItem::ReadyForQuery {
-                status,
-                parameters_changed,
-            } => ResetCompleteTransition::Dirty {
+        match (
+            project_session_item(frontend::RuntimeState::ResetComplete, &item),
+            item,
+        ) {
+            (
+                Some(frontend::Event::ReadyClean),
+                SessionItem::ReadyForQuery {
+                    status: TransactionStatus::Idle,
+                    parameters_changed: false,
+                },
+            ) => ResetCompleteTransition::Ready(self.transition()),
+            (
+                Some(frontend::Event::ReadyClean | frontend::Event::ReadyDirty),
+                SessionItem::ReadyForQuery {
+                    status,
+                    parameters_changed,
+                },
+            ) => ResetCompleteTransition::Dirty {
                 conn: self.transition(),
                 status,
                 parameters_changed,
             },
-            SessionItem::Message(BackendMessage::ErrorResponse(error)) => {
-                ResetCompleteTransition::Error(self.transition(), error)
-            }
-            item => ResetCompleteTransition::Continue(self, item),
+            (
+                Some(frontend::Event::Error),
+                SessionItem::Message(BackendMessage::ErrorResponse(error)),
+            ) => ResetCompleteTransition::Error(self.transition(), error),
+            (_, item) => ResetCompleteTransition::Continue(self, item),
         }
     }
 }
@@ -697,6 +765,21 @@ impl<S, P> Conn<S, P, Pristine> {
     /// Conservatively records session-local state without changing protocol phase.
     pub fn mark_dirty(self) -> Conn<S, P, Dirty> {
         self.transition()
+    }
+}
+
+fn project_session_item(
+    state: frontend::RuntimeState,
+    item: &SessionItem,
+) -> Option<frontend::Event> {
+    match item {
+        SessionItem::Message(message) => frontend::project_external(state, message),
+        SessionItem::CommandComplete { tag, .. } => {
+            frontend::project_external(state, &BackendMessage::CommandComplete(tag.clone()))
+        }
+        SessionItem::ReadyForQuery { status, .. } => {
+            frontend::project_external(state, &BackendMessage::ReadyForQuery(*status))
+        }
     }
 }
 

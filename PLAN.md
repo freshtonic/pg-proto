@@ -84,8 +84,8 @@ work using that feature is complete.
         generated projection.
     - [x] Generate upstream/client-role wire projection for simple and extended
       queries, draining, reset, function call, and all COPY directions.
-    - [ ] Route handwritten upstream response classification through generated
-      projection.
+    - [x] Route handwritten upstream simple-query, function-call, draining,
+      reset, and COPY response classification through generated projection.
 - [ ] Add exhaustive/property-generated valid and invalid sequence testing and
   differential checks between generated and handwritten implementations.
   - [x] Exhaustively enumerate generated runtime valid/invalid sequences through

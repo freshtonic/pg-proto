@@ -504,3 +504,52 @@ async fn copy_out_nested_session_matches_postgres_18() -> Result<(), Box<dyn Err
     let _transport = ready.release();
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn copy_in_nested_session_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_init_sql(b"CREATE TABLE copy_test(value integer);".to_vec())
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let ready = trust_ready(port).await?;
+    let (mut query, frame) = ready.push_query(b"COPY copy_test FROM STDIN")?;
+    query.push_frame(frame)?;
+    query.flush().await?;
+
+    let copy = loop {
+        let item = query.receive().await?;
+        match query.offer(item) {
+            Ok(SimpleTransition::Continue(next, _)) | Err((next, _)) => query = next,
+            Ok(SimpleTransition::CopyIn(copy, response)) => {
+                assert_eq!(response.column_formats, [0]);
+                break copy;
+            }
+            Ok(_) => return Err("COPY IN did not enter its nested session".into()),
+        }
+    };
+    let (mut copy, data) = copy.push_copy_data(Bytes::from_static(b"1\n2\n"));
+    copy.push_frame(data)?;
+    let (mut awaiting, done) = copy.push_copy_done();
+    awaiting.push_frame(done)?;
+    awaiting.flush().await?;
+
+    let ready = loop {
+        let item = awaiting.receive().await?;
+        match awaiting.offer(item) {
+            AwaitingReadyTransition::Continue(next, _) => awaiting = next,
+            AwaitingReadyTransition::Ready(ReadyState::Clean(ready)) => break ready,
+            AwaitingReadyTransition::Ready(ReadyState::Dirty { .. }) => {
+                return Err("COPY IN left a dirty connection".into());
+            }
+            AwaitingReadyTransition::Error(_, error) => {
+                return Err(format!("COPY IN failed: {error:?}").into());
+            }
+        }
+    };
+    let _transport = ready.release();
+    Ok(())
+}

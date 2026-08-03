@@ -289,6 +289,15 @@ impl<S, C> Conn<S, CopyIn, C> {
     pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
+
+    /// Aborts COPY IN with a frontend error string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message contains a NUL byte.
+    pub fn push_copy_fail(self, message: &[u8]) -> io::Result<(Conn<S, AwaitingReady, C>, Frame)> {
+        Ok((self.transition(), cstr_frame(b'f', message)?))
+    }
 }
 
 impl<S, C> Conn<S, CopyOut, C> {

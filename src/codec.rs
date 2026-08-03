@@ -40,11 +40,13 @@ pub struct PgCodec<D> {
 }
 
 const MAX_PROTOCOL_FRAME_LEN: usize = i32::MAX as usize + 1;
+/// Default total tagged-frame limit, including tag and length.
+pub const DEFAULT_MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 impl<D> Default for PgCodec<D> {
     fn default() -> Self {
         Self {
-            max_frame_len: MAX_PROTOCOL_FRAME_LEN,
+            max_frame_len: DEFAULT_MAX_FRAME_LEN,
             _direction: PhantomData,
         }
     }
@@ -156,7 +158,7 @@ fn decode_frame(source: &mut BytesMut, max_frame_len: usize) -> io::Result<Optio
 }
 
 /// Frontend messages whose contents a rewriting proxy must retain structurally.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum FrontendMessage {
     Parse(Parse),
     Bind(Bind),
@@ -173,6 +175,32 @@ pub enum FrontendMessage {
     CopyFail(Bytes),
     /// Context determines whether this is password, GSS, or a SASL response.
     PasswordResponse(Bytes),
+}
+
+impl std::fmt::Debug for FrontendMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(value) => formatter.debug_tuple("Parse").field(value).finish(),
+            Self::Bind(value) => formatter.debug_tuple("Bind").field(value).finish(),
+            Self::Describe(value) => formatter.debug_tuple("Describe").field(value).finish(),
+            Self::Close(value) => formatter.debug_tuple("Close").field(value).finish(),
+            Self::Execute(value) => formatter.debug_tuple("Execute").field(value).finish(),
+            Self::FunctionCall(value) => {
+                formatter.debug_tuple("FunctionCall").field(value).finish()
+            }
+            Self::Query(value) => formatter.debug_tuple("Query").field(value).finish(),
+            Self::Flush => formatter.write_str("Flush"),
+            Self::Sync => formatter.write_str("Sync"),
+            Self::Terminate => formatter.write_str("Terminate"),
+            Self::CopyData(value) => formatter.debug_tuple("CopyData").field(value).finish(),
+            Self::CopyDone => formatter.write_str("CopyDone"),
+            Self::CopyFail(value) => formatter.debug_tuple("CopyFail").field(value).finish(),
+            Self::PasswordResponse(value) => formatter
+                .debug_tuple("PasswordResponse")
+                .field(&format_args!("[REDACTED; {} bytes]", value.len()))
+                .finish(),
+        }
+    }
 }
 
 impl FrontendMessage {
@@ -1258,6 +1286,18 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn default_frame_limit_is_network_safe_and_configurable() {
+        let mut input = BytesMut::from(&[b'Q', 1, 0, 0, 4][..]);
+        let error = PgCodec::<Frontend>::default()
+            .decode(&mut input)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("configured frame limit"));
+
+        assert!(PgCodec::<Frontend>::with_max_frame_len(MAX_PROTOCOL_FRAME_LEN).is_ok());
     }
 
     #[test]

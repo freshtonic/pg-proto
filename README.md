@@ -23,6 +23,9 @@ The crate currently includes:
 - compile-fail tests for illegal protocol transitions; and
 - Testcontainers coverage against the official PostgreSQL 18 image.
 
+Security assumptions, safe defaults, and downstream responsibilities are
+recorded in [`SECURITY.md`](SECURITY.md).
+
 The frontend and backend roles deliberately do not share an authentication
 mechanism. A proxy can terminate client authentication with one policy while it
 independently authenticates to the upstream server with another.

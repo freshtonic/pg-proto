@@ -54,10 +54,20 @@ pub enum ServerProtocolOffer<S, C> {
 }
 
 /// A decoded SASL initial response selected by the client.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct SaslInitialResponse {
     pub mechanism: Bytes,
     pub response: Option<Bytes>,
+}
+
+impl std::fmt::Debug for SaslInitialResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SaslInitialResponse")
+            .field("mechanism", &self.mechanism)
+            .field("response", &self.response.as_ref().map(Bytes::len))
+            .finish()
+    }
 }
 
 /// A rejected frontend message paired with the unchanged authentication state.

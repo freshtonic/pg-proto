@@ -46,10 +46,20 @@ pub struct OrderedAsyncEvent {
     pub event: AsyncEvent,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct CancelKey {
     pub process_id: u32,
     pub secret_key: Bytes,
+}
+
+impl std::fmt::Debug for CancelKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CancelKey")
+            .field("process_id", &self.process_id)
+            .field("secret_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// A protocol-advancing message, optionally closing a command boundary.

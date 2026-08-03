@@ -156,7 +156,7 @@ neutral composition harnesses and examples.
   runtime FSM projection.
 - [x] Establish performance and monomorphisation budgets against pgcat/proxy
   workloads.
-- [ ] Complete security review of TLS verification, channel binding, credential
+- [x] Complete security review of TLS verification, channel binding, credential
   handling, frame limits, cancellation, and malformed-message behaviour.
 - [ ] Publish API documentation, migration guidance, and a proxy integration
   example.

@@ -20,10 +20,25 @@ pub trait GssEncUpgrade<Stream> {
 }
 
 /// One output from a recursive GSSAPI, Kerberos, or SSPI token engine.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum TokenStep {
     Continue(Bytes),
     Complete(Option<Bytes>),
+}
+
+impl std::fmt::Debug for TokenStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Continue(token) => formatter
+                .debug_tuple("Continue")
+                .field(&format_args!("[REDACTED; {} bytes]", token.len()))
+                .finish(),
+            Self::Complete(token) => formatter
+                .debug_tuple("Complete")
+                .field(&token.as_ref().map(Bytes::len))
+                .finish(),
+        }
+    }
 }
 
 /// Platform-neutral token exchange consumed by the typed authentication loop.

@@ -1,0 +1,11 @@
+# Sanitised PostgreSQL v3 simple, extended, and COPY frames
+query frontend 510000000d73656c656374203100
+parse frontend 50000000110073656c656374202431000000
+bind frontend 420000000c0000000000000000
+describe frontend 44000000065000
+sync frontend 5300000004
+copy_data frontend 6400000007616263
+copy_in backend 4700000007000000
+copy_out backend 4800000007000000
+copy_both backend 5700000007000000
+ready backend 5a0000000549

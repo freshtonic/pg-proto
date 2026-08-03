@@ -147,7 +147,7 @@ neutral composition harnesses and examples.
 - [x] Unit tests over constructed and recorded-style byte streams.
 - [x] Compile-fail tests for key illegal transitions and resource misuse.
 - [x] Testcontainers tests against the official PostgreSQL 18 image.
-- [ ] Add recorded traffic fixtures for every supported authentication and query
+- [x] Add recorded traffic fixtures for every supported authentication and query
   family, with sensitive fields removed.
 - [ ] Run compatibility tests across every PostgreSQL major version supported by
   CipherStash.

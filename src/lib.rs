@@ -6,6 +6,7 @@ pub mod demux;
 pub mod pre_startup;
 pub mod session;
 pub mod startup;
+pub mod transport;
 
 use std::marker::PhantomData;
 
@@ -34,6 +35,10 @@ impl<Transport, Phase, Cleanliness> Conn<Transport, Phase, Cleanliness> {
 
     pub(crate) const fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    pub(crate) const fn transport_mut(&mut self) -> &mut Transport {
+        &mut self.transport
     }
 }
 

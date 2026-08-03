@@ -6,8 +6,13 @@ use bytes::{Buf, Bytes};
 
 use crate::{
     Conn,
-    codec::{Authentication, BackendMessage, Frame, FrontendMessage},
+    auth::Ready,
+    codec::{
+        Authentication, BackendMessage, Frame, FrontendMessage, NegotiateProtocolVersion,
+        TransactionStatus,
+    },
     pre_startup::Startup,
+    startup::ProtocolVersion,
 };
 
 #[derive(Debug)]
@@ -246,6 +251,74 @@ impl<S, C> Conn<S, ServerAuthResponse, C> {
     }
 }
 
+impl<S, C> Conn<S, ServerStartupReady, C> {
+    /// Emits a startup parameter while remaining before `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either value contains a NUL byte.
+    pub fn parameter_status(self, name: Bytes, value: Bytes) -> io::Result<(Self, Frame)> {
+        Ok((
+            self,
+            BackendMessage::ParameterStatus { name, value }.to_frame()?,
+        ))
+    }
+
+    /// Emits the proxy-minted cancellation key exposed to this client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is outside the protocol's 4–256 byte range.
+    pub fn backend_key_data(self, process_id: u32, secret_key: Bytes) -> io::Result<(Self, Frame)> {
+        if !(4..=256).contains(&secret_key.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cancellation key length is outside 4..=256",
+            ));
+        }
+        Ok((
+            self,
+            BackendMessage::BackendKeyData {
+                process_id,
+                secret_key,
+            }
+            .to_frame()?,
+        ))
+    }
+
+    /// Responds to unsupported protocol 3.1/3.2 startup options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an option name contains a NUL byte or counts overflow.
+    pub fn negotiate_protocol(
+        self,
+        newest: ProtocolVersion,
+        unsupported_options: Vec<Bytes>,
+    ) -> io::Result<(Self, Frame)> {
+        Ok((
+            self,
+            BackendMessage::NegotiateProtocolVersion(NegotiateProtocolVersion {
+                newest,
+                unsupported_options,
+            })
+            .to_frame()?,
+        ))
+    }
+
+    /// Completes startup with an idle `ReadyForQuery`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the fixed message cannot be encoded.
+    pub fn ready(self) -> io::Result<(Conn<S, Ready, C>, Frame)> {
+        Ok((
+            self.transition(),
+            BackendMessage::ReadyForQuery(TransactionStatus::Idle).to_frame()?,
+        ))
+    }
+}
+
 fn authentication_frame(authentication: Authentication) -> io::Result<Frame> {
     BackendMessage::Authentication(authentication).to_frame()
 }
@@ -335,5 +408,25 @@ mod tests {
         assert_eq!(response, Bytes::from_static(b"two"));
         let (auth, _) = sasl.finish(Bytes::from_static(b"verified")).unwrap();
         auth.into_transport();
+    }
+
+    #[test]
+    fn startup_completion_mints_keys_and_requires_ready() {
+        let startup: Conn<(), Startup, Pristine> = Conn::new(()).transition();
+        let (startup_ready, _) = startup.begin_server_auth().authentication_ok().unwrap();
+        let (startup_ready, parameter) = startup_ready
+            .parameter_status(
+                Bytes::from_static(b"server_version"),
+                Bytes::from_static(b"18"),
+            )
+            .unwrap();
+        assert_eq!(parameter.tag, b'S');
+        let (startup_ready, key) = startup_ready
+            .backend_key_data(42, Bytes::from_static(b"secret-key"))
+            .unwrap();
+        assert_eq!(key.tag, b'K');
+        let (ready, frame) = startup_ready.ready().unwrap();
+        assert_eq!(frame.body, Bytes::from_static(b"I"));
+        ready.into_transport();
     }
 }

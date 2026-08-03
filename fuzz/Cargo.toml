@@ -1,0 +1,44 @@
+[package]
+name = "pg-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = "1.12.1"
+libfuzzer-sys = "0.4"
+pg-proto = { path = ".." }
+tokio-util = { version = "0.7.19", features = ["codec"] }
+
+[[bin]]
+name = "frontend_codec"
+path = "fuzz_targets/frontend_codec.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "backend_codec"
+path = "fuzz_targets/backend_codec.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "pre_startup"
+path = "fuzz_targets/pre_startup.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "scram"
+path = "fuzz_targets/scram.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "runtime_fsm"
+path = "fuzz_targets/runtime_fsm.rs"
+test = false
+doc = false

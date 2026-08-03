@@ -16,10 +16,7 @@ fn sanitised_authentication_capture_covers_supported_families() {
                         "cleartext",
                         BackendMessage::Authentication(Authentication::CleartextPassword),
                     )
-                    | (
-                        "kerberos_v5",
-                        BackendMessage::Authentication(Authentication::KerberosV5),
-                    )
+                    | ("kerberos_v5", BackendMessage::Authentication(Authentication::KerberosV5))
                     | ("md5", BackendMessage::Authentication(Authentication::Md5Password { .. }))
                     | ("gss", BackendMessage::Authentication(Authentication::Gss))
                     | (

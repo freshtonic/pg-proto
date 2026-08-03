@@ -7,6 +7,7 @@ description = "Session-typed PostgreSQL wire protocol"
 
 [workspace]
 members = ["pg-proto-fsm"]
+exclude = ["fuzz"]
 resolver = "3"
 
 [lib]

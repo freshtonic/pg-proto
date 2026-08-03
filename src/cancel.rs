@@ -6,6 +6,50 @@ use bytes::Bytes;
 
 use crate::demux::CancelKey;
 
+/// Application policy for minting client-facing cancellation keys.
+///
+/// Implementations may use cryptographic randomness, an external allocator, or
+/// another process-specific strategy. The protocol library does not prescribe
+/// key lifecycle or storage.
+pub trait CancelKeyMint {
+    type Error;
+
+    /// Mints a key to expose in client-facing `BackendKeyData`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined allocation or entropy error.
+    fn mint_cancel_key(&mut self) -> Result<CancelKey, Self::Error>;
+}
+
+/// Application-owned translation policy for out-of-band cancellation keys.
+///
+/// A proxy can implement this over local memory, shared storage, or routing
+/// metadata. [`CancelKeyMap`] is deliberately only a small reference
+/// implementation.
+pub trait CancelKeyRegistry {
+    type Error;
+
+    /// Observes the association between a client-facing and upstream key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined validation, collision, or storage
+    /// error.
+    fn register_cancel_key(
+        &mut self,
+        client: CancelKey,
+        upstream: CancelKey,
+    ) -> Result<(), Self::Error>;
+
+    /// Resolves an incoming client cancellation request without borrowing the
+    /// registry, so the result can safely cross an asynchronous boundary.
+    fn resolve_cancel_key(&self, client: &CancelKey) -> Option<CancelKey>;
+
+    /// Removes an association when either side of a session is detached.
+    fn remove_cancel_key(&mut self, client: &CancelKey) -> Option<CancelKey>;
+}
+
 /// Client-facing cancellation keys mapped to their current upstream keys.
 #[derive(Debug, Default)]
 pub struct CancelKeyMap {
@@ -70,6 +114,26 @@ impl CancelKeyMap {
     }
 }
 
+impl CancelKeyRegistry for CancelKeyMap {
+    type Error = RegisterError;
+
+    fn register_cancel_key(
+        &mut self,
+        client: CancelKey,
+        upstream: CancelKey,
+    ) -> Result<(), Self::Error> {
+        self.register(client, upstream)
+    }
+
+    fn resolve_cancel_key(&self, client: &CancelKey) -> Option<CancelKey> {
+        self.mappings.get(client).cloned()
+    }
+
+    fn remove_cancel_key(&mut self, client: &CancelKey) -> Option<CancelKey> {
+        self.remove(client)
+    }
+}
+
 fn validate_key(key: &CancelKey) -> Result<(), usize> {
     if (4..=256).contains(&key.secret_key.len()) {
         Ok(())
@@ -119,5 +183,24 @@ mod tests {
             map.register(client, upstream),
             Err(RegisterError::InvalidClientKeyLength(3))
         );
+    }
+
+    #[test]
+    fn reference_map_can_be_used_through_the_policy_hook() {
+        let client = CancelKey {
+            process_id: 11,
+            secret_key: Bytes::from_static(b"client"),
+        };
+        let upstream = CancelKey {
+            process_id: 22,
+            secret_key: Bytes::from_static(b"server"),
+        };
+        let registry: &mut dyn CancelKeyRegistry<Error = RegisterError> = &mut CancelKeyMap::new();
+
+        registry
+            .register_cancel_key(client.clone(), upstream.clone())
+            .unwrap();
+        assert_eq!(registry.resolve_cancel_key(&client), Some(upstream.clone()));
+        assert_eq!(registry.remove_cancel_key(&client), Some(upstream));
     }
 }

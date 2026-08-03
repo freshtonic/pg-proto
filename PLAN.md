@@ -127,7 +127,7 @@ neutral composition harnesses and examples.
   downstream SQL and result rewriting, demonstrated by a non-CipherStash example.
 - [ ] Expose prepared-statement and portal namespace primitives that a downstream
   router or rewriter can own, without implementing routing policy.
-- [ ] Expose cancellation-key minting, observation, and mapping hooks without
+- [x] Expose cancellation-key minting, observation, and mapping hooks without
   embedding a production registry or cancellation policy.
 - [ ] Expose ordered forwarding hooks for notices, notifications, parameter
   statuses, and command attribution without prescribing their destination.

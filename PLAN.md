@@ -117,4 +117,7 @@ work using that feature is complete.
   transitions, beginning with frontend extended-query construction.
   - [x] Add typed payload syntax and state-preserving fallible handlers to the
     proc macro and railroad output.
-  - [ ] Apply payloads to frontend extended-query transitions.
+  - [x] Apply payloads to frontend Parse, Bind, Describe, Execute, and Close
+    transitions, including state-preserving reconstruction failure.
+  - [ ] Apply payloads to frontend query, COPY, function-call, and authentication
+    transitions.

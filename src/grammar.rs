@@ -25,19 +25,19 @@ protocol! {
             Error(error) => Draining,
         }
         Building internal {
-            Parse(parse) => Building [Dirty],
-            Describe(describe) => Building,
-            Bind(bind) => BoundBuilding [Dirty],
-            Close(close) => Building,
+            Parse(parse: crate::codec::Parse) => Building [Dirty],
+            Describe(describe: crate::codec::Describe) => Building,
+            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty],
+            Close(close: crate::codec::Close) => Building,
             Flush(flush) => Building,
             Sync(sync) => AwaitingReady,
         }
         BoundBuilding internal {
-            Parse(parse) => BoundBuilding [Dirty],
-            Describe(describe) => BoundBuilding,
-            Bind(bind) => BoundBuilding [Dirty],
-            Execute(execute) => BoundBuilding,
-            Close(close) => BoundBuilding,
+            Parse(parse: crate::codec::Parse) => BoundBuilding [Dirty],
+            Describe(describe: crate::codec::Describe) => BoundBuilding,
+            Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty],
+            Execute(execute: crate::codec::Execute) => BoundBuilding,
+            Close(close: crate::codec::Close) => BoundBuilding,
             Flush(flush) => BoundBuilding,
             Sync(sync) => AwaitingReady,
         }
@@ -691,6 +691,50 @@ mod tests {
         let clean: frontend::TypedSession<(), frontend::Ready, frontend::Pristine> =
             dirty.reset().discard_complete().ready_clean();
         assert_eq!(clean.into_transport(), ());
+    }
+
+    #[test]
+    fn generated_frontend_parse_payload_is_inspectable_and_fallible() {
+        #[derive(Debug)]
+        struct Clean;
+
+        let ready: frontend::TypedSession<Vec<crate::codec::Frame>, frontend::Ready, Clean> =
+            frontend::TypedSession::with_transport(Vec::new());
+        let parse = Parse {
+            statement: Bytes::from_static(b"statement"),
+            query: Bytes::from_static(b"select encrypted_column"),
+            parameter_types: vec![23],
+        };
+        let (building, query): (
+            frontend::TypedSession<Vec<crate::codec::Frame>, frontend::Building, frontend::Dirty>,
+            Bytes,
+        ) = ready
+            .begin_extended()
+            .parse(parse, |frames, message| {
+                let query = message.query.clone();
+                frames.push(message.to_frame()?);
+                Ok::<_, std::io::Error>(query)
+            })
+            .unwrap();
+        assert_eq!(query, Bytes::from_static(b"select encrypted_column"));
+        assert_eq!(building.into_transport()[0].tag, b'P');
+
+        let ready: frontend::TypedSession<Vec<crate::codec::Frame>, frontend::Ready, Clean> =
+            frontend::TypedSession::with_transport(Vec::new());
+        let invalid = Parse {
+            statement: Bytes::from_static(b"bad\0statement"),
+            query: Bytes::from_static(b"select 1"),
+            parameter_types: vec![],
+        };
+        let (building, error) = ready
+            .begin_extended()
+            .parse(invalid, |frames, message| {
+                frames.push(message.to_frame()?);
+                Ok::<_, std::io::Error>(())
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(building.into_transport().is_empty());
     }
 
     #[test]

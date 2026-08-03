@@ -125,7 +125,7 @@ neutral composition harnesses and examples.
   credentials can be composed without coupling their state or policy.
 - [x] Expose typed interception/replacement hooks sufficient for arbitrary
   downstream SQL and result rewriting, demonstrated by a non-CipherStash example.
-- [ ] Expose prepared-statement and portal namespace primitives that a downstream
+- [x] Expose prepared-statement and portal namespace primitives that a downstream
   router or rewriter can own, without implementing routing policy.
 - [x] Expose cancellation-key minting, observation, and mapping hooks without
   embedding a production registry or cancellation policy.

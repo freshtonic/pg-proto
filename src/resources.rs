@@ -156,7 +156,9 @@ pub enum ResourceDrainingTransition<'id, S, C> {
 #[derive(Debug)]
 pub struct ResourceScope<'id> {
     statements: HashMap<Bytes, u64>,
+    client_statements: HashMap<Bytes, (Bytes, u64)>,
     portals: HashMap<Bytes, u64>,
+    client_portals: HashMap<Bytes, (Bytes, u64)>,
     next_generation: u64,
     _brand: PhantomData<Cell<&'id ()>>,
 }
@@ -240,7 +242,9 @@ impl<'id> ResourceScope<'id> {
     fn new() -> Self {
         Self {
             statements: HashMap::new(),
+            client_statements: HashMap::new(),
             portals: HashMap::new(),
+            client_portals: HashMap::new(),
             next_generation: 0,
             _brand: PhantomData,
         }
@@ -249,11 +253,15 @@ impl<'id> ResourceScope<'id> {
     /// Records a simple-query boundary, which destroys the unnamed statement.
     pub fn simple_query_boundary(&mut self) {
         self.statements.remove(b"".as_slice());
+        self.client_statements
+            .retain(|_, (upstream, _)| !upstream.is_empty());
     }
 
     /// Records transaction end, which destroys the unnamed portal.
     pub fn transaction_ended(&mut self) {
         self.portals.remove(b"".as_slice());
+        self.client_portals
+            .retain(|_, (upstream, _)| !upstream.is_empty());
     }
 
     /// Allocates a statement token and reconstructable upstream `Parse` message.
@@ -268,7 +276,7 @@ impl<'id> ResourceScope<'id> {
         query: Bytes,
         parameter_types: Vec<u32>,
     ) -> Result<(PreparedStatement<'id>, Parse), ResourceError> {
-        let generation = self.allocate(&upstream_name, true)?;
+        let generation = self.allocate(&client_name, &upstream_name, true)?;
         if self
             .statements
             .insert(upstream_name.clone(), generation)
@@ -278,11 +286,13 @@ impl<'id> ResourceScope<'id> {
             return Err(ResourceError::StatementNameCollision);
         }
         let statement = PreparedStatement {
-            client_name,
+            client_name: client_name.clone(),
             upstream_name: upstream_name.clone(),
             generation,
             _brand: PhantomData,
         };
+        self.client_statements
+            .insert(client_name, (upstream_name.clone(), generation));
         let message = Parse {
             statement: upstream_name,
             query,
@@ -308,7 +318,7 @@ impl<'id> ResourceScope<'id> {
         if self.statements.get(&statement.upstream_name) != Some(&statement.generation) {
             return Err(ResourceError::UnknownStatement);
         }
-        let generation = self.allocate(&upstream_name, false)?;
+        let generation = self.allocate(&client_name, &upstream_name, false)?;
         if self
             .portals
             .insert(upstream_name.clone(), generation)
@@ -318,11 +328,13 @@ impl<'id> ResourceScope<'id> {
             return Err(ResourceError::PortalNameCollision);
         }
         let portal = Portal {
-            client_name,
+            client_name: client_name.clone(),
             upstream_name: upstream_name.clone(),
             generation,
             _brand: PhantomData,
         };
+        self.client_portals
+            .insert(client_name, (upstream_name.clone(), generation));
         let message = Bind {
             portal: upstream_name,
             statement: statement.upstream_name.clone(),
@@ -346,6 +358,9 @@ impl<'id> ResourceScope<'id> {
             return Err(ResourceError::UnknownStatement);
         }
         self.statements.remove(&statement.upstream_name);
+        self.client_statements.retain(|_, (upstream, generation)| {
+            upstream != &statement.upstream_name || *generation != statement.generation
+        });
         Ok(Close {
             target: DescribeTarget::Statement,
             name: statement.upstream_name,
@@ -362,6 +377,9 @@ impl<'id> ResourceScope<'id> {
             return Err(ResourceError::UnknownPortal);
         }
         self.portals.remove(&portal.upstream_name);
+        self.client_portals.retain(|_, (upstream, generation)| {
+            upstream != &portal.upstream_name || *generation != portal.generation
+        });
         Ok(Close {
             target: DescribeTarget::Portal,
             name: portal.upstream_name,
@@ -390,6 +408,30 @@ impl<'id> ResourceScope<'id> {
             return Err(ResourceError::UnknownStatement);
         }
         Ok(statement.describe())
+    }
+
+    /// Resolves a client-visible statement name to its branded upstream token.
+    #[must_use]
+    pub fn statement(&self, client_name: &[u8]) -> Option<PreparedStatement<'id>> {
+        let (upstream_name, generation) = self.client_statements.get(client_name)?;
+        Some(PreparedStatement {
+            client_name: Bytes::copy_from_slice(client_name),
+            upstream_name: upstream_name.clone(),
+            generation: *generation,
+            _brand: PhantomData,
+        })
+    }
+
+    /// Resolves a client-visible portal name to its branded upstream token.
+    #[must_use]
+    pub fn portal(&self, client_name: &[u8]) -> Option<Portal<'id>> {
+        let (upstream_name, generation) = self.client_portals.get(client_name)?;
+        Some(Portal {
+            client_name: Bytes::copy_from_slice(client_name),
+            upstream_name: upstream_name.clone(),
+            generation: *generation,
+            _brand: PhantomData,
+        })
     }
 }
 
@@ -755,13 +797,20 @@ fn resource_ready<S, C>(
 }
 
 impl ResourceScope<'_> {
-    fn allocate(&mut self, name: &Bytes, statement: bool) -> Result<u64, ResourceError> {
-        let resources = if statement {
-            &self.statements
+    fn allocate(
+        &mut self,
+        client_name: &Bytes,
+        upstream_name: &Bytes,
+        statement: bool,
+    ) -> Result<u64, ResourceError> {
+        let (resources, client_resources) = if statement {
+            (&self.statements, &self.client_statements)
         } else {
-            &self.portals
+            (&self.portals, &self.client_portals)
         };
-        if !name.is_empty() && resources.contains_key(name) {
+        if (!upstream_name.is_empty() && resources.contains_key(upstream_name))
+            || (!client_name.is_empty() && client_resources.contains_key(client_name))
+        {
             return Err(if statement {
                 ResourceError::StatementNameCollision
             } else {
@@ -902,6 +951,47 @@ mod tests {
                 panic!("idle readiness should complete the extended cycle")
             };
             ready.begin_extended().into_connection().into_transport();
+        });
+    }
+
+    #[test]
+    fn namespace_resolves_client_names_to_rewritten_resources() {
+        with_resources(|mut resources| {
+            let (statement, _) = resources
+                .prepare(
+                    Bytes::from_static(b"client-statement"),
+                    Bytes::from_static(b"upstream-statement-42"),
+                    Bytes::from_static(b"select $1"),
+                    vec![25],
+                )
+                .unwrap();
+            let (portal, _) = resources
+                .bind(
+                    &statement,
+                    Bytes::from_static(b"client-portal"),
+                    Bytes::from_static(b"upstream-portal-42"),
+                    vec![0],
+                    vec![Some(Bytes::from_static(b"value"))],
+                    vec![1],
+                )
+                .unwrap();
+
+            assert_eq!(
+                resources
+                    .statement(b"client-statement")
+                    .unwrap()
+                    .upstream_name(),
+                b"upstream-statement-42"
+            );
+            assert_eq!(
+                resources.portal(b"client-portal").unwrap().upstream_name(),
+                b"upstream-portal-42"
+            );
+
+            resources.close_portal(portal).unwrap();
+            resources.close_statement(statement).unwrap();
+            assert!(resources.portal(b"client-portal").is_none());
+            assert!(resources.statement(b"client-statement").is_none());
         });
     }
 

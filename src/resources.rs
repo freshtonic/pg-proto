@@ -6,8 +6,13 @@ use bytes::Bytes;
 
 use crate::{
     Conn, Dirty,
-    codec::{Bind, Close, Describe, DescribeTarget, Execute, Frame, Parse},
-    session::{AwaitingReady, BoundBuilding, Building},
+    auth::Ready,
+    codec::{Bind, Close, Describe, DescribeTarget, Execute, Frame, Parse, TransactionStatus},
+    demux::SessionItem,
+    session::{
+        AwaitingReady, AwaitingReadyTransition, BoundBuilding, Building, Draining,
+        DrainingTransition, ErrorResponse, ReadyState,
+    },
 };
 
 /// Runs an operation with a fresh resource brand which cannot escape the closure.
@@ -88,6 +93,29 @@ pub type RebindResult<'id, S> = Result<
     ),
     ResourceProtocolError,
 >;
+
+#[derive(Debug)]
+pub enum ResourceReadyState<'id, S, C> {
+    Clean(ResourceConnection<'id, S, Ready, C>),
+    Dirty {
+        conn: ResourceConnection<'id, S, Ready, Dirty>,
+        status: TransactionStatus,
+        parameters_changed: bool,
+    },
+}
+
+#[derive(Debug)]
+pub enum ResourceAwaitingTransition<'id, S, C> {
+    Continue(ResourceConnection<'id, S, AwaitingReady, C>, SessionItem),
+    Ready(ResourceReadyState<'id, S, C>),
+    Error(ResourceConnection<'id, S, Draining, C>, ErrorResponse),
+}
+
+#[derive(Debug)]
+pub enum ResourceDrainingTransition<'id, S, C> {
+    Continue(ResourceConnection<'id, S, Draining, C>, SessionItem),
+    Ready(ResourceReadyState<'id, S, C>),
+}
 
 /// Connection-local statement and portal namespaces.
 #[derive(Debug)]
@@ -417,6 +445,21 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
         Ok((Self { conn, resources }, frame))
     }
 
+    /// Closes a live portal and invalidates its token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale portal or invalid wire value.
+    pub fn close_portal(self, portal: Portal<'id>) -> Result<(Self, Frame), ResourceProtocolError> {
+        let Self {
+            conn,
+            mut resources,
+        } = self;
+        let message = resources.close_portal(portal)?;
+        let (conn, frame) = conn.push_close(&message)?;
+        Ok((Self { conn, resources }, frame))
+    }
+
     /// Emits Flush without changing resource or phase evidence.
     #[must_use]
     pub fn flush(self) -> (Self, Frame) {
@@ -431,6 +474,18 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_sync();
         (ResourceConnection { conn, resources }, frame)
+    }
+}
+
+impl<'id, S, C> ResourceConnection<'id, S, Ready, C> {
+    /// Begins another extended-query cycle with the same resource namespace.
+    #[must_use]
+    pub fn begin_extended(self) -> ResourceConnection<'id, S, Building, C> {
+        let Self { conn, resources } = self;
+        ResourceConnection {
+            conn: conn.begin_extended(),
+            resources,
+        }
     }
 }
 
@@ -584,6 +639,67 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     }
 }
 
+impl<'id, S, C> ResourceConnection<'id, S, AwaitingReady, C> {
+    /// Consumes one backend response while retaining the branded namespace.
+    #[must_use]
+    pub fn offer(self, item: SessionItem) -> ResourceAwaitingTransition<'id, S, C> {
+        let Self { conn, resources } = self;
+        match conn.offer(item) {
+            AwaitingReadyTransition::Continue(conn, item) => {
+                ResourceAwaitingTransition::Continue(Self { conn, resources }, item)
+            }
+            AwaitingReadyTransition::Ready(ready) => {
+                ResourceAwaitingTransition::Ready(resource_ready(resources, ready))
+            }
+            AwaitingReadyTransition::Error(conn, error) => {
+                ResourceAwaitingTransition::Error(ResourceConnection { conn, resources }, error)
+            }
+        }
+    }
+}
+
+impl<'id, S, C> ResourceConnection<'id, S, Draining, C> {
+    /// Drains one backend response after an error while retaining resources.
+    #[must_use]
+    pub fn offer(self, item: SessionItem) -> ResourceDrainingTransition<'id, S, C> {
+        let Self { conn, resources } = self;
+        match conn.offer(item) {
+            DrainingTransition::Continue(conn, item) => {
+                ResourceDrainingTransition::Continue(Self { conn, resources }, item)
+            }
+            DrainingTransition::Ready(ready) => {
+                ResourceDrainingTransition::Ready(resource_ready(resources, ready))
+            }
+        }
+    }
+}
+
+fn resource_ready<S, C>(
+    mut resources: ResourceScope<'_>,
+    ready: ReadyState<S, C>,
+) -> ResourceReadyState<'_, S, C> {
+    match ready {
+        ReadyState::Clean(conn) => {
+            resources.transaction_ended();
+            ResourceReadyState::Clean(ResourceConnection { conn, resources })
+        }
+        ReadyState::Dirty {
+            conn,
+            status,
+            parameters_changed,
+        } => {
+            if status == TransactionStatus::Idle {
+                resources.transaction_ended();
+            }
+            ResourceReadyState::Dirty {
+                conn: ResourceConnection { conn, resources },
+                status,
+                parameters_changed,
+            }
+        }
+    }
+}
+
 impl ResourceScope<'_> {
     fn allocate(&mut self, name: &Bytes, statement: bool) -> Result<u64, ResourceError> {
         let resources = if statement {
@@ -718,7 +834,20 @@ mod tests {
             assert_eq!(close.tag, b'C');
             let (awaiting, sync) = connection.sync();
             assert_eq!(sync.tag, b'S');
-            awaiting.into_connection().into_transport();
+            let ResourceAwaitingTransition::Continue(awaiting, _) = awaiting.offer(
+                SessionItem::Message(crate::codec::BackendMessage::ParseComplete),
+            ) else {
+                panic!("ParseComplete should retain the awaiting phase")
+            };
+            let ResourceAwaitingTransition::Ready(ResourceReadyState::Clean(ready)) = awaiting
+                .offer(SessionItem::ReadyForQuery {
+                    status: TransactionStatus::Idle,
+                    parameters_changed: false,
+                })
+            else {
+                panic!("idle readiness should complete the extended cycle")
+            };
+            ready.begin_extended().into_connection().into_transport();
         });
     }
 

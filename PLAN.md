@@ -105,5 +105,8 @@ work using that feature is complete.
 
 - [x] Extend connection-branded outbound construction across repeated Parse/Bind,
   both Describe and Close targets, Execute, Flush, and Sync.
-- [ ] Retain connection-branded namespaces through extended-query response
-  consumption and apply protocol-boundary invalidation.
+- [x] Retain connection-branded namespaces through extended-query response and
+  error-drain consumption, invalidating unnamed portals at idle transaction
+  boundaries.
+- [ ] Cover the complete branded cycle against live PostgreSQL and add explicit
+  unnamed-resource boundary regression tests.

@@ -4,7 +4,7 @@ protocol! {
     pub mod query {
         initial Ready;
         Ready internal {
-            Query(query) => Simple,
+            Query(query) => Simple [Dirty],
             Parse(parse) => Building,
         }
         Simple external {
@@ -51,15 +51,15 @@ fn generated_typed_sessions_carry_transport_and_cleanliness() {
     struct Pristine;
 
     let session: query::TypedSession<Vec<u8>, query::Ready, Pristine> =
-        query::TypedSession::with_transport(vec![1, 2, 3])
-            .query()
-            .complete();
+        query::TypedSession::with_transport(vec![1, 2, 3]);
+    let session: query::TypedSession<Vec<u8>, query::Ready, query::Dirty> =
+        session.query().complete();
     assert_eq!(session.into_transport(), [1, 2, 3]);
 
     let dual: query::DualTypedSession<Vec<u8>, query::Ready, Pristine> =
-        query::DualTypedSession::with_transport(vec![4, 5])
-            .query()
-            .complete();
+        query::DualTypedSession::with_transport(vec![4, 5]);
+    let dual: query::DualTypedSession<Vec<u8>, query::Ready, query::Dirty> =
+        dual.query().complete();
     assert_eq!(dual.into_transport(), [4, 5]);
 }
 

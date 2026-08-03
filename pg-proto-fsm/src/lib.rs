@@ -43,6 +43,7 @@ struct Transition {
     event: Ident,
     method: Ident,
     target: Ident,
+    cleanliness: Option<Ident>,
 }
 
 impl Parse for Protocol {
@@ -110,18 +111,28 @@ impl Parse for Transition {
         let method = method_content.parse()?;
         input.parse::<Token![=>]>()?;
         let target = input.parse()?;
+        let cleanliness = if input.peek(syn::token::Bracket) {
+            let content;
+            syn::bracketed!(content in input);
+            Some(content.parse()?)
+        } else {
+            None
+        };
         Ok(Self {
             choice,
             event,
             method,
             target,
+            cleanliness,
         })
     }
 }
 
 /// Generates typestate witnesses, a runtime FSM, and a railroad SVG from one grammar.
 ///
-/// The grammar uses `Event(method) => NextState` transitions grouped by source state.
+/// The grammar uses `Event(method) => NextState` transitions grouped by source
+/// state. An optional `[Cleanliness]` replaces the orthogonal cleanliness index
+/// on transport-carrying generated sessions.
 #[proc_macro]
 pub fn protocol(input: TokenStream) -> TokenStream {
     let protocol = parse_macro_input!(input as Protocol);
@@ -148,6 +159,15 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 .entry(transition.event.to_string())
                 .or_insert(&transition.event);
             events
+        })
+        .into_values();
+    let cleanliness_names = states
+        .iter()
+        .flat_map(|state| state.transitions.iter())
+        .filter_map(|transition| transition.cleanliness.as_ref())
+        .fold(BTreeMap::new(), |mut names, cleanliness| {
+            names.entry(cleanliness.to_string()).or_insert(cleanliness);
+            names
         })
         .into_values();
     let transition_arms = states.iter().flat_map(|state| {
@@ -220,9 +240,13 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
         let methods = state.transitions.iter().map(|transition| {
             let method = &transition.method;
             let target = &transition.target;
+            let cleanliness = transition
+                .cleanliness
+                .as_ref()
+                .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
             quote! {
                 #[must_use]
-                pub fn #method(self) -> TypedSession<Transport, #target, Cleanliness> {
+                pub fn #method(self) -> TypedSession<Transport, #target, #cleanliness> {
                     TypedSession {
                         transport: self.transport,
                         _state: ::core::marker::PhantomData,
@@ -241,9 +265,13 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
         let methods = state.transitions.iter().map(|transition| {
             let method = &transition.method;
             let target = &transition.target;
+            let cleanliness = transition
+                .cleanliness
+                .as_ref()
+                .map_or_else(|| quote!(Cleanliness), |cleanliness| quote!(#cleanliness));
             quote! {
                 #[must_use]
-                pub fn #method(self) -> DualTypedSession<Transport, #target, Cleanliness> {
+                pub fn #method(self) -> DualTypedSession<Transport, #target, #cleanliness> {
                     DualTypedSession {
                         transport: self.transport,
                         _state: ::core::marker::PhantomData,
@@ -265,6 +293,11 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             #(
                 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
                 pub enum #state_names {}
+            )*
+
+            #(
+                #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+                pub enum #cleanliness_names {}
             )*
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -3,14 +3,17 @@ use std::{collections::BTreeMap, error::Error, time::Duration};
 use bytes::Bytes;
 use pg_proto::{
     Conn,
-    auth::{AuthOffer, AwaitingStartupReady},
+    auth::{AuthOffer, AwaitingStartupReady, PasswordResponse},
     codec::{Authentication, BackendMessage, NegotiateProtocolVersion},
     demux::SessionItem,
     pre_startup::Startup,
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
-use postgres_protocol::authentication::sasl::{ChannelBinding, SCRAM_SHA_256, ScramSha256};
+use postgres_protocol::authentication::{
+    md5_hash,
+    sasl::{ChannelBinding, SCRAM_SHA_256, ScramSha256},
+};
 use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ImageExt, runners::AsyncRunner},
@@ -221,4 +224,68 @@ async fn finish_startup(
             return Ok(());
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn cleartext_password_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_tag("18-alpine")
+        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "password")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let offer = receive_auth_offer(connected_startup(port).await?).await?;
+    let AuthOffer::Cleartext(conn) = offer else {
+        panic!("PostgreSQL did not offer cleartext password authentication")
+    };
+    submit_password(conn, b"postgres").await
+}
+
+#[tokio::test]
+#[ignore = "requires a Docker-compatible container runtime"]
+async fn md5_password_matches_postgres_18() -> Result<(), Box<dyn Error>> {
+    let postgres = Postgres::default()
+        .with_init_sql(
+            b"SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';".to_vec(),
+        )
+        .with_tag("18-alpine")
+        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "md5")
+        .start()
+        .await?;
+    let port = postgres.get_host_port_ipv4(5432).await?;
+    let offer = receive_auth_offer(connected_startup(port).await?).await?;
+    let AuthOffer::Md5 { conn, salt } = offer else {
+        panic!("PostgreSQL did not offer MD5 password authentication")
+    };
+    let response = md5_hash(b"postgres", b"postgres", salt);
+    submit_password(conn, response.as_bytes()).await
+}
+
+async fn receive_auth_offer(
+    startup: Conn<Buffered<tokio::net::TcpStream>, Startup>,
+) -> Result<AuthOffer<Buffered<tokio::net::TcpStream>>, Box<dyn Error>> {
+    let mut auth = startup.authentication();
+    loop {
+        if let SessionItem::Message(BackendMessage::Authentication(authentication)) =
+            auth.receive().await?
+        {
+            return Ok(auth.offer(authentication)?);
+        }
+    }
+}
+
+async fn submit_password(
+    conn: Conn<Buffered<tokio::net::TcpStream>, PasswordResponse>,
+    password: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let (mut awaiting_ok, frame) = conn.password(password)?;
+    awaiting_ok.push_frame(frame)?;
+    awaiting_ok.flush().await?;
+    let SessionItem::Message(BackendMessage::Authentication(Authentication::Ok)) =
+        awaiting_ok.receive().await?
+    else {
+        panic!("PostgreSQL rejected the password response")
+    };
+    finish_startup(awaiting_ok.authentication_ok()).await
 }

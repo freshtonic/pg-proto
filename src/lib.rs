@@ -10,6 +10,7 @@ pub mod erased;
 pub mod grammar;
 pub mod integrations;
 pub mod intermediary;
+pub mod pipeline;
 pub mod pre_startup;
 pub mod replication;
 pub mod resources;

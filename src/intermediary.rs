@@ -2,25 +2,72 @@
 
 use std::future::Future;
 
-/// Owns the two independently typed sides of an intermediary connection.
+use crate::pipeline::{NoPipeline, Pipeline, PipelinePolicy};
+
+/// Result of changing one side while preserving the complete intermediary on rejection.
+pub type IntermediaryTransition<Current, Next, Output, Error> =
+    Result<(Next, Output), (Current, Error)>;
+
+/// Owns two independently typed sides and optional pipeline orchestration.
 ///
 /// `Downstream` is normally a server-role session facing a client and `Upstream`
 /// is normally a client-role session facing `PostgreSQL`. No phase, transport,
 /// authentication mechanism, or cleanliness index is coupled between them.
+/// `Policy` defaults to [`NoPipeline`]; call [`Self::with_pipeline`] to opt into
+/// bounded pipelining without changing either session type.
 #[must_use = "dropping an intermediary abandons both PostgreSQL sessions"]
 #[derive(Debug)]
-pub struct Intermediary<Downstream, Upstream> {
+pub struct Intermediary<Downstream, Upstream, Policy = NoPipeline> {
     downstream: Downstream,
     upstream: Upstream,
+    pipeline: Pipeline<Policy>,
 }
 
-impl<Downstream, Upstream> Intermediary<Downstream, Upstream> {
+impl<Downstream, Upstream> Intermediary<Downstream, Upstream, NoPipeline> {
     /// Pairs two independently established protocol sessions.
-    pub const fn new(downstream: Downstream, upstream: Upstream) -> Self {
+    pub fn new(downstream: Downstream, upstream: Upstream) -> Self {
         Self {
             downstream,
             upstream,
+            pipeline: Pipeline::new(NoPipeline),
         }
+    }
+}
+
+impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upstream, Policy> {
+    /// Replaces the pipeline policy while no pipeline operations are outstanding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if operations were accepted before replacing the policy.
+    pub fn with_pipeline<Next: PipelinePolicy>(
+        self,
+        policy: Next,
+    ) -> Intermediary<Downstream, Upstream, Next> {
+        let Self {
+            downstream,
+            upstream,
+            pipeline,
+        } = self;
+        assert!(
+            pipeline.is_empty(),
+            "pipeline policy cannot change with outstanding operations"
+        );
+        Intermediary {
+            downstream,
+            upstream,
+            pipeline: Pipeline::new(policy),
+        }
+    }
+
+    /// Returns the reusable request/response pipeline component.
+    pub const fn pipeline(&self) -> &Pipeline<Policy> {
+        &self.pipeline
+    }
+
+    /// Returns mutable access to bounded pipeline orchestration.
+    pub const fn pipeline_mut(&mut self) -> &mut Pipeline<Policy> {
+        &mut self.pipeline
     }
 
     /// Borrows the client-facing side without weakening its typestate.
@@ -56,16 +103,18 @@ impl<Downstream, Upstream> Intermediary<Downstream, Upstream> {
     pub fn transition_downstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Downstream) -> Result<(Next, Output), (Downstream, Error)>,
-    ) -> Result<(Intermediary<Next, Upstream>, Output), (Self, Error)> {
+    ) -> IntermediaryTransition<Self, Intermediary<Next, Upstream, Policy>, Output, Error> {
         let Self {
             downstream,
             upstream,
+            pipeline,
         } = self;
         match transition(downstream) {
             Ok((downstream, output)) => Ok((
                 Intermediary {
                     downstream,
                     upstream,
+                    pipeline,
                 },
                 output,
             )),
@@ -73,6 +122,7 @@ impl<Downstream, Upstream> Intermediary<Downstream, Upstream> {
                 Intermediary {
                     downstream,
                     upstream,
+                    pipeline,
                 },
                 error,
             )),
@@ -89,16 +139,18 @@ impl<Downstream, Upstream> Intermediary<Downstream, Upstream> {
     pub fn transition_upstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Upstream) -> Result<(Next, Output), (Upstream, Error)>,
-    ) -> Result<(Intermediary<Downstream, Next>, Output), (Self, Error)> {
+    ) -> IntermediaryTransition<Self, Intermediary<Downstream, Next, Policy>, Output, Error> {
         let Self {
             downstream,
             upstream,
+            pipeline,
         } = self;
         match transition(upstream) {
             Ok((upstream, output)) => Ok((
                 Intermediary {
                     downstream,
                     upstream,
+                    pipeline,
                 },
                 output,
             )),
@@ -106,6 +158,7 @@ impl<Downstream, Upstream> Intermediary<Downstream, Upstream> {
                 Intermediary {
                     downstream,
                     upstream,
+                    pipeline,
                 },
                 error,
             )),

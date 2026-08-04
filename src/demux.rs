@@ -121,6 +121,21 @@ pub struct Demux {
 }
 
 impl Demux {
+    /// Reports whether a backend message is causally independent of session progress.
+    ///
+    /// Pipeline orchestration uses this shared classifier rather than defining a
+    /// second asynchronous-message taxonomy.
+    #[must_use]
+    pub fn is_asynchronous(message: &BackendMessage) -> bool {
+        matches!(
+            message,
+            BackendMessage::NoticeResponse(_)
+                | BackendMessage::ParameterStatus { .. }
+                | BackendMessage::NotificationResponse { .. }
+                | BackendMessage::BackendKeyData { .. }
+        )
+    }
+
     /// Routes one decoded backend message.
     ///
     /// Async messages are consumed and recorded; only session-advancing messages

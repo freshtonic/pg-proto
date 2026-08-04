@@ -38,7 +38,7 @@ option_if_let_else = "allow"
 
 [dependencies]
 bytes = "1.12.1"
-base64 = "0.22.1"
+base64 = "0.23.0"
 hmac = "0.13.0"
 postgres-protocol = "0.6.12"
 pg-proto-fsm = { version = "0.2.0", path = "pg-proto-fsm" }

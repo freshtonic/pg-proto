@@ -22,8 +22,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Publish release
         uses: release-plz/action@v0.5
@@ -48,8 +48,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Prepare release pull request
         uses: release-plz/action@v0.5

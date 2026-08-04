@@ -254,6 +254,8 @@ neutral composition harnesses and examples.
   package badges, tidy the README, and document the FSM crate separately.
 - [x] Add contribution guidance, Proxy's Contributor Covenant, ownership and
   issue/PR templates, plus a private-reporting security policy and review archive.
+- [x] Add Dependabot, cargo-deny, MSRV and package CI, pinned stable tooling,
+  structured release notes, repository topics, private reporting, and main protection.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

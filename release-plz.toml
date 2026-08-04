@@ -6,6 +6,22 @@ release_always = false
 repo_url = "https://github.com/freshtonic/pg-proto"
 semver_check = true
 
+[changelog]
+protect_breaking_commits = true
+sort_commits = "oldest"
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^(add|implement|support)", group = "Added" },
+    { message = "^(fix|bound|reject)", group = "Fixed" },
+    { message = "^docs?", group = "Documentation" },
+    { message = "^(document|show)", group = "Documentation" },
+    { message = "^perf", group = "Performance" },
+    { message = "^security", group = "Security" },
+    { message = "^test", group = "Testing" },
+    { message = "^chore", group = "Maintenance" },
+    { message = ".*", group = "Changed" },
+]
+
 [[package]]
 name = "pg-proto"
 changelog_include = ["pg-proto-fsm"]

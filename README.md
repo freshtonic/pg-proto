@@ -207,6 +207,10 @@ compile-fail, and documentation tests:
 cargo test --workspace
 ```
 
+## Licence
+
+Licensed under the [MIT License](https://github.com/freshtonic/pg-proto/blob/main/LICENSE).
+
 Live PostgreSQL tests require a Docker-compatible runtime:
 
 ```console

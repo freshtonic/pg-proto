@@ -2,7 +2,7 @@
 name = "pg-proto-fsm"
 version = "0.2.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT"
 description = "Protocol grammar generator for pg-proto"
 documentation = "https://docs.rs/pg-proto-fsm"
 homepage = "https://github.com/freshtonic/pg-proto"

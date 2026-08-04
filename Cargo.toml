@@ -2,7 +2,7 @@
 name = "pg-proto"
 version = "0.2.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT"
 description = "Session-typed PostgreSQL wire protocol"
 documentation = "https://docs.rs/pg-proto"
 homepage = "https://github.com/freshtonic/pg-proto"

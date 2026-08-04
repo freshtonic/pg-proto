@@ -1,4 +1,4 @@
-//! Session-typed `PostgreSQL` wire protocol primitives.
+#![doc = include_str!("../README.md")]
 
 pub mod auth;
 pub mod cancel;

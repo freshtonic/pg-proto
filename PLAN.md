@@ -246,6 +246,7 @@ neutral composition harnesses and examples.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.
+- [x] Use the repository README as the crate-level Rustdoc landing page.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

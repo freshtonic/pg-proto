@@ -177,7 +177,7 @@ neutral composition harnesses and examples.
   (including container-backed tests), benchmarks, and every fuzz target.
 - [x] Configure release-plz with crates.io trusted publishing through GitHub OIDC,
   grouped workspace versions, release PRs, changelog updates, and GitHub releases.
-- [ ] Add CI, docs.rs, and crates.io status badges to the README.
+- [x] Add CI, docs.rs, and crates.io status badges to the README.
 
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
   `width-limiter` cap without changing the width of ordinary documentation pages.

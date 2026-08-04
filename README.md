@@ -1,5 +1,9 @@
 # pg-proto
 
+[![CI](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml)
+[![docs.rs](https://docs.rs/pg-proto/badge.svg)](https://docs.rs/pg-proto)
+[![crates.io](https://img.shields.io/crates/v/pg-proto.svg)](https://crates.io/crates/pg-proto)
+
 `pg-proto` is an asynchronous Rust implementation of the PostgreSQL
 frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
 and protocol-aware test infrastructure.

@@ -248,6 +248,8 @@ neutral composition harnesses and examples.
   payload-free ordering records, local responses, COPY, and Sync error recovery.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
+- [x] Add descriptive crates.io keywords and categories to both package manifests.
+- [x] Add package author metadata to both published crates.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

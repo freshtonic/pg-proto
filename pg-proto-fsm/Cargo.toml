@@ -2,8 +2,11 @@
 name = "pg-proto-fsm"
 version = "0.2.0"
 edition = "2024"
+authors = ["James Sadler <freshtonic@gmail.com>"]
 license = "MIT"
 description = "Protocol grammar generator for pg-proto"
+keywords = ["protocol", "typestate", "state-machine", "proc-macro", "railroad"]
+categories = ["development-tools::procedural-macro-helpers", "network-programming"]
 documentation = "https://docs.rs/pg-proto-fsm"
 homepage = "https://github.com/freshtonic/pg-proto"
 repository = "https://github.com/freshtonic/pg-proto"

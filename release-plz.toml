@@ -1,0 +1,18 @@
+[workspace]
+changelog_update = true
+git_release_enable = true
+git_tag_enable = true
+release_always = false
+repo_url = "https://github.com/freshtonic/pg-proto"
+semver_check = true
+
+[[package]]
+name = "pg-proto"
+changelog_include = ["pg-proto-fsm"]
+changelog_path = "CHANGELOG.md"
+version_group = "pg-proto"
+
+[[package]]
+name = "pg-proto-fsm"
+changelog_update = false
+version_group = "pg-proto"

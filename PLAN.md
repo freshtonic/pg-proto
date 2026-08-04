@@ -175,7 +175,8 @@ neutral composition harnesses and examples.
 
 - [x] Add GitHub Actions CI covering formatting, Clippy, Rustdoc, all tests
   (including container-backed tests), benchmarks, and every fuzz target.
-- [ ] Configure release-plz with crates.io trusted publishing through GitHub OIDC.
+- [x] Configure release-plz with crates.io trusted publishing through GitHub OIDC,
+  grouped workspace versions, release PRs, changelog updates, and GitHub releases.
 - [ ] Add CI, docs.rs, and crates.io status badges to the README.
 
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard

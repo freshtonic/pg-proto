@@ -173,6 +173,11 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Add GitHub Actions CI covering formatting, Clippy, Rustdoc, all tests
+  (including container-backed tests), benchmarks, and every fuzz target.
+- [ ] Configure release-plz with crates.io trusted publishing through GitHub OIDC.
+- [ ] Add CI, docs.rs, and crates.io status badges to the README.
+
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
   `width-limiter` cap without changing the width of ordinary documentation pages.
 

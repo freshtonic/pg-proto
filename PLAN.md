@@ -252,6 +252,8 @@ neutral composition harnesses and examples.
 - [x] Add package author metadata to both published crates.
 - [x] Declare and test the Rust 1.88 MSRV, pin the development toolchain, add
   package badges, tidy the README, and document the FSM crate separately.
+- [x] Add contribution guidance, Proxy's Contributor Covenant, ownership and
+  issue/PR templates, plus a private-reporting security policy and review archive.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

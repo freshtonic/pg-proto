@@ -1,0 +1,40 @@
+name: Bug report
+description: Report incorrect protocol behaviour or a regression.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report security vulnerabilities here; use private vulnerability reporting.
+  - type: input
+    id: version
+    attributes:
+      label: pg-proto version
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: postgres
+    attributes:
+      label: PostgreSQL version
+      options: ["14", "15", "16", "17", "18", "Not applicable"]
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Observed behaviour
+      description: Include a minimal reproduction and sanitised protocol details.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust version, operating system, runtime and relevant configuration.

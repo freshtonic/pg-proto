@@ -63,6 +63,10 @@ Only `Conn<_, Ready, Pristine>` exposes unconditional release.
 
 ## What can be built with it?
 
+The [bounded intermediary pipeline example](examples/intermediary_pipeline.rs)
+shows ordered forwarding, local interception, and backpressure without proxy-owned
+message queues.
+
 - A TLS-terminating PostgreSQL proxy which authenticates each side independently
   and inspects plaintext SQL and result rows.
 - A transaction or session pooler whose release policy consumes explicit

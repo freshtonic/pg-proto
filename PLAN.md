@@ -244,6 +244,9 @@ neutral composition harnesses and examples.
 
 ## Optional future work
 
+- [x] Add optional operation-bounded intermediary pipeline orchestration with
+  payload-free ordering records, local responses, COPY, and Sync error recovery.
+
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the
 library boundary established above.

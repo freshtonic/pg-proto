@@ -31,6 +31,27 @@ Use:
 - `CleanlinessPolicy` for application-owned pool release decisions; and
 - `GssEncUpgrade` or `TokenAuthEngine` for platform credential adapters.
 
+## Replace proxy message queues with a bounded pipeline ledger
+
+Opt in with `Intermediary::with_pipeline(BoundedPipeline::new(limit)?)`. Feed
+each decoded frontend message to `pipeline_mut().accept_frontend(...)`. A
+`Forward` action returns the original owned message for upstream encoding; a
+`Discard` action identifies a locally handled operation; and capacity returns
+the original message so the proxy can pause downstream reads and retry it.
+
+The ledger stores only operation metadata. It does not clone or retain SQL,
+Bind values, COPY chunks, rows, or forwarded responses. For a local response,
+retain its `OperationId`, wait until that operation is at the response head,
+then call `try_emit_local`. A premature call returns the same response as
+`BackendAction::Deferred`, so it cannot overtake earlier upstream work.
+
+After either an upstream or local extended-query `ErrorResponse`, the ledger
+discards accepted operations through the next `Sync`. Only the corresponding
+`ReadyForQuery` completes recovery. Authorisation, rewriting, routing, local
+response contents, and the decision to forward or intercept remain application
+policy; pg-proto owns ordering, bounded capacity, protocol legality, COPY phase
+tracking, and error-drain bookkeeping.
+
 ## Authentication and TLS
 
 Create and authenticate each side independently. Client-facing server-role TLS
@@ -52,5 +73,7 @@ idle readiness evidence and an application cleanliness policy that permits it.
   policy and registries plug in.
 - [`examples/rewriting_intermediary.rs`](examples/rewriting_intermediary.rs)
   modifies reconstructable extended-query and result messages.
+- [`examples/intermediary_pipeline.rs`](examples/intermediary_pipeline.rs)
+  combines forwarding, local rejection, backpressure, and ordered emission.
 - [`tests/intermediary_harness.rs`](tests/intermediary_harness.rs) is the neutral
   capability acceptance harness.

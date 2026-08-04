@@ -26,8 +26,15 @@ missing_docs = "deny"
 unsafe_code = "forbid"
 
 [lints.clippy]
-all = "warn"
-pedantic = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# These produce unstable or dependency-graph noise rather than actionable defects.
+future_not_send = "allow"
+missing_const_for_fn = "allow"
+multiple_crate_versions = "allow"
+option_if_let_else = "allow"
 
 [dependencies]
 bytes = "1.12.1"

@@ -257,6 +257,8 @@ neutral composition harnesses and examples.
 - [x] Add Dependabot, cargo-deny, MSRV and package CI, pinned stable tooling,
   structured release notes, repository topics, private reporting, and main protection;
   verify nightly fuzzing and current advisory parsing in GitHub Actions.
+- [x] Enforce Clippy's all, pedantic, nursery, and Cargo lint groups, retaining
+  narrow exceptions only for unstable or dependency-graph noise.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

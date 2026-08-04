@@ -173,6 +173,9 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Reject counted message collections whose minimum encoding cannot fit in
+  the remaining frame body, preventing fuzz-discovered allocation amplification.
+
 - [x] Add GitHub Actions CI covering formatting, Clippy, Rustdoc, all tests
   (including container-backed tests), benchmarks, and every fuzz target.
 - [x] Configure release-plz with crates.io trusted publishing through GitHub OIDC,

@@ -991,6 +991,7 @@ fn decode_negotiate_protocol_version(mut body: Bytes) -> io::Result<BackendMessa
     let minor = u16::try_from(newest & 0xffff).map_err(|_| invalid("protocol minor overflow"))?;
     let count = take_u32(&mut body)?;
     let capacity = usize::try_from(count).map_err(|_| invalid("option count overflow"))?;
+    require_collection_bytes(capacity, body.len(), 1, "unsupported option count")?;
     let mut unsupported_options = Vec::with_capacity(capacity);
     for _ in 0..count {
         unsupported_options.push(take_cstr(&mut body)?);
@@ -1008,6 +1009,7 @@ fn decode_parse(mut body: Bytes) -> io::Result<Parse> {
     let statement = take_cstr(&mut body)?;
     let query = take_cstr(&mut body)?;
     let count = take_u16(&mut body)?;
+    require_collection_bytes(usize::from(count), body.len(), 4, "parameter type count")?;
     let mut parameter_types = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         parameter_types.push(take_u32(&mut body)?);
@@ -1025,6 +1027,12 @@ fn decode_bind(mut body: Bytes) -> io::Result<Bind> {
     let statement = take_cstr(&mut body)?;
     let parameter_formats = take_i16_vec(&mut body)?;
     let parameter_count = take_u16(&mut body)?;
+    require_collection_bytes(
+        usize::from(parameter_count),
+        body.len(),
+        4,
+        "parameter count",
+    )?;
     let mut parameters = Vec::with_capacity(usize::from(parameter_count));
     for _ in 0..parameter_count {
         let length = take_i32(&mut body)?;
@@ -1057,6 +1065,7 @@ fn decode_describe(mut body: Bytes) -> io::Result<Describe> {
 
 fn decode_data_row(mut body: Bytes) -> io::Result<DataRow> {
     let count = take_u16(&mut body)?;
+    require_collection_bytes(usize::from(count), body.len(), 4, "column count")?;
     let mut columns = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         columns.push(take_nullable(&mut body)?);
@@ -1095,6 +1104,7 @@ fn decode_copy_response(mut body: Bytes) -> io::Result<CopyResponse> {
 
 fn decode_parameter_description(mut body: Bytes) -> io::Result<Vec<u32>> {
     let count = take_u16(&mut body)?;
+    require_collection_bytes(usize::from(count), body.len(), 4, "parameter type count")?;
     let mut types = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         types.push(take_u32(&mut body)?);
@@ -1121,6 +1131,7 @@ fn decode_function_call(mut body: Bytes) -> io::Result<FunctionCall> {
     let function_oid = take_u32(&mut body)?;
     let argument_formats = take_i16_vec(&mut body)?;
     let count = take_u16(&mut body)?;
+    require_collection_bytes(usize::from(count), body.len(), 4, "argument count")?;
     let mut arguments = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         arguments.push(take_nullable(&mut body)?);
@@ -1156,6 +1167,7 @@ fn take_target(body: &mut Bytes) -> io::Result<DescribeTarget> {
 
 fn decode_row_description(mut body: Bytes) -> io::Result<RowDescription> {
     let count = take_u16(&mut body)?;
+    require_collection_bytes(usize::from(count), body.len(), 19, "field count")?;
     let mut fields = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         fields.push(FieldDescription {
@@ -1174,7 +1186,29 @@ fn decode_row_description(mut body: Bytes) -> io::Result<RowDescription> {
 
 fn take_i16_vec(body: &mut Bytes) -> io::Result<Vec<i16>> {
     let count = take_u16(body)?;
+    require_collection_bytes(usize::from(count), body.len(), 2, "format count")?;
     (0..count).map(|_| take_i16(body)).collect()
+}
+
+fn require_collection_bytes(
+    count: usize,
+    remaining: usize,
+    minimum_item_len: usize,
+    description: &str,
+) -> io::Result<()> {
+    let minimum_len = count.checked_mul(minimum_item_len).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{description} overflows message size"),
+        )
+    })?;
+    if minimum_len > remaining {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{description} exceeds remaining message body"),
+        ));
+    }
+    Ok(())
 }
 
 fn take_nullable(body: &mut Bytes) -> io::Result<Option<Bytes>> {
@@ -1404,6 +1438,31 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn counted_backend_fields_are_bounded_before_allocation() {
+        // Regression input discovered by the backend codec fuzz target. The
+        // 47-byte frame declares 1,291,845,632 unsupported options and formerly
+        // attempted to reserve roughly 34 GB before parsing the first option.
+        let mut input = BytesMut::from(
+            &[
+                b'v', 0, 0, 0, 43, 0, 0, 64, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                32, 0, 0, 173, 173, 173, 173, 173, 173, 173, 173, 0, 87, 0, 0, 0, 0, 0, 0, 0, 0,
+                152,
+            ][..],
+        );
+
+        let error = PgCodec::<Backend>::default()
+            .decode(&mut input)
+            .expect_err("impossible option count must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported option count exceeds remaining message body")
+        );
     }
 
     #[test]

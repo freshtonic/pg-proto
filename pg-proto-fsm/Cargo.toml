@@ -2,6 +2,7 @@
 name = "pg-proto-fsm"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["James Sadler <freshtonic@gmail.com>"]
 license = "MIT"
 description = "Protocol grammar generator for pg-proto"
@@ -10,6 +11,7 @@ categories = ["development-tools::procedural-macro-helpers", "network-programmin
 documentation = "https://docs.rs/pg-proto-fsm"
 homepage = "https://github.com/freshtonic/pg-proto"
 repository = "https://github.com/freshtonic/pg-proto"
+readme = "README.md"
 
 [lib]
 proc-macro = true

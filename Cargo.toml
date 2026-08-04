@@ -2,6 +2,7 @@
 name = "pg-proto"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["James Sadler <freshtonic@gmail.com>"]
 license = "MIT"
 description = "Session-typed PostgreSQL wire protocol"

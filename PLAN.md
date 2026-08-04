@@ -250,6 +250,8 @@ neutral composition harnesses and examples.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.
 - [x] Add package author metadata to both published crates.
+- [x] Declare and test the Rust 1.88 MSRV, pin the development toolchain, add
+  package badges, tidy the README, and document the FSM crate separately.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

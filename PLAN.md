@@ -246,6 +246,19 @@ neutral composition harnesses and examples.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.
+- [x] Use the repository README as the crate-level Rustdoc landing page.
+- [x] License both published crates and the repository under the MIT License.
+- [x] Add descriptive crates.io keywords and categories to both package manifests.
+- [x] Add package author metadata to both published crates.
+- [x] Declare and test the Rust 1.88 MSRV, pin the development toolchain, add
+  package badges, tidy the README, and document the FSM crate separately.
+- [x] Add contribution guidance, Proxy's Contributor Covenant, ownership and
+  issue/PR templates, plus a private-reporting security policy and review archive.
+- [x] Add Dependabot, cargo-deny, MSRV and package CI, pinned stable tooling,
+  structured release notes, repository topics, private reporting, and main protection;
+  verify nightly fuzzing and current advisory parsing in GitHub Actions.
+- [x] Enforce Clippy's all, pedantic, nursery, and Cargo lint groups, retaining
+  narrow exceptions only for unstable or dependency-graph noise.
 
 These are deliberately not completion criteria for `pg-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the

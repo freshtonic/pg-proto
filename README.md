@@ -3,6 +3,8 @@
 [![CI](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml)
 [![docs.rs](https://docs.rs/pg-proto/badge.svg)](https://docs.rs/pg-proto)
 [![crates.io](https://img.shields.io/crates/v/pg-proto.svg)](https://crates.io/crates/pg-proto)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/freshtonic/pg-proto/blob/main/LICENSE)
 
 `pg-proto` is an asynchronous Rust implementation of the PostgreSQL
 frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
@@ -149,10 +151,11 @@ proxy composition boundary.
 - [Client-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/session/)
 - [Server-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/server_session/)
 - [Proxy-side composition hooks](https://docs.rs/pg-proto/latest/pg_proto/intermediary/)
+- [Bounded intermediary pipeline](https://docs.rs/pg-proto/latest/pg_proto/pipeline/)
 - [Prepared-statement and portal resources](https://docs.rs/pg-proto/latest/pg_proto/resources/)
 - [Generated protocol grammars and railroad diagrams](https://docs.rs/pg-proto/latest/pg_proto/grammar/)
 
-Until the first crates.io release, build the same documentation locally:
+Build the same documentation locally with:
 
 ```console
 cargo doc --workspace --no-deps --open
@@ -197,6 +200,9 @@ Security assumptions and downstream responsibilities are documented in
 [`SECURITY.md`](SECURITY.md). The audited proxy capability boundary is in
 [`PROXY_COMPATIBILITY.md`](PROXY_COMPATIBILITY.md), and migration from a
 runtime-enum implementation is covered by [`MIGRATION.md`](MIGRATION.md).
+Contribution instructions and community expectations are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Verification
 
@@ -212,3 +218,7 @@ Live PostgreSQL tests require a Docker-compatible runtime:
 ```console
 cargo test --test postgres_container -- --ignored
 ```
+
+## Licence
+
+Licensed under the [MIT License](https://github.com/freshtonic/pg-proto/blob/main/LICENSE).

@@ -7,10 +7,11 @@ on:
 
 jobs:
   rustdoc:
+    name: Documentation
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo doc --workspace --no-deps

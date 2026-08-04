@@ -119,7 +119,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
                 output,
             )),
             Err((downstream, error)) => Err((
-                Intermediary {
+                Self {
                     downstream,
                     upstream,
                     pipeline,
@@ -155,7 +155,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
                 output,
             )),
             Err((upstream, error)) => Err((
-                Intermediary {
+                Self {
                     downstream,
                     upstream,
                     pipeline,

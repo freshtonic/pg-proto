@@ -57,7 +57,7 @@ rcgen = "0.14.8"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 tokio-postgres = "0.7.18"
-tokio-postgres-rustls = "0.13.0"
+tokio-postgres-rustls = "0.14.0"
 trybuild = "1.0.120"
 
 [[bench]]

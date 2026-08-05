@@ -108,11 +108,14 @@ mutable access to a caller-defined state value, so statistics and other
 connection-local policy do not require global storage. Returning the message
 unchanged is the identity operation.
 
-`intercept_checked` validates the final replacement against a generated runtime
-protocol state and verifies that it can be encoded. Illegal replacements are
-returned without advancing the session. `MessageMiddlewareExt::then` chains
-stages in order, passing each replacement to the next stage and stopping at the
-first error.
+`intercept_checked` validates the final replacement at runtime against a
+generated `RuntimeState` value and verifies that it can be encoded. The compiler
+still enforces message direction and that the state type supplies the correct
+validator, but replacement-variant legality cannot be decided at compile time
+because middleware may choose a different variant dynamically. Illegal
+replacements are returned without advancing the session.
+`MessageMiddlewareExt::then` chains stages in order, passing each replacement to
+the next stage and stopping at the first error.
 
 ```rust
 use bytes::Bytes;

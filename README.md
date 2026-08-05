@@ -30,6 +30,8 @@ typed messages.
   `S` and `E` cannot be decoded in the wrong direction.
 - Typed pre-startup handling for `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
   and `StartupMessage`, including transport-changing rustls upgrades.
+- A plain/client-TLS/server-TLS network stream, configurable TCP socket options,
+  and outbound connection retry with capped exponential backoff.
 - Independent client-facing and upstream authentication sessions, including
   cleartext, MD5, SCRAM-SHA-256, and SCRAM-SHA-256-PLUS with channel binding.
 - Simple and extended query sessions, pipelining, error draining, function calls,

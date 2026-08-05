@@ -11,6 +11,7 @@ pub mod erased;
 pub mod grammar;
 pub mod integrations;
 pub mod intermediary;
+pub mod middleware;
 pub mod net;
 pub mod pipeline;
 pub mod pre_startup;

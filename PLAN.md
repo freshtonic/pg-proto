@@ -248,14 +248,14 @@ neutral composition harnesses and examples.
 
 - [ ] Move the examples' protocol observation and rewriting mechanism into a
   policy-neutral core `middleware` module.
-  - [ ] Define direction-specific middleware for owned `FrontendMessage` and
+  - [x] Define direction-specific middleware for owned `FrontendMessage` and
     `BackendMessage` values. Returning the input value is the no-op; middleware
     may mutate it or replace it with another message of the same direction.
-  - [ ] Pass caller-owned mutable state through every invocation, with accessors
+  - [x] Pass caller-owned mutable state through every invocation, with accessors
     to borrow or recover that state for statistics and other accumulated policy.
-  - [ ] Provide closure adapters and an identity middleware so simple observers
+  - [x] Provide closure adapters and an identity middleware so simple observers
     do not require bespoke wrapper types.
-  - [ ] Compose middleware in deterministic order, feeding each stage's output
+  - [x] Compose middleware in deterministic order, feeding each stage's output
     into the next stage and stopping at the first error.
 - [ ] Integrate middleware at state-aware protocol boundaries after decoding and
   before projection, demultiplexing, or typestate advancement.
@@ -278,7 +278,7 @@ neutral composition harnesses and examples.
   - [ ] Retain `Intermediary::inspect` only as a low-level escape hatch, clearly
     distinguishing it from checked state-aware middleware.
 - [ ] Verify the abstraction at unit, state-machine, and network boundaries.
-  - [ ] Test no-op identity, mutation, replacement, state access, ordering,
+  - [x] Test no-op identity, mutation, replacement, state access, ordering,
     composition, and error short-circuiting.
   - [ ] Reject messages illegal in authentication, extended-query recovery,
     COPY, replication, and pre-startup states.

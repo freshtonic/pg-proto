@@ -278,10 +278,15 @@ impl<State, Handler> Middleware<State, Handler> {
         self.handler.intercept(&mut self.state, message)
     }
 
-    /// Intercepts a message and checks the result against `protocol_state`.
+    /// Intercepts a message and checks the result against `protocol_state` at runtime.
     ///
-    /// Validation happens after the complete middleware chain, immediately
-    /// before a caller projects and advances its protocol state.
+    /// The compiler enforces the message direction and requires `ProtocolState`
+    /// to implement [`AcceptsMessage`] for that message type. The replacement's
+    /// concrete variant and the supplied generated [`crate::grammar`] runtime
+    /// state value are dynamic, however, so protocol legality and wire
+    /// reconstructability are checked at runtime after the complete middleware
+    /// chain. Call this immediately before projecting and advancing the same
+    /// protocol state.
     ///
     /// # Errors
     ///

@@ -19,6 +19,7 @@ jobs:
     name: Reuse successful PR CI
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     outputs:
       tested: ${{ steps.check.outputs.tested }}
     steps:
@@ -31,51 +32,98 @@ jobs:
         run: |
           echo "tested=false" >> "$GITHUB_OUTPUT"
 
-          pr="$(
-            gh api "repos/$REPO/commits/$COMMIT/pulls" \
-              --jq 'map(select(.merged_at != null)) | sort_by(.merged_at) | last' \
-              2>/dev/null || true
-          )"
+          max_attempts=6
+          retry_delay=10
 
-          if [ -z "$pr" ] || [ "$pr" = "null" ]; then
-            exit 0
-          fi
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "::group::Reuse lookup attempt $attempt of $max_attempts"
 
-          head_sha="$(jq -r '.head.sha // empty' <<<"$pr")"
-          head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr")"
+            commit_json="$(
+              gh api "repos/$REPO/git/commits/$COMMIT" 2>/dev/null || true
+            )"
+            main_tree="$(jq -r '.tree.sha // empty' <<<"${commit_json:-null}")"
+            parent_count="$(jq -r '.parents | length' <<<"${commit_json:-null}")"
 
-          if [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
-            exit 0
-          fi
+            pr="$(
+              gh api "repos/$REPO/commits/$COMMIT/pulls" \
+                --jq 'map(select(.merged_at != null)) | sort_by(.merged_at) | last' \
+                2>/dev/null || true
+            )"
+            head_sha="$(jq -r '.head.sha // empty' <<<"${pr:-null}")"
+            head_repo="$(jq -r '.head.repo.full_name // empty' <<<"${pr:-null}")"
+            source="associated merged PR"
 
-          main_tree="$(
-            gh api "repos/$REPO/git/commits/$COMMIT" --jq '.tree.sha' \
-              2>/dev/null || true
-          )"
-          pr_tree="$(
-            gh api "repos/$head_repo/git/commits/$head_sha" --jq '.tree.sha' \
-              2>/dev/null || true
-          )"
+            # Commit-to-PR associations are eventually consistent after a merge.
+            # A normal two-parent merge records the exact PR head as parent 2,
+            # which provides a safe fallback while that index catches up.
+            if [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
+              if [ "$parent_count" = "2" ]; then
+                head_sha="$(jq -r '.parents[1].sha // empty' <<<"$commit_json")"
+                head_repo="$REPO"
+                source="second merge parent"
+              fi
+            fi
 
-          if [ -z "$main_tree" ] || [ "$main_tree" != "$pr_tree" ]; then
-            exit 0
-          fi
+            if [ -z "$main_tree" ]; then
+              reason="main commit metadata is not available yet"
+            elif [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
+              reason="no merged PR association or two-parent merge fallback is available yet"
+            else
+              echo "Candidate $head_sha resolved from $source"
+              pr_tree="$(
+                gh api "repos/$head_repo/git/commits/$head_sha" --jq '.tree.sha' \
+                  2>/dev/null || true
+              )"
 
-          passed="$(
-            gh api \
-              --method GET \
-              -f event=pull_request \
-              -f head_sha="$head_sha" \
-              -f status=completed \
-              -f per_page=100 \
-              "repos/$REPO/actions/workflows/ci.yml/runs" \
-              --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0' \
-              2>/dev/null || true
-          )"
+              if [ -z "$pr_tree" ] && [ "$head_repo" != "$REPO" ]; then
+                # GitHub retains a merged fork head as an object in the base
+                # repository even if the fork or branch has since been deleted.
+                pr_tree="$(
+                  gh api "repos/$REPO/git/commits/$head_sha" --jq '.tree.sha' \
+                    2>/dev/null || true
+                )"
+              fi
 
-          if [ "$passed" = "true" ]; then
-            echo "tested=true" >> "$GITHUB_OUTPUT"
-          fi
+              if [ -z "$pr_tree" ]; then
+                reason="candidate commit metadata is not available yet"
+              elif [ "$main_tree" != "$pr_tree" ]; then
+                echo "Main tree $main_tree differs from candidate tree $pr_tree"
+                echo "::endgroup::"
+                echo "::notice title=PR CI not reused::The main and PR trees differ."
+                exit 0
+              else
+                echo "Main and candidate share tree $main_tree"
+                passed="$(
+                  gh api \
+                    --method GET \
+                    -f event=pull_request \
+                    -f head_sha="$head_sha" \
+                    -f status=completed \
+                    -f per_page=100 \
+                    "repos/$REPO/actions/workflows/ci.yml/runs" \
+                    --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0' \
+                    2>/dev/null || true
+                )"
+
+                if [ "$passed" = "true" ]; then
+                  echo "Successful pull-request CI found for $head_sha"
+                  echo "::endgroup::"
+                  echo "tested=true" >> "$GITHUB_OUTPUT"
+                  echo "::notice title=PR CI reused::Skipping duplicate CI for tree $main_tree."
+                  exit 0
+                fi
+                reason="a successful pull-request CI run is not available yet"
+              fi
+            fi
+
+            echo "$reason"
+            echo "::endgroup::"
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep "$retry_delay"
+            fi
+          done
+
+          echo "::notice title=PR CI not reused::No reusable successful PR run was found after $max_attempts attempts; running CI."
 
   test:
     name: Tests and quality gates

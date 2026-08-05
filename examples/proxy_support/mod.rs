@@ -42,10 +42,11 @@ pub enum Observation {
 
 pub type Reporter = Arc<dyn Fn(Observation) + Send + Sync>;
 
-#[derive(Debug)]
 struct ExampleState {
     connection: u64,
     rows: usize,
+    reporter: Reporter,
+    pre_startup_direction: &'static str,
 }
 
 #[derive(Clone)]
@@ -65,6 +66,8 @@ fn middleware(connection: u64, reporter: Reporter) -> ExampleMiddleware {
         ExampleState {
             connection,
             rows: 0,
+            reporter: Arc::clone(&reporter),
+            pre_startup_direction: "client -> server",
         },
         ProtocolLogger(Arc::clone(&reporter))
             .then(SqlLogger(Arc::clone(&reporter)))
@@ -98,7 +101,7 @@ impl MessageMiddleware<PreStartupMessage, ExampleState> for ProtocolLogger {
     ) -> Result<PreStartupMessage, Self::Error> {
         (self.0)(Observation::Protocol {
             connection: state.connection,
-            direction: "client -> server",
+            direction: state.pre_startup_direction,
             message: format!("{message:?}"),
         });
         Ok(message)
@@ -309,12 +312,22 @@ async fn proxy_connection(
             PreStartupOffer::Ssl(decision) => {
                 let mut handshake = decision.approve_ssl();
                 handshake.flush().await?;
+                (middleware.state().reporter)(Observation::Protocol {
+                    connection: middleware.state().connection,
+                    direction: "server -> client",
+                    message: "SslAccepted".to_owned(),
+                });
                 let encrypted = handshake.accept_tls(tls.config, tls.certificate).await?;
                 return encrypted_startup(encrypted, upstream, middleware).await;
             }
             PreStartupOffer::Gss(decision) => {
                 pre_startup = decision.decline_gss();
                 pre_startup.flush().await?;
+                (middleware.state().reporter)(Observation::Protocol {
+                    connection: middleware.state().connection,
+                    direction: "server -> client",
+                    message: "GssEncryptionRejected".to_owned(),
+                });
             }
             PreStartupOffer::Cancel {
                 conn,
@@ -343,6 +356,7 @@ async fn encrypted_startup(
     upstream: SocketAddr,
     mut middleware: ExampleMiddleware,
 ) -> io::Result<()> {
+    middleware.state_mut().pre_startup_direction = "client -> server (TLS plaintext)";
     let message = middleware
         .intercept(pre_startup.receive_pre_startup_wire().await?)
         .expect("example middleware is infallible");

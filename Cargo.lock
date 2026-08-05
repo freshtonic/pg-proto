@@ -1480,6 +1480,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "sha2",
+ "socket2",
  "stringprep",
  "subtle",
  "testcontainers-modules",

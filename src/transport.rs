@@ -137,6 +137,16 @@ impl<S, D> Buffered<S, D> {
         self.io
     }
 
+    /// Borrows the underlying I/O transport without disturbing codec buffers.
+    pub const fn get_ref(&self) -> &S {
+        &self.io
+    }
+
+    /// Mutably borrows the underlying I/O transport without disturbing codec buffers.
+    pub const fn get_mut(&mut self) -> &mut S {
+        &mut self.io
+    }
+
     fn push_raw(&mut self, bytes: &[u8]) {
         self.outbound.extend_from_slice(bytes);
     }

@@ -17,6 +17,8 @@ work using that feature is complete.
 - [x] Raw pre-startup framing for SSL, GSSENC, cancellation, and startup packets.
 - [x] Client and server TLS negotiation with transport-type replacement.
 - [x] `sslmode` policy and `tls-server-end-point` channel binding.
+- [x] Erased plain/client-TLS/server-TLS network streams plus configurable TCP
+  socket options and connection retry for production proxy integration.
 - [x] Buffered GSSENC request/reply sequencing, including historical `E` replies.
 - [x] Expose a production GSSAPI encrypted-transport integration boundary.
   The audited Proxy and pgcat revisions do not implement GSSENC, so selecting a

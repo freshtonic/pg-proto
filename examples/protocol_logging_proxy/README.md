@@ -3,6 +3,8 @@
 This companion example forwards the same traffic while printing every decoded
 pre-startup, frontend, and backend message with its direction and connection
 number. `PasswordResponse` uses pg-proto's redacted `Debug` implementation.
+Logging is implemented as a core message-middleware stage and composed with the
+SQL and row-statistics stages used by the companion example.
 
 Run without arguments to start and retain a PostgreSQL 18 test container loaded
 with the customer/orders fixture:

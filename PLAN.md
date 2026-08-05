@@ -244,7 +244,83 @@ neutral composition harnesses and examples.
 - [x] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.
 
+## Stateful message middleware
+
+- [x] Move the examples' protocol observation and rewriting mechanism into a
+  policy-neutral core `middleware` module.
+  - [x] Define direction-specific middleware for owned `FrontendMessage` and
+    `BackendMessage` values. Returning the input value is the no-op; middleware
+    may mutate it or replace it with another message of the same direction.
+  - [x] Pass caller-owned mutable state through every invocation, with accessors
+    to borrow or recover that state for statistics and other accumulated policy.
+  - [x] Provide closure adapters and an identity middleware so simple observers
+    do not require bespoke wrapper types.
+  - [x] Compose middleware in deterministic order, feeding each stage's output
+    into the next stage and stopping at the first error.
+- [x] Integrate middleware at state-aware protocol boundaries after decoding and
+  before projection, demultiplexing, or typestate advancement.
+  - [x] Validate every replacement with the generated state-aware message
+    projection for the current authentication, query, COPY, replication, or
+    error-recovery state.
+  - [x] Return rejected replacements without advancing either protocol session;
+    preserve the original APIs as no-middleware compatibility paths.
+  - [x] Apply backend middleware before `Demux` so asynchronous messages are
+    interceptable and rewritten parameter, cancellation, and transaction state
+    is recorded consistently.
+  - [x] Cover untagged pre-startup packets with a separate typed hook; keep raw
+    TLS/GSS decision bytes outside message middleware unless they gain a typed
+    protocol representation.
+- [x] Refactor the proxy examples onto the core abstraction.
+  - [x] Express protocol logging, SQL extraction, and row statistics as separate
+    composable middleware while retaining connection-local user state.
+  - [x] Update the rewriting example and crate documentation to demonstrate
+    no-op, mutation, replacement, state accumulation, and chaining.
+  - [x] Retain `Intermediary::inspect` only as a low-level escape hatch, clearly
+    distinguishing it from checked state-aware middleware.
+- [x] Verify the abstraction at unit, state-machine, and network boundaries.
+  - [x] Test no-op identity, mutation, replacement, state access, ordering,
+    composition, and error short-circuiting.
+  - [x] Reject messages illegal in authentication, extended-query recovery,
+    COPY, replication, and pre-startup states.
+  - [x] Confirm rewritten messages reach the peer and backend rewrites update
+    demultiplexer bookkeeping without changing wire order.
+
+The intended lifecycle is `decode -> middleware chain -> state validation ->
+projection/demux -> encode/forward`. Generic `Buffered::receive_wire` remains a
+codec boundary because it knows direction but not the current protocol state;
+checked middleware belongs on the state-aware session APIs above it.
+
 ## Optional future work
+
+### Compile-time-checked message middleware
+
+- [ ] Generate a state-specific owned message enum for every role and protocol
+  phase, containing only the frontend, backend, pre-startup, authentication,
+  COPY, replication, error-recovery, and asynchronous messages legal there.
+- [ ] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
+  output are the generated `Phase::Message` type. An illegal replacement should
+  be unrepresentable rather than rejected using a `RuntimeState` value.
+  - [ ] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
+    cannot supply a mismatched runtime state.
+  - [ ] Retain caller-owned mutable state, closure adapters, identity middleware,
+    deterministic chaining, and typed short-circuit errors.
+  - [ ] Represent asynchronous backend traffic in each applicable phase without
+    advancing the connection state or disturbing wire order.
+- [ ] Generate projection result enums whose variants carry the correctly typed
+  next `Conn`, because replacing one legal message variant with another may
+  select a different transition and therefore a different next phase.
+- [ ] Keep wire-shape validation at runtime for constraints such as embedded NUL
+  bytes and frame-size overflow, unless message fields later adopt prevalidated
+  refinement types. Document this separately from compile-time protocol legality.
+- [ ] Provide default pass-through adapters so policies can specialize only the
+  phases or message families they inspect without manually implementing every
+  generated state.
+- [ ] Add compile-fail coverage proving illegal replacements and role/state
+  mismatches do not compile, plus runtime tests for reconstruction failures,
+  composition, state threading, asynchronous traffic, and next-state selection.
+- [ ] Introduce the typed API alongside `intercept_checked`, migrate examples and
+  transport/session entry points, then consider deprecating the runtime-state API
+  only after the typed API covers every generated grammar phase.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.

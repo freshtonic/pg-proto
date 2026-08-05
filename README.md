@@ -100,19 +100,41 @@ let ready = building.sync().ready();
 let _terminated = ready.terminate();
 ```
 
-A proxy can inspect or replace a typed message before reconstructing its checked
-wire frame:
+## Stateful message middleware
+
+A proxy can inspect or replace any owned frontend, backend, or pre-startup
+message before reconstructing its checked wire representation. Middleware has
+mutable access to a caller-defined state value, so statistics and other
+connection-local policy do not require global storage. Returning the message
+unchanged is the identity operation.
+
+`intercept_checked` validates the final replacement at runtime against a
+generated `RuntimeState` value and verifies that it can be encoded. The compiler
+still enforces message direction and that the state type supplies the correct
+validator, but replacement-variant legality cannot be decided at compile time
+because middleware may choose a different variant dynamically. Illegal
+replacements are returned without advancing the session.
+`MessageMiddlewareExt::then` chains stages in order, passing each replacement to
+the next stage and stopping at the first error.
 
 ```rust
-use std::convert::Infallible;
-
 use bytes::Bytes;
 use pg_proto::{
     codec::{FrontendMessage, Parse},
-    intermediary::Intermediary,
+    grammar::backend,
+    middleware::Middleware,
 };
 
-let mut proxy = Intermediary::new((), ());
+let mut proxy = Middleware::new(0_usize, |rewrites: &mut usize, message| {
+    let FrontendMessage::Parse(mut parse) = message else {
+        return Ok::<_, std::convert::Infallible>(message);
+    };
+    *rewrites += 1;
+    parse.query = Bytes::from_static(
+        b"select decrypt_email(email) from customers where active",
+    );
+    Ok(FrontendMessage::Parse(parse))
+});
 let message = FrontendMessage::Parse(Parse {
     statement: Bytes::from_static(b"report"),
     query: Bytes::from_static(b"select email from customers"),
@@ -120,20 +142,21 @@ let message = FrontendMessage::Parse(Parse {
 });
 
 let rewritten = proxy
-    .inspect(message, |(), (), message| {
-        let FrontendMessage::Parse(mut parse) = message else {
-            unreachable!("the caller selected a Parse message")
-        };
-        parse.query = Bytes::from_static(
-            b"select decrypt_email(email) from customers where active",
-        );
-        Ok::<_, Infallible>(FrontendMessage::Parse(parse))
-    })
+    .intercept_checked(&backend::RuntimeState::Ready, message)
     .unwrap();
 
 let frame = rewritten.to_frame()?;
+assert_eq!(*proxy.state(), 1);
 # Ok::<(), std::io::Error>(())
 ```
+
+The buffered connection helpers
+`receive_frontend_wire_with_middleware`,
+`receive_backend_wire_with_middleware`, and
+`receive_pre_startup_wire_with_middleware` apply this lifecycle directly after
+decoding. `receive_with_middleware` additionally places backend interception
+before asynchronous-message demultiplexing, ensuring rewritten parameter,
+cancellation-key, and transaction-status values become the recorded values.
 
 For a complete networked example, see the TLS-terminating
 [`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion
@@ -153,6 +176,7 @@ proxy composition boundary.
 - [Client-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/session/)
 - [Server-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/server_session/)
 - [Proxy-side composition hooks](https://docs.rs/pg-proto/latest/pg_proto/intermediary/)
+- [Stateful message middleware](https://docs.rs/pg-proto/latest/pg_proto/middleware/)
 - [Bounded intermediary pipeline](https://docs.rs/pg-proto/latest/pg_proto/pipeline/)
 - [Prepared-statement and portal resources](https://docs.rs/pg-proto/latest/pg_proto/resources/)
 - [Generated protocol grammars and railroad diagrams](https://docs.rs/pg-proto/latest/pg_proto/grammar/)

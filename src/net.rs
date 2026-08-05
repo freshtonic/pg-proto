@@ -262,13 +262,13 @@ pub fn configure_tcp(stream: &TcpStream, settings: TcpSettings) -> Vec<TcpConfig
 
     let socket = SockRef::from(stream);
     #[cfg(target_os = "linux")]
-    if let Some(timeout) = settings.user_timeout {
-        if let Err(source) = socket.set_tcp_user_timeout(Some(timeout)) {
-            errors.push(TcpConfigurationError {
-                option: "TCP_USER_TIMEOUT",
-                source,
-            });
-        }
+    if let Some(timeout) = settings.user_timeout
+        && let Err(source) = socket.set_tcp_user_timeout(Some(timeout))
+    {
+        errors.push(TcpConfigurationError {
+            option: "TCP_USER_TIMEOUT",
+            source,
+        });
     }
 
     if settings.keepalive_time.is_some()

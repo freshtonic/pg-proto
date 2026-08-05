@@ -78,6 +78,16 @@ impl<S> NetworkStream<S> {
     }
 }
 
+impl<S> TlsServerEndPoint for NetworkStream<S> {
+    fn tls_server_end_point(&self) -> &[u8] {
+        match self {
+            Self::Plain(_) => &[],
+            Self::ClientTls(stream) => stream.tls_server_end_point(),
+            Self::ServerTls(stream) => stream.tls_server_end_point(),
+        }
+    }
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> NetworkStream<S> {
     /// Splits the negotiated transport into independently owned read and write halves.
     pub fn split(self) -> (tokio::io::ReadHalf<Self>, tokio::io::WriteHalf<Self>) {

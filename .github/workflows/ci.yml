@@ -7,14 +7,82 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  reuse-pr-ci:
+    name: Reuse successful PR CI
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - name: Check whether this tree passed PR CI
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          echo "tested=false" >> "$GITHUB_OUTPUT"
+
+          pr="$(
+            gh api "repos/$REPO/commits/$COMMIT/pulls" \
+              --jq 'map(select(.merged_at != null)) | sort_by(.merged_at) | last' \
+              2>/dev/null || true
+          )"
+
+          if [ -z "$pr" ] || [ "$pr" = "null" ]; then
+            exit 0
+          fi
+
+          head_sha="$(jq -r '.head.sha // empty' <<<"$pr")"
+          head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr")"
+
+          if [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
+            exit 0
+          fi
+
+          main_tree="$(
+            gh api "repos/$REPO/git/commits/$COMMIT" --jq '.tree.sha' \
+              2>/dev/null || true
+          )"
+          pr_tree="$(
+            gh api "repos/$head_repo/git/commits/$head_sha" --jq '.tree.sha' \
+              2>/dev/null || true
+          )"
+
+          if [ -z "$main_tree" ] || [ "$main_tree" != "$pr_tree" ]; then
+            exit 0
+          fi
+
+          passed="$(
+            gh api \
+              --method GET \
+              -f event=pull_request \
+              -f head_sha="$head_sha" \
+              -f status=completed \
+              -f per_page=100 \
+              "repos/$REPO/actions/workflows/ci.yml/runs" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0' \
+              2>/dev/null || true
+          )"
+
+          if [ "$passed" = "true" ]; then
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Tests and quality gates
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -41,6 +109,10 @@ jobs:
 
   benches:
     name: Benchmarks
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -54,6 +126,10 @@ jobs:
 
   msrv:
     name: MSRV 1.88
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -67,6 +143,10 @@ jobs:
 
   package:
     name: Package crates
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -80,6 +160,10 @@ jobs:
 
   fuzz:
     name: Fuzz ${{ matrix.target }}
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

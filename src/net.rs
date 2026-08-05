@@ -78,6 +78,13 @@ impl<S> NetworkStream<S> {
     }
 }
 
+impl<S: AsyncRead + AsyncWrite + Unpin> NetworkStream<S> {
+    /// Splits the negotiated transport into independently owned read and write halves.
+    pub fn split(self) -> (tokio::io::ReadHalf<Self>, tokio::io::WriteHalf<Self>) {
+        tokio::io::split(self)
+    }
+}
+
 /// A plain transport was requested after TLS had already been negotiated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlreadyTls;

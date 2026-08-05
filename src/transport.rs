@@ -18,6 +18,7 @@ use crate::{
         CancelKey, Demux, Notification, OrderedAsyncEvent, ParameterStatus, SessionItem,
         TaggedNotice,
     },
+    middleware::{AcceptsMessage, MessageMiddleware, Middleware, ReceiveError},
     pre_startup::{
         AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
         PreStartup, PreStartupMessage, ServerSslDecision, SslMode, SslModeNegotiation,
@@ -527,6 +528,29 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         self.transport_mut().receive_backend().await
     }
 
+    /// Receives, intercepts, and validates one backend message before projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, decoding, middleware-policy, or state-validation error.
+    pub async fn receive_backend_wire_with_middleware<State, Handler, ProtocolState>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+        protocol_state: &ProtocolState,
+    ) -> Result<BackendMessage, ReceiveError<Handler::Error, BackendMessage>>
+    where
+        Handler: MessageMiddleware<BackendMessage, State>,
+        ProtocolState: AcceptsMessage<BackendMessage>,
+    {
+        let message = self
+            .receive_backend_wire()
+            .await
+            .map_err(ReceiveError::Io)?;
+        middleware
+            .intercept_checked(protocol_state, message)
+            .map_err(ReceiveError::Intercept)
+    }
+
     /// Projects an inspected or modified message into the filtered session stream.
     pub fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
         self.transport_mut().project_backend(message)
@@ -539,6 +563,33 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
     pub async fn receive(&mut self) -> io::Result<SessionItem> {
         self.transport_mut().receive_session().await
+    }
+
+    /// Receives backend messages through middleware before demultiplexing.
+    ///
+    /// Asynchronous messages are intercepted and then recorded by the demux;
+    /// this method continues until a protocol-advancing item is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, decoding, middleware-policy, or state-validation error.
+    pub async fn receive_with_middleware<State, Handler, ProtocolState>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+        protocol_state: &ProtocolState,
+    ) -> Result<SessionItem, ReceiveError<Handler::Error, BackendMessage>>
+    where
+        Handler: MessageMiddleware<BackendMessage, State>,
+        ProtocolState: AcceptsMessage<BackendMessage>,
+    {
+        loop {
+            let message = self
+                .receive_backend_wire_with_middleware(middleware, protocol_state)
+                .await?;
+            if let Some(item) = self.project_backend(message) {
+                return Ok(item);
+            }
+        }
     }
 
     #[must_use]
@@ -595,6 +646,29 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     pub async fn receive_frontend_wire(&mut self) -> io::Result<FrontendMessage> {
         self.transport_mut().receive_wire().await
     }
+
+    /// Receives, intercepts, and validates one frontend message before projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, decoding, middleware-policy, or state-validation error.
+    pub async fn receive_frontend_wire_with_middleware<State, Handler, ProtocolState>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+        protocol_state: &ProtocolState,
+    ) -> Result<FrontendMessage, ReceiveError<Handler::Error, FrontendMessage>>
+    where
+        Handler: MessageMiddleware<FrontendMessage, State>,
+        ProtocolState: AcceptsMessage<FrontendMessage>,
+    {
+        let message = self
+            .receive_frontend_wire()
+            .await
+            .map_err(ReceiveError::Io)?;
+        middleware
+            .intercept_checked(protocol_state, message)
+            .map_err(ReceiveError::Intercept)
+    }
 }
 
 impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
@@ -606,11 +680,35 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
     pub async fn receive_pre_startup_wire(&mut self) -> io::Result<PreStartupMessage> {
         self.transport_mut().receive_pre_startup().await
     }
+
+    /// Receives, intercepts, and validates one untagged pre-startup message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, decoding, middleware-policy, or state-validation error.
+    pub async fn receive_pre_startup_wire_with_middleware<State, Handler, ProtocolState>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+        protocol_state: &ProtocolState,
+    ) -> Result<PreStartupMessage, ReceiveError<Handler::Error, PreStartupMessage>>
+    where
+        Handler: MessageMiddleware<PreStartupMessage, State>,
+        ProtocolState: AcceptsMessage<PreStartupMessage>,
+    {
+        let message = self
+            .receive_pre_startup_wire()
+            .await
+            .map_err(ReceiveError::Io)?;
+        middleware
+            .intercept_checked(protocol_state, message)
+            .map_err(ReceiveError::Intercept)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
+        convert::Infallible,
         future::Future,
         pin::Pin,
         task::{Context, Poll},
@@ -620,6 +718,10 @@ mod tests {
     use tokio::io::AsyncWrite;
 
     use super::*;
+    use crate::{
+        grammar::{backend, frontend, server_pre_startup},
+        middleware::{InterceptError, Middleware, ReceiveError},
+    };
 
     #[derive(Debug, Default)]
     struct ShortWriter {
@@ -809,6 +911,195 @@ mod tests {
                 .get(&Bytes::from_static(b"application_name")),
             Some(&Bytes::from_static(b"proxy"))
         );
+    }
+
+    #[tokio::test]
+    async fn middleware_rewrites_backend_before_demux_bookkeeping() {
+        let (client, mut server) = tokio::io::duplex(256);
+        let mut wire = BytesMut::new();
+        let mut encoder = PgCodec::<Backend>::default();
+        for message in [
+            BackendMessage::BackendKeyData {
+                process_id: 7,
+                secret_key: Bytes::from_static(b"old!"),
+            },
+            BackendMessage::ParameterStatus {
+                name: Bytes::from_static(b"application_name"),
+                value: Bytes::from_static(b"upstream"),
+            },
+            BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
+        ] {
+            encoder
+                .encode(
+                    message.to_frame().expect("reconstructable message"),
+                    &mut wire,
+                )
+                .expect("encodable message");
+        }
+        server.write_all(&wire).await.expect("writable test peer");
+
+        let transport = Buffered::new(client);
+        let mut conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
+        let mut middleware = Middleware::new(0_usize, |seen: &mut usize, mut message| {
+            *seen += 1;
+            if let BackendMessage::ParameterStatus { value, .. } = &mut message {
+                *value = Bytes::from_static(b"proxy");
+            }
+            if let BackendMessage::BackendKeyData {
+                process_id,
+                secret_key,
+            } = &mut message
+            {
+                *process_id = 9;
+                *secret_key = Bytes::from_static(b"new!");
+            }
+            if let BackendMessage::ReadyForQuery(status) = &mut message {
+                *status = crate::codec::TransactionStatus::InTransaction;
+            }
+            Ok::<_, Infallible>(message)
+        });
+
+        assert!(matches!(
+            conn.receive_with_middleware(&mut middleware, &frontend::RuntimeState::Simple)
+                .await,
+            Ok(SessionItem::Message(BackendMessage::BackendKeyData { .. }))
+        ));
+        assert!(matches!(
+            conn.receive_with_middleware(&mut middleware, &frontend::RuntimeState::Simple)
+                .await,
+            Ok(SessionItem::ReadyForQuery { .. })
+        ));
+        assert_eq!(*middleware.state(), 3);
+        assert_eq!(
+            conn.parameters().get(b"application_name".as_slice()),
+            Some(&Bytes::from_static(b"proxy"))
+        );
+        assert_eq!(
+            conn.cancel_key(),
+            Some(&CancelKey {
+                process_id: 9,
+                secret_key: Bytes::from_static(b"new!"),
+            })
+        );
+        assert_eq!(
+            conn.transaction_status(),
+            Some(crate::codec::TransactionStatus::InTransaction)
+        );
+        conn.into_transport();
+    }
+
+    #[tokio::test]
+    async fn frontend_middleware_returns_illegal_replacement_before_projection() {
+        let (proxy, mut client) = tokio::io::duplex(128);
+        let original = FrontendMessage::CopyData(Bytes::from_static(b"row"));
+        let mut bytes = BytesMut::new();
+        PgCodec::<Frontend>::default()
+            .encode(
+                original.to_frame().expect("reconstructable message"),
+                &mut bytes,
+            )
+            .expect("encodable message");
+        client.write_all(&bytes).await.expect("writable client");
+
+        let mut conn = Conn::new(Buffered::<_, Frontend>::new_frontend(proxy));
+        let mut middleware = Middleware::new((), |_state: &mut (), _message| {
+            Ok::<_, Infallible>(FrontendMessage::Query(Bytes::from_static(b"select 1")))
+        });
+        let result = conn
+            .receive_frontend_wire_with_middleware(
+                &mut middleware,
+                &backend::RuntimeState::SimpleCopyIn,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ReceiveError::Intercept(InterceptError::Invalid(
+                FrontendMessage::Query(_)
+            )))
+        ));
+        conn.into_transport();
+    }
+
+    #[tokio::test]
+    async fn middleware_replacement_reaches_the_forwarded_peer() {
+        let (client_side, mut client) = tokio::io::duplex(128);
+        let original = FrontendMessage::Query(Bytes::from_static(b"select plaintext"));
+        let mut bytes = BytesMut::new();
+        PgCodec::<Frontend>::default()
+            .encode(
+                original.to_frame().expect("reconstructable message"),
+                &mut bytes,
+            )
+            .expect("encodable message");
+        client.write_all(&bytes).await.expect("writable client");
+
+        let mut downstream = Conn::new(Buffered::<_, Frontend>::new_frontend(client_side));
+        let mut middleware = Middleware::new((), |_state: &mut (), _message| {
+            Ok::<_, Infallible>(FrontendMessage::Query(Bytes::from_static(
+                b"select encrypted",
+            )))
+        });
+        let rewritten = downstream
+            .receive_frontend_wire_with_middleware(&mut middleware, &backend::RuntimeState::Ready)
+            .await
+            .expect("legal rewritten query");
+
+        let (upstream_side, mut server) = tokio::io::duplex(128);
+        let mut upstream = Buffered::<_, Backend>::new(upstream_side);
+        upstream
+            .push(rewritten.to_frame().expect("reconstructable replacement"))
+            .expect("encodable replacement");
+        upstream.flush().await.expect("writable upstream");
+
+        let mut received = BytesMut::new();
+        server
+            .read_buf(&mut received)
+            .await
+            .expect("readable upstream peer");
+        assert_eq!(
+            PgCodec::<Frontend>::default()
+                .decode(&mut received)
+                .expect("decodable frame"),
+            Some(FrontendMessage::Query(Bytes::from_static(
+                b"select encrypted"
+            )))
+        );
+        downstream.into_transport();
+    }
+
+    #[tokio::test]
+    async fn pre_startup_middleware_can_replace_with_another_legal_choice() {
+        let (proxy, mut client) = tokio::io::duplex(128);
+        client
+            .write_all(
+                &PreStartupMessage::SslRequest
+                    .to_packet()
+                    .expect("encodable SSLRequest"),
+            )
+            .await
+            .expect("writable client");
+
+        let mut conn = Conn::new(Buffered::<_, Frontend>::new_frontend(proxy));
+        let replacement = PreStartupMessage::CancelRequest {
+            process_id: 42,
+            secret_key: Bytes::from_static(b"key!"),
+        };
+        let expected = replacement.clone();
+        let mut middleware = Middleware::new((), move |_state: &mut (), _message| {
+            Ok::<_, Infallible>(replacement.clone())
+        });
+
+        assert_eq!(
+            conn.receive_pre_startup_wire_with_middleware(
+                &mut middleware,
+                &server_pre_startup::RuntimeState::PreStartup,
+            )
+            .await
+            .expect("legal replacement"),
+            expected
+        );
+        conn.into_transport();
     }
 
     #[tokio::test]

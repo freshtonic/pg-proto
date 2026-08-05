@@ -169,6 +169,9 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
     ///
     /// The message and result types are chosen by downstream code; `pg-proto`
     /// neither prescribes a rewrite policy nor advances either session implicitly.
+    /// This is a low-level escape hatch: prefer
+    /// [`crate::middleware::Middleware::intercept_checked`] when rewriting wire
+    /// messages so replacements are checked against the current protocol state.
     ///
     /// # Errors
     ///

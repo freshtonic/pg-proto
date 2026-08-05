@@ -246,7 +246,7 @@ neutral composition harnesses and examples.
 
 ## Stateful message middleware
 
-- [ ] Move the examples' protocol observation and rewriting mechanism into a
+- [x] Move the examples' protocol observation and rewriting mechanism into a
   policy-neutral core `middleware` module.
   - [x] Define direction-specific middleware for owned `FrontendMessage` and
     `BackendMessage` values. Returning the input value is the no-op; middleware
@@ -257,32 +257,32 @@ neutral composition harnesses and examples.
     do not require bespoke wrapper types.
   - [x] Compose middleware in deterministic order, feeding each stage's output
     into the next stage and stopping at the first error.
-- [ ] Integrate middleware at state-aware protocol boundaries after decoding and
+- [x] Integrate middleware at state-aware protocol boundaries after decoding and
   before projection, demultiplexing, or typestate advancement.
-  - [ ] Validate every replacement with the generated state-aware message
+  - [x] Validate every replacement with the generated state-aware message
     projection for the current authentication, query, COPY, replication, or
     error-recovery state.
-  - [ ] Return rejected replacements without advancing either protocol session;
+  - [x] Return rejected replacements without advancing either protocol session;
     preserve the original APIs as no-middleware compatibility paths.
-  - [ ] Apply backend middleware before `Demux` so asynchronous messages are
+  - [x] Apply backend middleware before `Demux` so asynchronous messages are
     interceptable and rewritten parameter, cancellation, and transaction state
     is recorded consistently.
-  - [ ] Cover untagged pre-startup packets with a separate typed hook; keep raw
+  - [x] Cover untagged pre-startup packets with a separate typed hook; keep raw
     TLS/GSS decision bytes outside message middleware unless they gain a typed
     protocol representation.
-- [ ] Refactor the proxy examples onto the core abstraction.
-  - [ ] Express protocol logging, SQL extraction, and row statistics as separate
+- [x] Refactor the proxy examples onto the core abstraction.
+  - [x] Express protocol logging, SQL extraction, and row statistics as separate
     composable middleware while retaining connection-local user state.
-  - [ ] Update the rewriting example and crate documentation to demonstrate
+  - [x] Update the rewriting example and crate documentation to demonstrate
     no-op, mutation, replacement, state accumulation, and chaining.
-  - [ ] Retain `Intermediary::inspect` only as a low-level escape hatch, clearly
+  - [x] Retain `Intermediary::inspect` only as a low-level escape hatch, clearly
     distinguishing it from checked state-aware middleware.
-- [ ] Verify the abstraction at unit, state-machine, and network boundaries.
+- [x] Verify the abstraction at unit, state-machine, and network boundaries.
   - [x] Test no-op identity, mutation, replacement, state access, ordering,
     composition, and error short-circuiting.
-  - [ ] Reject messages illegal in authentication, extended-query recovery,
+  - [x] Reject messages illegal in authentication, extended-query recovery,
     COPY, replication, and pre-startup states.
-  - [ ] Confirm rewritten messages reach the peer and backend rewrites update
+  - [x] Confirm rewritten messages reach the peer and backend rewrites update
     demultiplexer bookkeeping without changing wire order.
 
 The intended lifecycle is `decode -> middleware chain -> state validation ->

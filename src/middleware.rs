@@ -6,7 +6,121 @@
 //! session APIs remain responsible for checking that the result is legal in their
 //! current state before advancing.
 
-use std::convert::Infallible;
+use std::{convert::Infallible, io};
+
+use crate::{
+    codec::{BackendMessage, FrontendMessage},
+    demux::Demux,
+    grammar::{
+        authentication, backend, frontend, pre_startup, server_authentication, server_pre_startup,
+    },
+    pre_startup::{EncryptionReply, PreStartupMessage},
+};
+
+/// State-aware validation of one directional protocol message type.
+pub trait AcceptsMessage<Message> {
+    /// Reports whether `message` is legal without advancing this state.
+    fn accepts(&self, message: &Message) -> bool;
+}
+
+/// A protocol message which can verify that it has a valid wire representation.
+pub trait ReconstructableMessage {
+    /// Reports whether this typed value can be encoded on the wire.
+    fn is_reconstructable(&self) -> bool;
+}
+
+impl ReconstructableMessage for FrontendMessage {
+    fn is_reconstructable(&self) -> bool {
+        self.to_frame().is_ok()
+    }
+}
+
+impl ReconstructableMessage for BackendMessage {
+    fn is_reconstructable(&self) -> bool {
+        self.to_frame().is_ok()
+    }
+}
+
+impl ReconstructableMessage for PreStartupMessage {
+    fn is_reconstructable(&self) -> bool {
+        self.to_packet().is_ok()
+    }
+}
+
+impl ReconstructableMessage for EncryptionReply {
+    fn is_reconstructable(&self) -> bool {
+        true
+    }
+}
+
+macro_rules! projected_messages {
+    ($state:path, $internal:ty, $external:ty, $project_internal:path, $project_external:path) => {
+        impl AcceptsMessage<$internal> for $state {
+            fn accepts(&self, message: &$internal) -> bool {
+                $project_internal(*self, message).is_some()
+            }
+        }
+
+        impl AcceptsMessage<$external> for $state {
+            fn accepts(&self, message: &$external) -> bool {
+                $project_external(*self, message).is_some()
+            }
+        }
+    };
+}
+
+projected_messages!(
+    pre_startup::RuntimeState,
+    PreStartupMessage,
+    EncryptionReply,
+    pre_startup::project_internal,
+    pre_startup::project_external
+);
+projected_messages!(
+    server_pre_startup::RuntimeState,
+    EncryptionReply,
+    PreStartupMessage,
+    server_pre_startup::project_internal,
+    server_pre_startup::project_external
+);
+projected_messages!(
+    authentication::RuntimeState,
+    FrontendMessage,
+    BackendMessage,
+    authentication::project_internal,
+    authentication::project_external
+);
+projected_messages!(
+    server_authentication::RuntimeState,
+    BackendMessage,
+    FrontendMessage,
+    server_authentication::project_internal,
+    server_authentication::project_external
+);
+
+impl AcceptsMessage<FrontendMessage> for frontend::RuntimeState {
+    fn accepts(&self, message: &FrontendMessage) -> bool {
+        frontend::project_internal(*self, message).is_some()
+    }
+}
+
+impl AcceptsMessage<BackendMessage> for frontend::RuntimeState {
+    fn accepts(&self, message: &BackendMessage) -> bool {
+        Demux::is_asynchronous(message) || frontend::project_external(*self, message).is_some()
+    }
+}
+
+impl AcceptsMessage<BackendMessage> for backend::RuntimeState {
+    fn accepts(&self, message: &BackendMessage) -> bool {
+        Demux::is_asynchronous(message) || backend::project_internal(*self, message).is_some()
+    }
+}
+
+impl AcceptsMessage<FrontendMessage> for backend::RuntimeState {
+    fn accepts(&self, message: &FrontendMessage) -> bool {
+        backend::project_external(*self, message).is_some()
+    }
+}
 
 /// Intercepts an owned message with access to caller-defined state.
 ///
@@ -96,6 +210,24 @@ pub enum ChainError<First, Second> {
     Second(Second),
 }
 
+/// Failure while applying or validating middleware output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterceptError<Error, Message> {
+    /// Middleware rejected the message according to its own policy.
+    Middleware(Error),
+    /// Middleware returned a message which is illegal in the supplied state.
+    Invalid(Message),
+}
+
+/// I/O or interception failure while receiving a middleware-checked message.
+#[derive(Debug)]
+pub enum ReceiveError<Error, Message> {
+    /// Reading or decoding the message failed.
+    Io(io::Error),
+    /// Middleware rejected the message or produced an illegal replacement.
+    Intercept(InterceptError<Error, Message>),
+}
+
 /// Owns user state and middleware as one reusable interception unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Middleware<State, Handler> {
@@ -145,11 +277,52 @@ impl<State, Handler> Middleware<State, Handler> {
     {
         self.handler.intercept(&mut self.state, message)
     }
+
+    /// Intercepts a message and checks the result against `protocol_state`.
+    ///
+    /// Validation happens after the complete middleware chain, immediately
+    /// before a caller projects and advances its protocol state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a middleware policy error, or the unchanged replacement when it
+    /// is not legal in `protocol_state`.
+    pub fn intercept_checked<Message, ProtocolState>(
+        &mut self,
+        protocol_state: &ProtocolState,
+        message: Message,
+    ) -> Result<Message, InterceptError<Handler::Error, Message>>
+    where
+        Message: ReconstructableMessage,
+        Handler: MessageMiddleware<Message, State>,
+        ProtocolState: AcceptsMessage<Message>,
+    {
+        let message = self
+            .intercept(message)
+            .map_err(InterceptError::Middleware)?;
+        if message.is_reconstructable() && protocol_state.accepts(&message) {
+            Ok(message)
+        } else {
+            Err(InterceptError::Invalid(message))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChainError, Identity, MessageMiddlewareExt as _, Middleware};
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+
+    use super::{
+        AcceptsMessage as _, ChainError, Identity, InterceptError, MessageMiddlewareExt as _,
+        Middleware,
+    };
+    use crate::{
+        codec::{FrontendMessage, Parse},
+        grammar::{backend, server_authentication, server_pre_startup},
+        pre_startup::PreStartupMessage,
+    };
 
     #[test]
     fn identity_is_a_no_op() {
@@ -213,5 +386,98 @@ mod tests {
             Err(ChainError::First("rejected"))
         );
         assert_eq!(*middleware.state(), 1);
+    }
+
+    #[test]
+    fn checked_interception_accepts_a_legal_replacement() {
+        let mut middleware = Middleware::new((), |_state: &mut (), _message: FrontendMessage| {
+            Ok::<_, Infallible>(FrontendMessage::Terminate)
+        });
+
+        assert_eq!(
+            middleware.intercept_checked(
+                &backend::RuntimeState::Ready,
+                FrontendMessage::Query(Bytes::from_static(b"select 1")),
+            ),
+            Ok(FrontendMessage::Terminate)
+        );
+    }
+
+    #[test]
+    fn checked_interception_returns_an_illegal_replacement() {
+        let replacement = FrontendMessage::Parse(Parse {
+            statement: Bytes::new(),
+            query: Bytes::from_static(b"select 2"),
+            parameter_types: Vec::new(),
+        });
+        let expected = replacement.clone();
+        let mut middleware =
+            Middleware::new((), move |_state: &mut (), _message: FrontendMessage| {
+                Ok::<_, Infallible>(replacement.clone())
+            });
+
+        assert_eq!(
+            middleware.intercept_checked(
+                &backend::RuntimeState::Simple,
+                FrontendMessage::Query(Bytes::from_static(b"select 1")),
+            ),
+            Err(InterceptError::Invalid(expected))
+        );
+    }
+
+    #[test]
+    fn generated_states_cover_authentication_extended_query_copy_and_replication() {
+        let password = FrontendMessage::PasswordResponse(Bytes::from_static(b"secret"));
+        assert!(server_authentication::RuntimeState::PasswordResponse.accepts(&password));
+        assert!(
+            !server_authentication::RuntimeState::PasswordResponse
+                .accepts(&FrontendMessage::Query(Bytes::from_static(b"select 1")))
+        );
+
+        let parse = FrontendMessage::Parse(Parse {
+            statement: Bytes::from_static(b"statement"),
+            query: Bytes::from_static(b"select 1"),
+            parameter_types: Vec::new(),
+        });
+        assert!(backend::RuntimeState::Building.accepts(&parse));
+        assert!(
+            !backend::RuntimeState::Building
+                .accepts(&FrontendMessage::Query(Bytes::from_static(b"select 1")))
+        );
+        assert!(backend::RuntimeState::ExtendedError.accepts(&parse));
+        assert!(backend::RuntimeState::ExtendedError.accepts(&FrontendMessage::Sync));
+
+        let copy = FrontendMessage::CopyData(Bytes::from_static(b"data"));
+        assert!(backend::RuntimeState::SimpleCopyIn.accepts(&copy));
+        assert!(backend::RuntimeState::ExtendedCopyBoth.accepts(&copy));
+        assert!(
+            !backend::RuntimeState::ExtendedCopyBoth
+                .accepts(&FrontendMessage::Query(Bytes::from_static(b"select 1")))
+        );
+
+        assert!(
+            server_pre_startup::RuntimeState::PreStartup.accepts(&PreStartupMessage::SslRequest)
+        );
+        assert!(
+            !server_pre_startup::RuntimeState::SslDecision.accepts(&PreStartupMessage::SslRequest)
+        );
+    }
+
+    #[test]
+    fn checked_interception_rejects_an_unencodable_message() {
+        let invalid = FrontendMessage::Parse(Parse {
+            statement: Bytes::from_static(b"invalid\0name"),
+            query: Bytes::from_static(b"select 1"),
+            parameter_types: Vec::new(),
+        });
+        let expected = invalid.clone();
+        let mut middleware = Middleware::new((), move |_state: &mut (), _message| {
+            Ok::<_, Infallible>(invalid.clone())
+        });
+
+        assert_eq!(
+            middleware.intercept_checked(&backend::RuntimeState::Ready, FrontendMessage::Terminate),
+            Err(InterceptError::Invalid(expected))
+        );
     }
 }

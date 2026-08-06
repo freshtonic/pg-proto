@@ -5,7 +5,6 @@ error[E0423]: cannot initialize a tuple struct which contains private fields
   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
 note: constructor is not visible here due to private fields
- --> src/grammar.rs
+ --> <WORKSPACE>/src/grammar.rs:257:22
   |
-  |             external: crate::codec::FrontendMessage,
-  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private field
+  = note: private field

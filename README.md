@@ -160,6 +160,17 @@ asynchronous messages pass through typed middleware in wire order without
 advancing the connection phase; `receive_typed` then records them before
 returning the next protocol-advancing `SessionItem`.
 
+`BoundedPipeline` retains its runtime operation ledger but can dispatch through
+`TypedPipelineMiddleware` using `frontend_action_typed`,
+`accept_backend_typed`, `try_emit_local_typed`, and
+`accept_session_item_typed`. The ledger chooses the hook at runtime, while each
+hook's owned input and output are restricted to that frontend phase or pending
+backend operation. Implementations override only the phases they inspect;
+unimplemented hooks are identity operations. Deferred backend messages are not
+intercepted until retried at the response head. `PipelineWireAdapter` adapts an
+existing async direction-wide policy when compile-time specialization is not
+needed.
+
 The older `intercept_checked` and `receive_*_with_middleware` APIs remain
 available for runtime-selected sessions. They validate replacement legality
 against a supplied generated `RuntimeState` at runtime. Prefer the typed receive

@@ -605,6 +605,10 @@ impl<State, Handler> Middleware<State, Handler> {
         (self.state, self.handler)
     }
 
+    pub(crate) fn parts_mut(&mut self) -> (&mut State, &mut Handler) {
+        (&mut self.state, &mut self.handler)
+    }
+
     /// Intercepts one owned message.
     ///
     /// # Errors

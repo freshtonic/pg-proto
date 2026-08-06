@@ -1,15 +1,48 @@
 //! Minimal bounded-pipeline policy for a `PostgreSQL` intermediary.
 
+use std::convert::Infallible;
+
 use bytes::Bytes;
 use pg_proto::{
     codec::{BackendMessage, DiagnosticResponse, FrontendMessage, Parse, TransactionStatus},
+    grammar::backend,
     intermediary::Intermediary,
-    pipeline::{BackendAction, BoundedPipeline, FrontendAction, FrontendHandling},
+    middleware::Middleware,
+    pipeline::{
+        BackendAction, BoundedPipeline, FrontendAction, FrontendHandling, PipelineBackendMessage,
+        TypedPipelineMiddleware, phase,
+    },
 };
 
-fn main() {
+struct Statistics;
+
+impl TypedPipelineMiddleware<usize> for Statistics {
+    type Error = Infallible;
+
+    async fn frontend_ready(
+        &mut self,
+        messages: &mut usize,
+        message: backend::ReadyExternalMessage,
+    ) -> Result<backend::ReadyExternalMessage, Self::Error> {
+        *messages += 1;
+        Ok(message)
+    }
+
+    async fn backend_parse(
+        &mut self,
+        messages: &mut usize,
+        message: PipelineBackendMessage<phase::Parse>,
+    ) -> Result<PipelineBackendMessage<phase::Parse>, Self::Error> {
+        *messages += 1;
+        Ok(message)
+    }
+}
+
+#[tokio::main]
+async fn main() {
     let mut proxy = Intermediary::new((), ())
         .with_pipeline(BoundedPipeline::new(16).expect("non-zero pipeline limit"));
+    let mut middleware = Middleware::new(0, Statistics);
 
     let parse = FrontendMessage::Parse(Parse {
         statement: Bytes::from_static(b"blocked"),
@@ -18,7 +51,8 @@ fn main() {
     });
     let local_id = match proxy
         .pipeline_mut()
-        .frontend_action(parse, FrontendHandling::Local)
+        .frontend_action_typed(&mut middleware, parse, FrontendHandling::Local)
+        .await
         .expect("legal Parse")
     {
         FrontendAction::Discard { id } => id,
@@ -39,7 +73,8 @@ fn main() {
     let local_error = BackendMessage::ErrorResponse(DiagnosticResponse { fields: vec![] });
     match proxy
         .pipeline_mut()
-        .try_emit_local(local_id, local_error)
+        .try_emit_local_typed(&mut middleware, local_id, local_error)
+        .await
         .expect("response matches Parse")
     {
         BackendAction::Emit(message) => {
@@ -56,8 +91,17 @@ fn main() {
 
     let _ = proxy
         .pipeline_mut()
-        .frontend_action(FrontendMessage::Sync, FrontendHandling::Forward);
+        .frontend_action_typed(
+            &mut middleware,
+            FrontendMessage::Sync,
+            FrontendHandling::Forward,
+        )
+        .await;
     let _ = proxy
         .pipeline_mut()
-        .accept_backend(BackendMessage::ReadyForQuery(TransactionStatus::Idle));
+        .accept_backend_typed(
+            &mut middleware,
+            BackendMessage::ReadyForQuery(TransactionStatus::Idle),
+        )
+        .await;
 }

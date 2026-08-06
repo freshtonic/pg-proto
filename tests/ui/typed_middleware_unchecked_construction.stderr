@@ -1,0 +1,11 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/ui/typed_middleware_unchecked_construction.rs:7:22
+  |
+7 |     let _unchecked = ReadyTerminateExternalTransitionMessage(FrontendMessage::Terminate);
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+note: constructor is not visible here due to private fields
+ --> src/grammar.rs
+  |
+  |             external: crate::codec::FrontendMessage,
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private field

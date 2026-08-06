@@ -305,3 +305,21 @@ fn grammar_emits_directional_state_aware_message_projection() {
         Some(query::Event::Complete)
     );
 }
+
+#[test]
+fn generated_phase_messages_only_admit_legal_wire_variants() {
+    let Ok(typed) = query::ReadyInternalMessage::try_from(TestInternal::Query(42)) else {
+        panic!("query is legal while ready");
+    };
+    assert_eq!(typed.event(), query::Event::Query);
+    assert!(matches!(typed.as_wire(), TestInternal::Query(42)));
+    assert!(matches!(typed.into_wire(), TestInternal::Query(42)));
+
+    let illegal = query::ReadyInternalMessage::try_from(TestInternal::Sync);
+    assert!(matches!(illegal, Err(TestInternal::Sync)));
+
+    let Ok(replacement) = query::ReadyInternalMessage::try_from(TestInternal::Parse) else {
+        panic!("parse is legal while ready");
+    };
+    assert_eq!(replacement.event(), query::Event::Parse);
+}

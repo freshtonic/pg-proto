@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.4.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.3.0...pg-proto-v0.4.0) - 2026-08-06
+
+### Added
+
+- add typed bounded pipeline middleware
+- compose typed pipeline middleware
+- track exact pipeline response phases
+- type outbound middleware by connection phase
+
+### Changed
+
+- deepen typed pipeline middleware
+
+### Fixed
+
+- separate server authentication decision phases
+
+### Testing
+
+- refresh outbound role diagnostic
+- support platform-specific compiler diagnostics
+- match Linux macro diagnostic indentation
+
 ## [0.3.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.3...pg-proto-v0.3.0) - 2026-08-06
 
 ### Added

@@ -6,6 +6,7 @@
 //! session APIs remain responsible for checking that the result is legal in their
 //! current state before advancing.
 
+use std::marker::PhantomData;
 use std::{convert::Infallible, io};
 
 use crate::{
@@ -333,6 +334,62 @@ pub trait TypedMiddleware<Role, Phase, Message, State> {
     ) -> Result<Message, Self::Error>;
 }
 
+/// Adapts one direction-wide wire middleware to every generated typed phase.
+///
+/// Messages returned by the wrapped middleware are re-projected into the same
+/// phase-specific `Message` type. This provides a pass-through default for
+/// policies which inspect only selected wire families; a replacement which is
+/// illegal in the inferred phase is returned as an error.
+pub struct WireAdapter<Wire, Handler> {
+    handler: Handler,
+    _wire: PhantomData<fn(Wire) -> Wire>,
+}
+
+impl<Wire, Handler> WireAdapter<Wire, Handler> {
+    /// Wraps direction-wide wire middleware for use at typed interception points.
+    pub const fn new(handler: Handler) -> Self {
+        Self {
+            handler,
+            _wire: PhantomData,
+        }
+    }
+
+    /// Returns the wrapped wire middleware.
+    pub fn into_inner(self) -> Handler {
+        self.handler
+    }
+}
+
+/// Failure from direction-wide middleware adapted to a typed phase.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WireAdapterError<Error, Wire> {
+    /// The wrapped middleware rejected the message according to its policy.
+    Middleware(Error),
+    /// The wrapped middleware returned a wire message illegal in the typed phase.
+    IllegalReplacement(Wire),
+}
+
+impl<Role, Phase, Message, State, Wire, Handler> TypedMiddleware<Role, Phase, Message, State>
+    for WireAdapter<Wire, Handler>
+where
+    Message: Into<Wire> + TryFrom<Wire, Error = Wire>,
+    Handler: MessageMiddleware<Wire, State>,
+{
+    type Error = WireAdapterError<Handler::Error, Wire>;
+
+    fn intercept_typed(
+        &mut self,
+        state: &mut State,
+        message: Message,
+    ) -> Result<Message, Self::Error> {
+        let message = self
+            .handler
+            .intercept(state, message.into())
+            .map_err(WireAdapterError::Middleware)?;
+        Message::try_from(message).map_err(WireAdapterError::IllegalReplacement)
+    }
+}
+
 impl<Role, Phase, Message, State, Error, F> TypedMiddleware<Role, Phase, Message, State> for F
 where
     F: FnMut(&mut State, Message) -> Result<Message, Error>,
@@ -598,7 +655,7 @@ mod tests {
 
     use super::{
         AcceptsMessage as _, ChainError, ClientRole, Identity, InterceptError,
-        MessageMiddlewareExt as _, Middleware,
+        MessageMiddlewareExt as _, Middleware, WireAdapter,
     };
     use crate::{
         codec::{FrontendMessage, Parse},
@@ -651,6 +708,54 @@ mod tests {
         assert_eq!(output.event(), backend::Event::Terminate);
         assert!(matches!(output.into_wire(), FrontendMessage::Terminate));
         assert_eq!(*middleware.state(), 1);
+    }
+
+    #[test]
+    fn typed_chain_is_ordered_and_threads_shared_state() {
+        let first = |order: &mut Vec<&'static str>, message: backend::ReadyExternalMessage| {
+            order.push("first");
+            Ok::<_, Infallible>(message)
+        };
+        let second = |order: &mut Vec<&'static str>, message: backend::ReadyExternalMessage| {
+            order.push("second");
+            Ok::<_, Infallible>(message)
+        };
+        let mut middleware = Middleware::new(Vec::new(), first.then(second));
+        let Ok(input) = backend::ReadyExternalMessage::try_from(FrontendMessage::Terminate) else {
+            panic!("terminate must be legal while ready");
+        };
+
+        let output = middleware
+            .intercept_typed::<ClientRole, backend::Ready, _>(input)
+            .expect("both typed stages accept the message");
+
+        assert_eq!(output.event(), backend::Event::Terminate);
+        assert_eq!(middleware.state(), &["first", "second"]);
+    }
+
+    #[test]
+    fn wire_adapter_passes_unhandled_families_through_multiple_phases() {
+        let handler = |seen: &mut usize, message: FrontendMessage| {
+            *seen += 1;
+            Ok::<_, Infallible>(message)
+        };
+        let mut middleware = Middleware::new(0, WireAdapter::new(handler));
+
+        let Ok(ready) = backend::ReadyExternalMessage::try_from(FrontendMessage::Terminate) else {
+            panic!("terminate must be legal while ready");
+        };
+        middleware
+            .intercept_typed::<ClientRole, backend::Ready, _>(ready)
+            .expect("ready pass-through");
+
+        let Ok(building) = backend::BuildingExternalMessage::try_from(FrontendMessage::Sync) else {
+            panic!("sync must be legal while building");
+        };
+        middleware
+            .intercept_typed::<ClientRole, backend::Building, _>(building)
+            .expect("building pass-through");
+
+        assert_eq!(*middleware.state(), 2);
     }
 
     #[test]

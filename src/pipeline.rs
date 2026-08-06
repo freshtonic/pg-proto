@@ -199,8 +199,57 @@ pub enum PipelineMiddlewareError<MiddlewareError, ProjectionError> {
     Projection(ProjectionError),
 }
 
-macro_rules! typed_backend_hooks {
-    ($($method:ident => $message:path),+ $(,)?) => {
+macro_rules! frontend_pipeline_phases {
+    ($consumer:ident) => {
+        $consumer! {
+            Ready => frontend_ready => backend::ReadyExternalMessage,
+            Building => frontend_building => backend::BuildingExternalMessage,
+            ExtendedError => frontend_extended_error => backend::ExtendedErrorExternalMessage,
+            SimpleCopyIn => frontend_simple_copy_in => backend::SimpleCopyInExternalMessage,
+            ExtendedCopyIn => frontend_extended_copy_in => backend::ExtendedCopyInExternalMessage,
+            SimpleCopyBoth => frontend_simple_copy_both => backend::SimpleCopyBothExternalMessage,
+            ExtendedCopyBoth => frontend_extended_copy_both => backend::ExtendedCopyBothExternalMessage,
+        }
+    };
+}
+
+macro_rules! backend_pipeline_phases {
+    ($consumer:ident) => {
+        $consumer! {
+            Asynchronous => backend_asynchronous => AsynchronousBackendMessage,
+            Simple => backend_simple => backend::SimpleInternalMessage,
+            SimpleError => backend_simple_error => backend::SimpleErrorInternalMessage,
+            ParseResponse => backend_parse_response => backend::ParseResponseInternalMessage,
+            BindResponse => backend_bind_response => backend::BindResponseInternalMessage,
+            DescribeResponse => backend_describe_response => backend::DescribeResponseInternalMessage,
+            ExecuteResponse => backend_execute_response => backend::ExecuteResponseInternalMessage,
+            CloseResponse => backend_close_response => backend::CloseResponseInternalMessage,
+            SyncResponse => backend_sync_response => backend::SyncResponseInternalMessage,
+            FunctionResponse => backend_function_response => backend::FunctionResponseInternalMessage,
+            FunctionReady => backend_function_ready => backend::FunctionReadyInternalMessage,
+            SimpleCopyInDone => backend_simple_copy_in_done => backend::SimpleCopyInDoneInternalMessage,
+            SimpleCopyInFailed => backend_simple_copy_in_failed => backend::SimpleCopyInFailedInternalMessage,
+            SimpleCopyOut => backend_simple_copy_out => backend::SimpleCopyOutInternalMessage,
+            SimpleCopyOutDone => backend_simple_copy_out_done => backend::SimpleCopyOutDoneInternalMessage,
+            SimpleCopyReady => backend_simple_copy_ready => backend::SimpleCopyReadyInternalMessage,
+            ExtendedCopyInDone => backend_extended_copy_in_done => backend::ExtendedCopyInDoneInternalMessage,
+            ExtendedCopyInFailed => backend_extended_copy_in_failed => backend::ExtendedCopyInFailedInternalMessage,
+            ExtendedCopyOut => backend_extended_copy_out => backend::ExtendedCopyOutInternalMessage,
+            ExtendedCopyOutDone => backend_extended_copy_out_done => backend::ExtendedCopyOutDoneInternalMessage,
+            SimpleCopyBoth => backend_simple_copy_both => backend::SimpleCopyBothInternalMessage,
+            SimpleCopyBothClientDone => backend_simple_copy_both_client_done => backend::SimpleCopyBothClientDoneInternalMessage,
+            SimpleCopyBothDone => backend_simple_copy_both_done => backend::SimpleCopyBothDoneInternalMessage,
+            SimpleCopyBothFailed => backend_simple_copy_both_failed => backend::SimpleCopyBothFailedInternalMessage,
+            ExtendedCopyBoth => backend_extended_copy_both => backend::ExtendedCopyBothInternalMessage,
+            ExtendedCopyBothClientDone => backend_extended_copy_both_client_done => backend::ExtendedCopyBothClientDoneInternalMessage,
+            ExtendedCopyBothDone => backend_extended_copy_both_done => backend::ExtendedCopyBothDoneInternalMessage,
+            ExtendedCopyBothFailed => backend_extended_copy_both_failed => backend::ExtendedCopyBothFailedInternalMessage,
+        }
+    };
+}
+
+macro_rules! declare_pipeline_hooks {
+    ($($phase:ident => $method:ident => $message:path),+ $(,)?) => {
         $(
             #[doc = concat!("Intercepts backend messages in generated `", stringify!($message), "` phase.")]
             async fn $method(
@@ -214,125 +263,32 @@ macro_rules! typed_backend_hooks {
     };
 }
 
-/// Async middleware selected by [`Pipeline`] from its runtime ledger phase.
-///
-/// Every method defaults to identity, so implementations override only the
-/// phases they inspect. Inputs and outputs remain phase-specific even though
-/// the pipeline chooses which method to call at runtime.
+/// Async middleware for frontend messages selected from the runtime ledger phase.
 #[allow(async_fn_in_trait)]
-pub trait TypedPipelineMiddleware<State> {
+pub trait FrontendPipelineMiddleware<State> {
     /// An error which prevents the message from continuing through the pipeline.
     type Error;
-
-    /// Intercepts a frontend message while the request ledger is ready.
-    async fn frontend_ready(
-        &mut self,
-        _state: &mut State,
-        message: backend::ReadyExternalMessage,
-    ) -> Result<backend::ReadyExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts a frontend message while building an extended pipeline.
-    async fn frontend_building(
-        &mut self,
-        _state: &mut State,
-        message: backend::BuildingExternalMessage,
-    ) -> Result<backend::BuildingExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts a frontend message while discarding through `Sync`.
-    async fn frontend_extended_error(
-        &mut self,
-        _state: &mut State,
-        message: backend::ExtendedErrorExternalMessage,
-    ) -> Result<backend::ExtendedErrorExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts frontend COPY-IN traffic entered by a simple query.
-    async fn frontend_simple_copy_in(
-        &mut self,
-        _state: &mut State,
-        message: backend::SimpleCopyInExternalMessage,
-    ) -> Result<backend::SimpleCopyInExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts frontend COPY-IN traffic entered by an extended Execute.
-    async fn frontend_extended_copy_in(
-        &mut self,
-        _state: &mut State,
-        message: backend::ExtendedCopyInExternalMessage,
-    ) -> Result<backend::ExtendedCopyInExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts frontend COPY-BOTH traffic entered by a simple query.
-    async fn frontend_simple_copy_both(
-        &mut self,
-        _state: &mut State,
-        message: backend::SimpleCopyBothExternalMessage,
-    ) -> Result<backend::SimpleCopyBothExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts frontend COPY-BOTH traffic entered by an extended Execute.
-    async fn frontend_extended_copy_both(
-        &mut self,
-        _state: &mut State,
-        message: backend::ExtendedCopyBothExternalMessage,
-    ) -> Result<backend::ExtendedCopyBothExternalMessage, Self::Error> {
-        Ok(message)
-    }
-
-    /// Intercepts asynchronous backend traffic without advancing the ledger.
-    async fn backend_asynchronous(
-        &mut self,
-        _state: &mut State,
-        message: AsynchronousBackendMessage,
-    ) -> Result<AsynchronousBackendMessage, Self::Error> {
-        Ok(message)
-    }
-
-    typed_backend_hooks!(
-        backend_simple => backend::SimpleInternalMessage,
-        backend_simple_error => backend::SimpleErrorInternalMessage,
-        backend_parse_response => backend::ParseResponseInternalMessage,
-        backend_bind_response => backend::BindResponseInternalMessage,
-        backend_describe_response => backend::DescribeResponseInternalMessage,
-        backend_execute_response => backend::ExecuteResponseInternalMessage,
-        backend_close_response => backend::CloseResponseInternalMessage,
-        backend_sync_response => backend::SyncResponseInternalMessage,
-        backend_function_response => backend::FunctionResponseInternalMessage,
-        backend_function_ready => backend::FunctionReadyInternalMessage,
-        backend_simple_copy_in_done => backend::SimpleCopyInDoneInternalMessage,
-        backend_simple_copy_in_failed => backend::SimpleCopyInFailedInternalMessage,
-        backend_simple_copy_out => backend::SimpleCopyOutInternalMessage,
-        backend_simple_copy_out_done => backend::SimpleCopyOutDoneInternalMessage,
-        backend_simple_copy_ready => backend::SimpleCopyReadyInternalMessage,
-        backend_extended_copy_in_done => backend::ExtendedCopyInDoneInternalMessage,
-        backend_extended_copy_in_failed => backend::ExtendedCopyInFailedInternalMessage,
-        backend_extended_copy_out => backend::ExtendedCopyOutInternalMessage,
-        backend_extended_copy_out_done => backend::ExtendedCopyOutDoneInternalMessage,
-        backend_simple_copy_both => backend::SimpleCopyBothInternalMessage,
-        backend_simple_copy_both_client_done => backend::SimpleCopyBothClientDoneInternalMessage,
-        backend_simple_copy_both_done => backend::SimpleCopyBothDoneInternalMessage,
-        backend_simple_copy_both_failed => backend::SimpleCopyBothFailedInternalMessage,
-        backend_extended_copy_both => backend::ExtendedCopyBothInternalMessage,
-        backend_extended_copy_both_client_done => backend::ExtendedCopyBothClientDoneInternalMessage,
-        backend_extended_copy_both_done => backend::ExtendedCopyBothDoneInternalMessage,
-        backend_extended_copy_both_failed => backend::ExtendedCopyBothFailedInternalMessage,
-    );
+    frontend_pipeline_phases!(declare_pipeline_hooks);
 }
 
-impl<State> TypedPipelineMiddleware<State> for crate::middleware::Identity {
+/// Async middleware for backend messages selected from the runtime ledger phase.
+#[allow(async_fn_in_trait)]
+pub trait BackendPipelineMiddleware<State> {
+    /// An error which prevents the message from continuing through the pipeline.
+    type Error;
+    backend_pipeline_phases!(declare_pipeline_hooks);
+}
+
+impl<State> FrontendPipelineMiddleware<State> for crate::middleware::Identity {
+    type Error = Infallible;
+}
+
+impl<State> BackendPipelineMiddleware<State> for crate::middleware::Identity {
     type Error = Infallible;
 }
 
 macro_rules! chained_pipeline_hooks {
-    ($($method:ident($message:ty)),+ $(,)?) => {
+    ($($phase:ident => $method:ident => $message:ty),+ $(,)?) => {
         $(
             async fn $method(
                 &mut self,
@@ -353,50 +309,23 @@ macro_rules! chained_pipeline_hooks {
     };
 }
 
-impl<State, First, Second> TypedPipelineMiddleware<State> for Then<First, Second>
+impl<State, First, Second> FrontendPipelineMiddleware<State> for Then<First, Second>
 where
-    First: TypedPipelineMiddleware<State>,
-    Second: TypedPipelineMiddleware<State>,
+    First: FrontendPipelineMiddleware<State>,
+    Second: FrontendPipelineMiddleware<State>,
 {
     type Error = ChainError<First::Error, Second::Error>;
 
-    chained_pipeline_hooks!(
-        frontend_ready(backend::ReadyExternalMessage),
-        frontend_building(backend::BuildingExternalMessage),
-        frontend_extended_error(backend::ExtendedErrorExternalMessage),
-        frontend_simple_copy_in(backend::SimpleCopyInExternalMessage),
-        frontend_extended_copy_in(backend::ExtendedCopyInExternalMessage),
-        frontend_simple_copy_both(backend::SimpleCopyBothExternalMessage),
-        frontend_extended_copy_both(backend::ExtendedCopyBothExternalMessage),
-        backend_asynchronous(AsynchronousBackendMessage),
-        backend_simple(backend::SimpleInternalMessage),
-        backend_simple_error(backend::SimpleErrorInternalMessage),
-        backend_parse_response(backend::ParseResponseInternalMessage),
-        backend_bind_response(backend::BindResponseInternalMessage),
-        backend_describe_response(backend::DescribeResponseInternalMessage),
-        backend_execute_response(backend::ExecuteResponseInternalMessage),
-        backend_close_response(backend::CloseResponseInternalMessage),
-        backend_sync_response(backend::SyncResponseInternalMessage),
-        backend_function_response(backend::FunctionResponseInternalMessage),
-        backend_function_ready(backend::FunctionReadyInternalMessage),
-        backend_simple_copy_in_done(backend::SimpleCopyInDoneInternalMessage),
-        backend_simple_copy_in_failed(backend::SimpleCopyInFailedInternalMessage),
-        backend_simple_copy_out(backend::SimpleCopyOutInternalMessage),
-        backend_simple_copy_out_done(backend::SimpleCopyOutDoneInternalMessage),
-        backend_simple_copy_ready(backend::SimpleCopyReadyInternalMessage),
-        backend_extended_copy_in_done(backend::ExtendedCopyInDoneInternalMessage),
-        backend_extended_copy_in_failed(backend::ExtendedCopyInFailedInternalMessage),
-        backend_extended_copy_out(backend::ExtendedCopyOutInternalMessage),
-        backend_extended_copy_out_done(backend::ExtendedCopyOutDoneInternalMessage),
-        backend_simple_copy_both(backend::SimpleCopyBothInternalMessage),
-        backend_simple_copy_both_client_done(backend::SimpleCopyBothClientDoneInternalMessage),
-        backend_simple_copy_both_done(backend::SimpleCopyBothDoneInternalMessage),
-        backend_simple_copy_both_failed(backend::SimpleCopyBothFailedInternalMessage),
-        backend_extended_copy_both(backend::ExtendedCopyBothInternalMessage),
-        backend_extended_copy_both_client_done(backend::ExtendedCopyBothClientDoneInternalMessage),
-        backend_extended_copy_both_done(backend::ExtendedCopyBothDoneInternalMessage),
-        backend_extended_copy_both_failed(backend::ExtendedCopyBothFailedInternalMessage),
-    );
+    frontend_pipeline_phases!(chained_pipeline_hooks);
+}
+
+impl<State, First, Second> BackendPipelineMiddleware<State> for Then<First, Second>
+where
+    First: BackendPipelineMiddleware<State>,
+    Second: BackendPipelineMiddleware<State>,
+{
+    type Error = ChainError<First::Error, Second::Error>;
+    backend_pipeline_phases!(chained_pipeline_hooks);
 }
 
 /// Adapts direction-wide async middleware to every typed pipeline hook.
@@ -418,19 +347,24 @@ impl<Handler> PipelineWireAdapter<Handler> {
 
 /// Failure from direction-wide middleware adapted to typed pipeline dispatch.
 #[derive(Debug)]
-pub enum PipelineWireAdapterError<FrontendError, BackendError> {
-    /// The wrapped middleware rejected a frontend message.
-    FrontendMiddleware(FrontendError),
-    /// The wrapped middleware rejected a backend message.
-    BackendMiddleware(BackendError),
+pub enum FrontendPipelineWireAdapterError<Error> {
+    /// The wrapped middleware rejected a message.
+    Middleware(Error),
     /// The wrapped middleware returned a frontend message illegal in the selected phase.
     IllegalFrontend(FrontendMessage),
-    /// The wrapped middleware returned a backend message illegal in the selected phase.
-    IllegalBackend(BackendMessage),
+}
+
+/// Failure from backend wire middleware adapted to typed pipeline dispatch.
+#[derive(Debug)]
+pub enum BackendPipelineWireAdapterError<Error> {
+    /// The wrapped middleware rejected a message.
+    Middleware(Error),
+    /// The wrapped middleware returned a message illegal in the selected phase.
+    Illegal(BackendMessage),
 }
 
 macro_rules! pipeline_adapter_frontend_hooks {
-    ($($method:ident => $message:ty),+ $(,)?) => {
+    ($($phase:ident => $method:ident => $message:ty),+ $(,)?) => {
         $(
             async fn $method(
                 &mut self,
@@ -442,16 +376,26 @@ macro_rules! pipeline_adapter_frontend_hooks {
                     .handler
                     .intercept(state, message)
                     .await
-                    .map_err(PipelineWireAdapterError::FrontendMiddleware)?;
+                    .map_err(FrontendPipelineWireAdapterError::Middleware)?;
                 <$message>::try_from(message)
-                    .map_err(PipelineWireAdapterError::IllegalFrontend)
+                    .map_err(FrontendPipelineWireAdapterError::IllegalFrontend)
             }
         )+
     };
 }
 
 macro_rules! pipeline_adapter_backend_hooks {
-    ($($method:ident => $message:ty),+ $(,)?) => {
+    ($ignored:ident => $async_method:ident => AsynchronousBackendMessage, $($phase:ident => $method:ident => $message:ty),+ $(,)?) => {
+        async fn $async_method(
+            &mut self,
+            state: &mut State,
+            message: AsynchronousBackendMessage,
+        ) -> Result<AsynchronousBackendMessage, Self::Error> {
+            let message = self.handler.intercept(state, message.into_wire()).await
+                .map_err(BackendPipelineWireAdapterError::Middleware)?;
+            AsynchronousBackendMessage::try_from(message)
+                .map_err(BackendPipelineWireAdapterError::Illegal)
+        }
         $(
             async fn $method(
                 &mut self,
@@ -463,75 +407,27 @@ macro_rules! pipeline_adapter_backend_hooks {
                     .handler
                     .intercept(state, message)
                     .await
-                    .map_err(PipelineWireAdapterError::BackendMiddleware)?;
-                <$message>::try_from(message).map_err(PipelineWireAdapterError::IllegalBackend)
+                    .map_err(BackendPipelineWireAdapterError::Middleware)?;
+                <$message>::try_from(message).map_err(BackendPipelineWireAdapterError::Illegal)
             }
         )+
     };
 }
 
-impl<State, Handler> TypedPipelineMiddleware<State> for PipelineWireAdapter<Handler>
+impl<State, Handler> FrontendPipelineMiddleware<State> for PipelineWireAdapter<Handler>
 where
-    Handler: MessageMiddleware<FrontendMessage, State> + MessageMiddleware<BackendMessage, State>,
+    Handler: MessageMiddleware<FrontendMessage, State>,
 {
-    type Error = PipelineWireAdapterError<
-        <Handler as MessageMiddleware<FrontendMessage, State>>::Error,
-        <Handler as MessageMiddleware<BackendMessage, State>>::Error,
-    >;
+    type Error = FrontendPipelineWireAdapterError<Handler::Error>;
+    frontend_pipeline_phases!(pipeline_adapter_frontend_hooks);
+}
 
-    pipeline_adapter_frontend_hooks!(
-        frontend_ready => backend::ReadyExternalMessage,
-        frontend_building => backend::BuildingExternalMessage,
-        frontend_extended_error => backend::ExtendedErrorExternalMessage,
-        frontend_simple_copy_in => backend::SimpleCopyInExternalMessage,
-        frontend_extended_copy_in => backend::ExtendedCopyInExternalMessage,
-        frontend_simple_copy_both => backend::SimpleCopyBothExternalMessage,
-        frontend_extended_copy_both => backend::ExtendedCopyBothExternalMessage,
-    );
-
-    async fn backend_asynchronous(
-        &mut self,
-        state: &mut State,
-        message: AsynchronousBackendMessage,
-    ) -> Result<AsynchronousBackendMessage, Self::Error> {
-        let message = self
-            .handler
-            .intercept(state, message.into_wire())
-            .await
-            .map_err(PipelineWireAdapterError::BackendMiddleware)?;
-        AsynchronousBackendMessage::try_from(message)
-            .map_err(PipelineWireAdapterError::IllegalBackend)
-    }
-
-    pipeline_adapter_backend_hooks!(
-        backend_simple => backend::SimpleInternalMessage,
-        backend_simple_error => backend::SimpleErrorInternalMessage,
-        backend_parse_response => backend::ParseResponseInternalMessage,
-        backend_bind_response => backend::BindResponseInternalMessage,
-        backend_describe_response => backend::DescribeResponseInternalMessage,
-        backend_execute_response => backend::ExecuteResponseInternalMessage,
-        backend_close_response => backend::CloseResponseInternalMessage,
-        backend_sync_response => backend::SyncResponseInternalMessage,
-        backend_function_response => backend::FunctionResponseInternalMessage,
-        backend_function_ready => backend::FunctionReadyInternalMessage,
-        backend_simple_copy_in_done => backend::SimpleCopyInDoneInternalMessage,
-        backend_simple_copy_in_failed => backend::SimpleCopyInFailedInternalMessage,
-        backend_simple_copy_out => backend::SimpleCopyOutInternalMessage,
-        backend_simple_copy_out_done => backend::SimpleCopyOutDoneInternalMessage,
-        backend_simple_copy_ready => backend::SimpleCopyReadyInternalMessage,
-        backend_extended_copy_in_done => backend::ExtendedCopyInDoneInternalMessage,
-        backend_extended_copy_in_failed => backend::ExtendedCopyInFailedInternalMessage,
-        backend_extended_copy_out => backend::ExtendedCopyOutInternalMessage,
-        backend_extended_copy_out_done => backend::ExtendedCopyOutDoneInternalMessage,
-        backend_simple_copy_both => backend::SimpleCopyBothInternalMessage,
-        backend_simple_copy_both_client_done => backend::SimpleCopyBothClientDoneInternalMessage,
-        backend_simple_copy_both_done => backend::SimpleCopyBothDoneInternalMessage,
-        backend_simple_copy_both_failed => backend::SimpleCopyBothFailedInternalMessage,
-        backend_extended_copy_both => backend::ExtendedCopyBothInternalMessage,
-        backend_extended_copy_both_client_done => backend::ExtendedCopyBothClientDoneInternalMessage,
-        backend_extended_copy_both_done => backend::ExtendedCopyBothDoneInternalMessage,
-        backend_extended_copy_both_failed => backend::ExtendedCopyBothFailedInternalMessage,
-    );
+impl<State, Handler> BackendPipelineMiddleware<State> for PipelineWireAdapter<Handler>
+where
+    Handler: MessageMiddleware<BackendMessage, State>,
+{
+    type Error = BackendPipelineWireAdapterError<Handler::Error>;
+    backend_pipeline_phases!(pipeline_adapter_backend_hooks);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -583,11 +479,31 @@ enum OperationKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ResponseDisposition {
+enum PreparedResponse {
     Asynchronous,
-    Emit(backend::RuntimeState),
+    Emit {
+        head: Operation,
+        response_state: backend::RuntimeState,
+    },
     Deferred,
     Illegal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendPhase {
+    Ready,
+    Building,
+    ExtendedError,
+    SimpleCopyIn,
+    ExtendedCopyIn,
+    SimpleCopyBoth,
+    ExtendedCopyBoth,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreparedFrontend {
+    phase: FrontendPhase,
+    request_state: RequestState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -663,17 +579,40 @@ impl<P: PipelinePolicy> Pipeline<P> {
         message: FrontendMessage,
         handling: FrontendHandling,
     ) -> Result<FrontendAdmission, FrontendProjectionError> {
-        self.remove_inert_heads();
-        if self.operations.len() == self.policy.operation_limit() {
-            return Err(FrontendProjectionError::Capacity(Box::new(message)));
-        }
+        let prepared = self.prepare_frontend(&message)?;
+        Ok(self.commit_frontend(prepared, message, handling))
+    }
 
-        let Some((kind, next_state)) = project_frontend(self.request_state, &message) else {
+    fn prepare_frontend(
+        &self,
+        message: &FrontendMessage,
+    ) -> Result<PreparedFrontend, FrontendProjectionError> {
+        if self.operations.len() == self.policy.operation_limit() {
+            return Err(FrontendProjectionError::Capacity(Box::new(message.clone())));
+        }
+        if project_frontend(self.request_state, message).is_none() {
             return Err(FrontendProjectionError::Illegal {
                 state: self.state(),
-                message: Box::new(message),
+                message: Box::new(message.clone()),
             });
-        };
+        }
+        Ok(PreparedFrontend {
+            phase: frontend_phase(
+                self.request_state,
+                self.operations.front().map(|operation| operation.kind),
+            ),
+            request_state: self.request_state,
+        })
+    }
+
+    fn commit_frontend(
+        &mut self,
+        prepared: PreparedFrontend,
+        message: FrontendMessage,
+        handling: FrontendHandling,
+    ) -> FrontendAdmission {
+        let (kind, next_state) = classify_frontend(prepared.request_state, &message)
+            .expect("phase-typed frontend replacement has a ledger classification");
         let waiting = !self.operations.is_empty();
         let id = OperationId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
@@ -700,11 +639,13 @@ impl<P: PipelinePolicy> Pipeline<P> {
             FrontendHandling::Forward => FrontendAction::Forward { id, message },
             FrontendHandling::Local => FrontendAction::Discard { id },
         };
-        Ok(if waiting {
+        let admission = if waiting {
             FrontendAdmission::Waiting(action)
         } else {
             FrontendAdmission::Immediate(action)
-        })
+        };
+        self.remove_inert_heads();
+        admission
     }
 
     /// Convenience projection which reports capacity as [`FrontendAction::Backpressure`].
@@ -760,25 +701,14 @@ impl<P: PipelinePolicy> Pipeline<P> {
         handling: FrontendHandling,
     ) -> Result<FrontendAdmission, PipelineMiddlewareError<Handler::Error, FrontendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: FrontendPipelineMiddleware<State>,
     {
-        self.remove_inert_heads();
-        if self.operations.len() == self.policy.operation_limit() {
-            return Err(PipelineMiddlewareError::Projection(
-                FrontendProjectionError::Capacity(Box::new(message)),
-            ));
-        }
-        if project_frontend(self.request_state, &message).is_none() {
-            return Err(PipelineMiddlewareError::Projection(
-                FrontendProjectionError::Illegal {
-                    state: self.state(),
-                    message: Box::new(message),
-                },
-            ));
-        }
+        let prepared = self
+            .prepare_frontend(&message)
+            .map_err(PipelineMiddlewareError::Projection)?;
 
         let message = self
-            .intercept_frontend(middleware, message)
+            .intercept_frontend(prepared.phase, middleware, message)
             .await
             .map_err(PipelineMiddlewareError::Middleware)?;
         if !message.is_reconstructable() {
@@ -789,8 +719,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
                 },
             ));
         }
-        self.accept_frontend(message, handling)
-            .map_err(PipelineMiddlewareError::Projection)
+        Ok(self.commit_frontend(prepared, message, handling))
     }
 
     /// Typed-middleware counterpart to [`Self::project_frontend`].
@@ -805,7 +734,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
         handling: FrontendHandling,
     ) -> Result<FrontendAdmission, PipelineMiddlewareError<Handler::Error, FrontendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: FrontendPipelineMiddleware<State>,
     {
         self.accept_frontend_typed(middleware, message, handling)
             .await
@@ -826,7 +755,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
         handling: FrontendHandling,
     ) -> Result<FrontendAction, PipelineMiddlewareError<Handler::Error, FrontendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: FrontendPipelineMiddleware<State>,
     {
         match self
             .accept_frontend_typed(middleware, message, handling)
@@ -868,7 +797,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
         message: BackendMessage,
     ) -> Result<BackendAction, PipelineMiddlewareError<Handler::Error, BackendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: BackendPipelineMiddleware<State>,
     {
         self.accept_response_typed(None, middleware, message).await
     }
@@ -906,7 +835,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
         item: SessionItem,
     ) -> Result<BackendAction, PipelineMiddlewareError<Handler::Error, BackendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: BackendPipelineMiddleware<State>,
     {
         let message = match item {
             SessionItem::Message(message) => message,
@@ -947,7 +876,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
         message: BackendMessage,
     ) -> Result<BackendAction, PipelineMiddlewareError<Handler::Error, BackendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: BackendPipelineMiddleware<State>,
     {
         self.accept_response_typed(Some(id), middleware, message)
             .await
@@ -973,12 +902,14 @@ impl<P: PipelinePolicy> Pipeline<P> {
 
     async fn intercept_frontend<State, Handler>(
         &self,
+        phase: FrontendPhase,
         middleware: &mut Middleware<State, Handler>,
         message: FrontendMessage,
     ) -> Result<FrontendMessage, Handler::Error>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: FrontendPipelineMiddleware<State>,
     {
+        let (state, handler) = middleware.parts_mut();
         macro_rules! dispatch {
             ($message:expr, $type:path, $handler:ident, $state:ident, $method:ident) => {{
                 let Ok(typed) = <$type>::try_from($message) else {
@@ -988,69 +919,18 @@ impl<P: PipelinePolicy> Pipeline<P> {
             }};
         }
 
-        let request_state = self.request_state;
-        let response_head = self.operations.front().map(|operation| operation.kind);
-        let (state, handler) = middleware.parts_mut();
-        Ok(match request_state {
-            RequestState::Ready => dispatch!(
-                message,
-                backend::ReadyExternalMessage,
-                handler,
-                state,
-                frontend_ready
-            ),
-            RequestState::Extended { .. } => dispatch!(
-                message,
-                backend::BuildingExternalMessage,
-                handler,
-                state,
-                frontend_building
-            ),
-            RequestState::ExtendedError => dispatch!(
-                message,
-                backend::ExtendedErrorExternalMessage,
-                handler,
-                state,
-                frontend_extended_error
-            ),
-            RequestState::CopyIn => match response_head {
-                Some(OperationKind::Query) => dispatch!(
-                    message,
-                    backend::SimpleCopyInExternalMessage,
-                    handler,
-                    state,
-                    frontend_simple_copy_in
-                ),
-                Some(OperationKind::Execute) => dispatch!(
-                    message,
-                    backend::ExtendedCopyInExternalMessage,
-                    handler,
-                    state,
-                    frontend_extended_copy_in
-                ),
-                _ => unreachable!("COPY-IN must belong to Query or Execute"),
-            },
-            RequestState::CopyBoth => match response_head {
-                Some(OperationKind::Query) => dispatch!(
-                    message,
-                    backend::SimpleCopyBothExternalMessage,
-                    handler,
-                    state,
-                    frontend_simple_copy_both
-                ),
-                Some(OperationKind::Execute) => dispatch!(
-                    message,
-                    backend::ExtendedCopyBothExternalMessage,
-                    handler,
-                    state,
-                    frontend_extended_copy_both
-                ),
-                _ => unreachable!("COPY-BOTH must belong to Query or Execute"),
-            },
-            RequestState::CopyOut | RequestState::Terminated => {
-                unreachable!("frontend message was prevalidated for an accepting pipeline phase")
-            }
-        })
+        macro_rules! dispatch_catalogue {
+            ($($catalogue_phase:ident => $method:ident => $message_type:path),+ $(,)?) => {
+                match phase {
+                    $(
+                        FrontendPhase::$catalogue_phase =>
+                            dispatch!(message, $message_type, handler, state, $method),
+                    )+
+                }
+            };
+        }
+
+        Ok(frontend_pipeline_phases!(dispatch_catalogue))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1061,14 +941,13 @@ impl<P: PipelinePolicy> Pipeline<P> {
         message: BackendMessage,
     ) -> Result<BackendAction, PipelineMiddlewareError<Handler::Error, BackendProjectionError>>
     where
-        Handler: TypedPipelineMiddleware<State>,
+        Handler: BackendPipelineMiddleware<State>,
     {
-        self.remove_inert_heads();
-        let disposition = self.classify_response(local_id, &message);
-        if disposition == ResponseDisposition::Deferred {
+        let prepared = self.prepare_response(local_id, &message);
+        if matches!(prepared, PreparedResponse::Deferred) {
             return Ok(BackendAction::Deferred(message));
         }
-        if disposition == ResponseDisposition::Illegal {
+        if matches!(prepared, PreparedResponse::Illegal) {
             return Err(PipelineMiddlewareError::Projection(
                 BackendProjectionError {
                     state: self.state(),
@@ -1078,8 +957,8 @@ impl<P: PipelinePolicy> Pipeline<P> {
         }
 
         let (state, handler) = middleware.parts_mut();
-        let message = match disposition {
-            ResponseDisposition::Asynchronous => {
+        let message = match prepared {
+            PreparedResponse::Asynchronous => {
                 let Ok(typed) = AsynchronousBackendMessage::try_from(message) else {
                     unreachable!("asynchronous response was prevalidated")
                 };
@@ -1089,7 +968,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
                     .map_err(PipelineMiddlewareError::Middleware)?
                     .into_wire()
             }
-            ResponseDisposition::Emit(response_state) => {
+            PreparedResponse::Emit { response_state, .. } => {
                 macro_rules! dispatch {
                     ($message:ty, $method:ident) => {{
                         let typed = match <$message>::try_from(message) {
@@ -1111,115 +990,22 @@ impl<P: PipelinePolicy> Pipeline<P> {
                     }};
                 }
 
-                match response_state {
-                    backend::RuntimeState::Simple => {
-                        dispatch!(backend::SimpleInternalMessage, backend_simple)
-                    }
-                    backend::RuntimeState::SimpleError => {
-                        dispatch!(backend::SimpleErrorInternalMessage, backend_simple_error)
-                    }
-                    backend::RuntimeState::ParseResponse => dispatch!(
-                        backend::ParseResponseInternalMessage,
-                        backend_parse_response
-                    ),
-                    backend::RuntimeState::BindResponse => {
-                        dispatch!(backend::BindResponseInternalMessage, backend_bind_response)
-                    }
-                    backend::RuntimeState::DescribeResponse => dispatch!(
-                        backend::DescribeResponseInternalMessage,
-                        backend_describe_response
-                    ),
-                    backend::RuntimeState::ExecuteResponse => dispatch!(
-                        backend::ExecuteResponseInternalMessage,
-                        backend_execute_response
-                    ),
-                    backend::RuntimeState::CloseResponse => dispatch!(
-                        backend::CloseResponseInternalMessage,
-                        backend_close_response
-                    ),
-                    backend::RuntimeState::SyncResponse => {
-                        dispatch!(backend::SyncResponseInternalMessage, backend_sync_response)
-                    }
-                    backend::RuntimeState::FunctionResponse => dispatch!(
-                        backend::FunctionResponseInternalMessage,
-                        backend_function_response
-                    ),
-                    backend::RuntimeState::FunctionReady => dispatch!(
-                        backend::FunctionReadyInternalMessage,
-                        backend_function_ready
-                    ),
-                    backend::RuntimeState::SimpleCopyInDone => dispatch!(
-                        backend::SimpleCopyInDoneInternalMessage,
-                        backend_simple_copy_in_done
-                    ),
-                    backend::RuntimeState::SimpleCopyInFailed => dispatch!(
-                        backend::SimpleCopyInFailedInternalMessage,
-                        backend_simple_copy_in_failed
-                    ),
-                    backend::RuntimeState::SimpleCopyOut => dispatch!(
-                        backend::SimpleCopyOutInternalMessage,
-                        backend_simple_copy_out
-                    ),
-                    backend::RuntimeState::SimpleCopyOutDone => dispatch!(
-                        backend::SimpleCopyOutDoneInternalMessage,
-                        backend_simple_copy_out_done
-                    ),
-                    backend::RuntimeState::SimpleCopyReady => dispatch!(
-                        backend::SimpleCopyReadyInternalMessage,
-                        backend_simple_copy_ready
-                    ),
-                    backend::RuntimeState::ExtendedCopyInDone => dispatch!(
-                        backend::ExtendedCopyInDoneInternalMessage,
-                        backend_extended_copy_in_done
-                    ),
-                    backend::RuntimeState::ExtendedCopyInFailed => dispatch!(
-                        backend::ExtendedCopyInFailedInternalMessage,
-                        backend_extended_copy_in_failed
-                    ),
-                    backend::RuntimeState::ExtendedCopyOut => dispatch!(
-                        backend::ExtendedCopyOutInternalMessage,
-                        backend_extended_copy_out
-                    ),
-                    backend::RuntimeState::ExtendedCopyOutDone => dispatch!(
-                        backend::ExtendedCopyOutDoneInternalMessage,
-                        backend_extended_copy_out_done
-                    ),
-                    backend::RuntimeState::SimpleCopyBoth => dispatch!(
-                        backend::SimpleCopyBothInternalMessage,
-                        backend_simple_copy_both
-                    ),
-                    backend::RuntimeState::SimpleCopyBothClientDone => dispatch!(
-                        backend::SimpleCopyBothClientDoneInternalMessage,
-                        backend_simple_copy_both_client_done
-                    ),
-                    backend::RuntimeState::SimpleCopyBothDone => dispatch!(
-                        backend::SimpleCopyBothDoneInternalMessage,
-                        backend_simple_copy_both_done
-                    ),
-                    backend::RuntimeState::SimpleCopyBothFailed => dispatch!(
-                        backend::SimpleCopyBothFailedInternalMessage,
-                        backend_simple_copy_both_failed
-                    ),
-                    backend::RuntimeState::ExtendedCopyBoth => dispatch!(
-                        backend::ExtendedCopyBothInternalMessage,
-                        backend_extended_copy_both
-                    ),
-                    backend::RuntimeState::ExtendedCopyBothClientDone => dispatch!(
-                        backend::ExtendedCopyBothClientDoneInternalMessage,
-                        backend_extended_copy_both_client_done
-                    ),
-                    backend::RuntimeState::ExtendedCopyBothDone => dispatch!(
-                        backend::ExtendedCopyBothDoneInternalMessage,
-                        backend_extended_copy_both_done
-                    ),
-                    backend::RuntimeState::ExtendedCopyBothFailed => dispatch!(
-                        backend::ExtendedCopyBothFailedInternalMessage,
-                        backend_extended_copy_both_failed
-                    ),
-                    _ => unreachable!("response phase has no backend-selected transition"),
+                macro_rules! dispatch_catalogue {
+                    ($ignored:ident => $ignored_method:ident => AsynchronousBackendMessage,
+                     $($catalogue_phase:ident => $method:ident => $message_type:path),+ $(,)?) => {
+                        match response_state {
+                            $(
+                                backend::RuntimeState::$catalogue_phase =>
+                                    dispatch!($message_type, $method),
+                            )+
+                            _ => unreachable!("response phase has no backend-selected transition"),
+                        }
+                    };
                 }
+
+                backend_pipeline_phases!(dispatch_catalogue)
             }
-            ResponseDisposition::Deferred | ResponseDisposition::Illegal => unreachable!(),
+            PreparedResponse::Deferred | PreparedResponse::Illegal => unreachable!(),
         };
 
         if !message.is_reconstructable() {
@@ -1230,35 +1016,35 @@ impl<P: PipelinePolicy> Pipeline<P> {
                 },
             ));
         }
-        self.accept_response(local_id, message)
+        self.commit_response(prepared, message)
             .map_err(PipelineMiddlewareError::Projection)
     }
 
-    fn classify_response(
+    fn prepare_response(
         &self,
         local_id: Option<OperationId>,
         message: &BackendMessage,
-    ) -> ResponseDisposition {
+    ) -> PreparedResponse {
         if is_asynchronous(message) {
-            return ResponseDisposition::Asynchronous;
+            return PreparedResponse::Asynchronous;
         }
         let Some(head) = self.operations.front().copied() else {
-            return ResponseDisposition::Illegal;
+            return PreparedResponse::Illegal;
         };
         if let Some(id) = local_id {
             if head.id != id {
-                return ResponseDisposition::Deferred;
+                return PreparedResponse::Deferred;
             }
             if head.origin != Origin::Local {
-                return ResponseDisposition::Illegal;
+                return PreparedResponse::Illegal;
             }
         } else if head.origin == Origin::Local {
             return if self.operations.iter().skip(1).any(|operation| {
                 operation.origin == Origin::Forwarded && response_fits(*operation, message)
             }) {
-                ResponseDisposition::Deferred
+                PreparedResponse::Deferred
             } else {
-                ResponseDisposition::Illegal
+                PreparedResponse::Illegal
             };
         }
         if head.discarded || !response_fits(head, message) {
@@ -1268,12 +1054,15 @@ impl<P: PipelinePolicy> Pipeline<P> {
                 .skip(1)
                 .any(|operation| response_fits(*operation, message))
             {
-                ResponseDisposition::Deferred
+                PreparedResponse::Deferred
             } else {
-                ResponseDisposition::Illegal
+                PreparedResponse::Illegal
             };
         }
-        ResponseDisposition::Emit(head.response_state)
+        PreparedResponse::Emit {
+            head,
+            response_state: head.response_state,
+        }
     }
 
     fn accept_response(
@@ -1281,55 +1070,33 @@ impl<P: PipelinePolicy> Pipeline<P> {
         local_id: Option<OperationId>,
         message: BackendMessage,
     ) -> Result<BackendAction, BackendProjectionError> {
-        if is_asynchronous(&message) {
-            return Ok(BackendAction::Emit(message));
-        }
-        self.remove_inert_heads();
-        let Some(head) = self.operations.front().copied() else {
-            return Err(BackendProjectionError {
-                state: self.state(),
-                message,
-            });
-        };
-        if let Some(id) = local_id {
-            if head.id != id {
-                return Ok(BackendAction::Deferred(message));
-            }
-            if head.origin != Origin::Local {
-                return Err(BackendProjectionError {
+        let prepared = self.prepare_response(local_id, &message);
+        self.commit_response(prepared, message)
+    }
+
+    fn commit_response(
+        &mut self,
+        prepared: PreparedResponse,
+        message: BackendMessage,
+    ) -> Result<BackendAction, BackendProjectionError> {
+        let PreparedResponse::Emit {
+            head,
+            response_state,
+        } = prepared
+        else {
+            return match prepared {
+                PreparedResponse::Asynchronous => Ok(BackendAction::Emit(message)),
+                PreparedResponse::Deferred => Ok(BackendAction::Deferred(message)),
+                PreparedResponse::Illegal => Err(BackendProjectionError {
                     state: self.state(),
                     message,
-                });
-            }
-        } else if head.origin == Origin::Local {
-            if self.operations.iter().skip(1).any(|operation| {
-                operation.origin == Origin::Forwarded && response_fits(*operation, &message)
-            }) {
-                return Ok(BackendAction::Deferred(message));
-            }
-            return Err(BackendProjectionError {
-                state: self.state(),
-                message,
-            });
-        }
-        if head.discarded || !response_fits(head, &message) {
-            if self
-                .operations
-                .iter()
-                .skip(1)
-                .any(|operation| response_fits(*operation, &message))
-            {
-                return Ok(BackendAction::Deferred(message));
-            }
-            return Err(BackendProjectionError {
-                state: self.state(),
-                message,
-            });
-        }
-
-        let event = backend::project_internal(head.response_state, &message)
+                }),
+                PreparedResponse::Emit { .. } => unreachable!(),
+            };
+        };
+        let event = backend::project_internal(response_state, &message)
             .expect("response was validated against its generated backend phase");
-        let next_response_state = backend::transition(head.response_state, event)
+        let next_response_state = backend::transition(response_state, event)
             .expect("projected backend event has a generated transition")
             .target;
         let terminal = response_is_terminal(head.kind, &message);
@@ -1401,8 +1168,6 @@ fn project_frontend(
     state: RequestState,
     message: &FrontendMessage,
 ) -> Option<(OperationKind, RequestState)> {
-    use FrontendMessage as F;
-    use OperationKind as O;
     use RequestState as S;
     let generated_state = match state {
         S::Ready => backend::RuntimeState::Ready,
@@ -1414,6 +1179,16 @@ fn project_frontend(
         S::Terminated => backend::RuntimeState::Terminated,
     };
     backend::project_external(generated_state, message)?;
+    classify_frontend(state, message)
+}
+
+fn classify_frontend(
+    state: RequestState,
+    message: &FrontendMessage,
+) -> Option<(OperationKind, RequestState)> {
+    use FrontendMessage as F;
+    use OperationKind as O;
+    use RequestState as S;
 
     match (state, message) {
         (S::Ready, F::Query(_)) => Some((O::Query, S::Ready)),
@@ -1438,6 +1213,24 @@ fn project_frontend(
         (S::CopyBoth, F::CopyData(_)) => Some((O::CopyData, S::CopyBoth)),
         (S::CopyBoth, F::CopyDone) => Some((O::CopyDone, S::CopyBoth)),
         _ => None,
+    }
+}
+
+fn frontend_phase(state: RequestState, response_head: Option<OperationKind>) -> FrontendPhase {
+    match (state, response_head) {
+        (RequestState::Ready, _) => FrontendPhase::Ready,
+        (RequestState::Extended { .. }, _) => FrontendPhase::Building,
+        (RequestState::ExtendedError, _) => FrontendPhase::ExtendedError,
+        (RequestState::CopyIn, Some(OperationKind::Query)) => FrontendPhase::SimpleCopyIn,
+        (RequestState::CopyIn, Some(OperationKind::Execute)) => FrontendPhase::ExtendedCopyIn,
+        (RequestState::CopyBoth, Some(OperationKind::Query)) => FrontendPhase::SimpleCopyBoth,
+        (RequestState::CopyBoth, Some(OperationKind::Execute)) => FrontendPhase::ExtendedCopyBoth,
+        (RequestState::CopyIn | RequestState::CopyBoth, _) => {
+            unreachable!("COPY phase must belong to Query or Execute")
+        }
+        (RequestState::CopyOut | RequestState::Terminated, _) => {
+            unreachable!("non-accepting frontend phase cannot be prepared")
+        }
     }
 }
 

@@ -340,6 +340,13 @@ checked middleware belongs on the state-aware session APIs above it.
     include non-advancing asynchronous server messages.
   - [x] Split server SASL and token authentication into distinct policy and
     client-response typestates so replies cannot precede required input.
+  - [x] Consolidate frontend and backend phase catalogues so hook declaration,
+    chaining, wire adaptation, and runtime dispatch share one local source.
+  - [x] Split frontend and backend pipeline middleware with independent errors,
+    and prepare admission/response decisions before policy so the ledger commits
+    each validated decision once.
+  - [x] Gather inbound and outbound typestate-to-grammar associations into one
+    local middleware catalogue while retaining their distinct indexing traits.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

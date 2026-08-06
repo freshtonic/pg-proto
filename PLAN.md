@@ -294,31 +294,31 @@ checked middleware belongs on the state-aware session APIs above it.
 
 ### Compile-time-checked message middleware
 
-- [ ] Generate a state-specific owned message enum for every role and protocol
+- [x] Generate a state-specific owned message enum for every role and protocol
   phase, containing only the frontend, backend, pre-startup, authentication,
   COPY, replication, error-recovery, and asynchronous messages legal there.
-- [ ] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
+- [x] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
   output are the generated `Phase::Message` type. An illegal replacement should
   be unrepresentable rather than rejected using a `RuntimeState` value.
-  - [ ] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
+  - [x] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
     cannot supply a mismatched runtime state.
-  - [ ] Retain caller-owned mutable state, closure adapters, identity middleware,
+  - [x] Retain caller-owned mutable state, closure adapters, identity middleware,
     deterministic chaining, and typed short-circuit errors.
-  - [ ] Represent asynchronous backend traffic in each applicable phase without
+  - [x] Represent asynchronous backend traffic in each applicable phase without
     advancing the connection state or disturbing wire order.
-- [ ] Generate projection result enums whose variants carry the correctly typed
+- [x] Generate projection result enums whose variants carry the correctly typed
   next `Conn`, because replacing one legal message variant with another may
   select a different transition and therefore a different next phase.
-- [ ] Keep wire-shape validation at runtime for constraints such as embedded NUL
+- [x] Keep wire-shape validation at runtime for constraints such as embedded NUL
   bytes and frame-size overflow, unless message fields later adopt prevalidated
   refinement types. Document this separately from compile-time protocol legality.
-- [ ] Provide default pass-through adapters so policies can specialize only the
+- [x] Provide default pass-through adapters so policies can specialize only the
   phases or message families they inspect without manually implementing every
   generated state.
-- [ ] Add compile-fail coverage proving illegal replacements and role/state
+- [x] Add compile-fail coverage proving illegal replacements and role/state
   mismatches do not compile, plus runtime tests for reconstruction failures,
   composition, state threading, asynchronous traffic, and next-state selection.
-- [ ] Introduce the typed API alongside `intercept_checked`, migrate examples and
+- [x] Introduce the typed API alongside `intercept_checked`, migrate examples and
   transport/session entry points, then consider deprecating the runtime-state API
   only after the typed API covers every generated grammar phase.
 

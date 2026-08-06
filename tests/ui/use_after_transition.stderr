@@ -9,7 +9,4 @@ error[E0382]: use of moved value: `ready`
   |                  ^^^^^ value used here after move
   |
 note: `session::<impl Conn<S, pg_proto::auth::Ready, C>>::begin_extended` takes ownership of the receiver `self`, which moves `ready`
- --> src/session.rs
-  |
-  |     pub fn begin_extended(self) -> Conn<S, Building, C> {
-  |                           ^^^^
+ --> <WORKSPACE>/src/session.rs:305:26

@@ -13,19 +13,7 @@ error[E0631]: type mismatch in closure arguments
               found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
    = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
 note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> src/transport.rs
-   |
-   |       pub async fn receive_backend_typed<State, Handler>(
-   |                    --------------------- required by a bound in this associated function
-...
-   |           Handler: TypedMiddleware<
-   |  __________________^
-   | |                 ServerRole,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
-   | |                 State,
-   | |             >,
-   | |_____________^ required by this bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
+  --> <WORKSPACE>/src/transport.rs:544:4
 
 error[E0631]: type mismatch in closure arguments
   --> tests/ui/typed_middleware_conn_role_mismatch.rs:14:13
@@ -40,19 +28,7 @@ error[E0631]: type mismatch in closure arguments
               found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
    = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
 note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> src/transport.rs
-   |
-   |       pub async fn receive_backend_typed<State, Handler>(
-   |                    --------------------- required by a bound in this associated function
-...
-   |           Handler: TypedMiddleware<
-   |  __________________^
-   | |                 ServerRole,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
-   | |                 State,
-   | |             >,
-   | |_____________^ required by this bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
+  --> <WORKSPACE>/src/transport.rs:544:4
 
 error[E0631]: type mismatch in closure arguments
   --> tests/ui/typed_middleware_conn_role_mismatch.rs:14:57
@@ -67,16 +43,4 @@ error[E0631]: type mismatch in closure arguments
               found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
    = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
 note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> src/transport.rs
-   |
-   |       pub async fn receive_backend_typed<State, Handler>(
-   |                    --------------------- required by a bound in this associated function
-...
-   |           Handler: TypedMiddleware<
-   |  __________________^
-   | |                 ServerRole,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
-   | |                 <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
-   | |                 State,
-   | |             >,
-   | |_____________^ required by this bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
+  --> <WORKSPACE>/src/transport.rs:544:4

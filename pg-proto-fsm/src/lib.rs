@@ -441,7 +441,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                             #[doc = concat!("The [`Event::", stringify!(#event), "`] transition and its correctly typed next connection.")]
                             #event {
                                 /// Connection after applying the selected message transition.
-                                connection: TypedSession<Transport, #target, #cleanliness>,
+                                connection: Conn<Transport, #target, #cleanliness>,
                                 /// Validated message which selected this transition.
                                 message: #wrapper,
                                 /// Retains the source cleanliness parameter even when replaced.
@@ -927,6 +927,10 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 transport: Transport,
                 _state: ::core::marker::PhantomData<(Phase, Cleanliness)>,
             }
+
+            /// Generated connection carrying transport, protocol phase, and cleanliness.
+            pub type Conn<Transport, Phase, Cleanliness = ()> =
+                TypedSession<Transport, Phase, Cleanliness>;
 
             /// Transport-carrying typestate for the peer role.
             #[must_use = "dropping a generated dual session abandons its protocol state"]

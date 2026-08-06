@@ -321,6 +321,11 @@ checked middleware belongs on the state-aware session APIs above it.
 - [x] Introduce the typed API alongside `intercept_checked`, migrate examples and
   transport/session entry points, then consider deprecating the runtime-state API
   only after the typed API covers every generated grammar phase.
+  The phase-aware rewriting example uses the typed API. The transparent network
+  loggers deliberately retain direction-wide middleware because they erase the
+  current phase while concurrently forwarding both directions; `WireAdapter`
+  is the migration path when such a policy is attached to a typed `Conn`.
+  `intercept_checked` remains supported for these runtime-selected sessions.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.

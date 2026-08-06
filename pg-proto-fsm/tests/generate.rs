@@ -340,7 +340,7 @@ fn generated_message_projection_selects_the_typed_next_connection() {
             message,
             ..
         } => {
-            let simple: query::TypedSession<Vec<u8>, query::Simple, query::Dirty> = connection;
+            let simple: query::Conn<Vec<u8>, query::Simple, query::Dirty> = connection;
             assert!(matches!(message.as_wire(), TestInternal::Query(7)));
             assert_eq!(simple.complete().into_transport(), [1]);
         }

@@ -4,5 +4,5 @@ use pg_proto::{
 };
 
 fn main() {
-    let _unchecked = ReadyTerminateExternalTransitionMessage(FrontendMessage::Terminate);
+    let _unchecked: ReadyTerminateExternalTransitionMessage = FrontendMessage::Terminate.into();
 }

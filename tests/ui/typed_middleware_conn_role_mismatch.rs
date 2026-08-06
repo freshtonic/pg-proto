@@ -1,17 +1,26 @@
 use std::convert::Infallible;
 
 use pg_proto::{
-    Conn, auth::Ready, codec::Backend, grammar::backend, middleware::Middleware,
-    transport::Buffered,
+    grammar::{backend, frontend},
+    middleware::{ServerRole, TypedBackendMessage, TypedMiddleware},
 };
 
-async fn illegal<S: tokio::io::AsyncRead + Unpin>(mut conn: Conn<Buffered<S, Backend>, Ready>) {
+fn require_server_ready_middleware<Handler>(_handler: Handler)
+where
+    Handler: TypedMiddleware<
+            ServerRole,
+            frontend::Ready,
+            TypedBackendMessage<frontend::ReadyExternalMessage>,
+            (),
+        >,
+{
+}
+
+fn illegal() {
     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
         Ok::<_, Infallible>(message)
     };
-    let mut middleware = Middleware::new((), handler);
-
-    let _ = conn.receive_backend_typed(&mut middleware).await;
+    require_server_ready_middleware(handler);
 }
 
 fn main() {}

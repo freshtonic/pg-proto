@@ -1,46 +1,32 @@
 error[E0631]: type mismatch in closure arguments
-  --> tests/ui/typed_middleware_conn_role_mismatch.rs:14:40
+  --> tests/ui/typed_middleware_conn_role_mismatch.rs:23:37
    |
- 9 |     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
+20 |     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
    |                   --------------------------------------------------------- found signature defined here
 ...
-14 |     let _ = conn.receive_backend_typed(&mut middleware).await;
-   |                  --------------------- ^^^^^^^^^^^^^^^ expected due to this
-   |                  |
-   |                  required by a bound introduced by this call
+23 |     require_server_ready_middleware(handler);
+   |     ------------------------------- ^^^^^^^ expected due to this
+   |     |
+   |     required by a bound introduced by this call
    |
    = note: expected closure signature `for<'a> fn(&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>) -> _`
               found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
-   = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
-note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> <WORKSPACE>/src/transport.rs:544:4
-
-error[E0631]: type mismatch in closure arguments
-  --> tests/ui/typed_middleware_conn_role_mismatch.rs:14:13
+   = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:20:19: 20:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
+note: required by a bound in `require_server_ready_middleware`
+  --> tests/ui/typed_middleware_conn_role_mismatch.rs:10:14
    |
- 9 |     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
-   |                   --------------------------------------------------------- found signature defined here
-...
-14 |     let _ = conn.receive_backend_typed(&mut middleware).await;
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+ 8 |   fn require_server_ready_middleware<Handler>(_handler: Handler)
+   |      ------------------------------- required by a bound in this function
+ 9 |   where
+10 |       Handler: TypedMiddleware<
+   |  ______________^
+11 | |             ServerRole,
+12 | |             frontend::Ready,
+13 | |             TypedBackendMessage<frontend::ReadyExternalMessage>,
+14 | |             (),
+15 | |         >,
+   | |_________^ required by this bound in `require_server_ready_middleware`
+help: consider wrapping the function in a closure
    |
-   = note: expected closure signature `for<'a> fn(&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>) -> _`
-              found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
-   = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
-note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> <WORKSPACE>/src/transport.rs:544:4
-
-error[E0631]: type mismatch in closure arguments
-  --> tests/ui/typed_middleware_conn_role_mismatch.rs:14:57
-   |
- 9 |     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
-   |                   --------------------------------------------------------- found signature defined here
-...
-14 |     let _ = conn.receive_backend_typed(&mut middleware).await;
-   |                                                         ^^^^^ expected due to this
-   |
-   = note: expected closure signature `for<'a> fn(&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>) -> _`
-              found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
-   = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:9:19: 9:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
-note: required by a bound in `transport::<impl Conn<Buffered<S>, Phase, Cleanliness>>::receive_backend_typed`
-  --> <WORKSPACE>/src/transport.rs:544:4
+23 |     require_server_ready_middleware(|arg0: &mut (), arg1: TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>| handler(arg0, /* pg_proto::grammar::backend::ReadyExternalMessage */));
+   |                                     +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

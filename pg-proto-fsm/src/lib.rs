@@ -343,7 +343,13 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                         })
                     })
                     .collect::<Vec<_>>();
-                let wrapper_definitions = wrapper_names.iter().map(|wrapper| {
+                let wrapper_definitions = wrapper_names.iter().zip(transitions.iter()).map(|(wrapper, transition)| {
+                    let event = &transition.event;
+                    let wrapper_projector = match kind {
+                        ChoiceKind::Internal => quote!(project_internal),
+                        ChoiceKind::External => quote!(project_external),
+                        ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                    };
                     quote! {
                         #[doc = concat!("Validated wire message for one legal `", stringify!(#state_name), "` transition.")]
                         pub struct #wrapper(#wire_type);
@@ -359,6 +365,25 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                             #[must_use]
                             pub fn into_wire(self) -> #wire_type {
                                 self.0
+                            }
+
+                            /// Mutates or replaces the wire value while preserving this transition variant.
+                            ///
+                            /// # Errors
+                            ///
+                            /// Returns the replacement when it no longer denotes this phase transition.
+                            pub fn try_map_wire(
+                                self,
+                                map: impl FnOnce(#wire_type) -> #wire_type,
+                            ) -> ::core::result::Result<Self, #wire_type> {
+                                let message = map(self.0);
+                                if #wrapper_projector(RuntimeState::#state_name, &message)
+                                    == Some(Event::#event)
+                                {
+                                    Ok(Self(message))
+                                } else {
+                                    Err(message)
+                                }
                             }
                         }
                     }

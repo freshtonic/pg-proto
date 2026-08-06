@@ -323,3 +323,40 @@ fn generated_phase_messages_only_admit_legal_wire_variants() {
     };
     assert_eq!(replacement.event(), query::Event::Parse);
 }
+
+#[test]
+fn generated_message_projection_selects_the_typed_next_connection() {
+    struct Clean;
+
+    let ready: query::TypedSession<Vec<u8>, query::Ready, Clean> =
+        query::TypedSession::with_transport(vec![1]);
+    let Ok(message) = query::ReadyInternalMessage::try_from(TestInternal::Query(7)) else {
+        panic!("query is legal while ready");
+    };
+
+    match ready.project_internal_message(message) {
+        query::ReadyInternalProjection::Query {
+            connection,
+            message,
+            ..
+        } => {
+            let simple: query::TypedSession<Vec<u8>, query::Simple, query::Dirty> = connection;
+            assert!(matches!(message.as_wire(), TestInternal::Query(7)));
+            assert_eq!(simple.complete().into_transport(), [1]);
+        }
+        _ => panic!("query replacement must select the simple-query transition"),
+    }
+
+    let ready: query::TypedSession<Vec<u8>, query::Ready, Clean> =
+        query::TypedSession::with_transport(vec![2]);
+    let Ok(message) = query::ReadyInternalMessage::try_from(TestInternal::Parse) else {
+        panic!("parse is legal while ready");
+    };
+    match ready.project_internal_message(message) {
+        query::ReadyInternalProjection::Parse { connection, .. } => {
+            let building: query::TypedSession<Vec<u8>, query::Building, Clean> = connection;
+            assert_eq!(building.into_transport(), [2]);
+        }
+        _ => panic!("parse replacement must select the building transition"),
+    }
+}

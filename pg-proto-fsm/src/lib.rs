@@ -390,6 +390,54 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                     ChoiceKind::External => "peer-initiated",
                     ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
                 };
+                let projection_name = format_ident!(
+                    "{}{}Projection",
+                    state_name,
+                    match kind {
+                        ChoiceKind::Internal => "Internal",
+                        ChoiceKind::External => "External",
+                        ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                    }
+                );
+                let projection_method = match kind {
+                    ChoiceKind::Internal => format_ident!("project_internal_message"),
+                    ChoiceKind::External => format_ident!("project_external_message"),
+                    ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                };
+                let projection_variants = transitions.iter().zip(wrapper_names.iter()).map(
+                    |(transition, wrapper)| {
+                        let event = &transition.event;
+                        let target = &transition.target;
+                        let cleanliness = transition.cleanliness.as_ref().map_or_else(
+                            || quote!(SourceCleanliness),
+                            |cleanliness| quote!(#cleanliness),
+                        );
+                        quote! {
+                            #[doc = concat!("The [`Event::", stringify!(#event), "`] transition and its correctly typed next connection.")]
+                            #event {
+                                /// Connection after applying the selected message transition.
+                                connection: TypedSession<Transport, #target, #cleanliness>,
+                                /// Validated message which selected this transition.
+                                message: #wrapper,
+                                /// Retains the source cleanliness parameter even when replaced.
+                                source_cleanliness: ::core::marker::PhantomData<SourceCleanliness>,
+                            }
+                        }
+                    },
+                );
+                let projection_arms = transitions.iter().map(|transition| {
+                    let event = &transition.event;
+                    quote! {
+                        #type_name::#event(message) => #projection_name::#event {
+                            connection: TypedSession {
+                                transport,
+                                _state: ::core::marker::PhantomData,
+                            },
+                            message,
+                            source_cleanliness: ::core::marker::PhantomData,
+                        }
+                    }
+                });
 
                 quote! {
                     #(#wrapper_definitions)*
@@ -400,6 +448,34 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                             #[doc = concat!("The [`Event::", stringify!(#variants), "`] transition.")]
                             #variants(#enum_wrappers),
                         )*
+                    }
+
+                    #[doc = concat!("Typed next-connection projection for [`", stringify!(#type_name), "`].")]
+                    pub enum #projection_name<Transport, SourceCleanliness> {
+                        #(#projection_variants,)*
+                        #[doc(hidden)]
+                        __Impossible {
+                            never: ::core::convert::Infallible,
+                            marker: ::core::marker::PhantomData<(Transport, SourceCleanliness)>,
+                        },
+                    }
+
+                    impl<Transport, SourceCleanliness>
+                        TypedSession<Transport, #state_name, SourceCleanliness>
+                    {
+                        #[doc = concat!("Projects one [`", stringify!(#type_name), "`] into its message-selected next connection.")]
+                        #[must_use]
+                        #[allow(unreachable_patterns)]
+                        pub fn #projection_method(
+                            self,
+                            message: #type_name,
+                        ) -> #projection_name<Transport, SourceCleanliness> {
+                            let transport = self.transport;
+                            match message {
+                                #(#projection_arms,)*
+                                _ => unreachable!(),
+                            }
+                        }
                     }
 
                     impl #type_name {

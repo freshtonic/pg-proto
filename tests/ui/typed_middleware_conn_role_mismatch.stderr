@@ -1,17 +1,16 @@
-error[E0631]: type mismatch in closure arguments
+error[E0631]: type mismatch in function arguments
   --> tests/ui/typed_middleware_conn_role_mismatch.rs:23:37
    |
-20 |     let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
-   |                   --------------------------------------------------------- found signature defined here
-...
 23 |     require_server_ready_middleware(handler);
-   |     ------------------------------- ^^^^^^^ expected due to this
-   |     |
+   |     ------------------------------- ^^^^^^^
+   |     |                               |
+   |     |                               expected due to this
+   |     |                               found signature defined here
    |     required by a bound introduced by this call
    |
-   = note: expected closure signature `for<'a> fn(&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>) -> _`
-              found closure signature `fn(&mut (), pg_proto::grammar::backend::ReadyExternalMessage) -> _`
-   = note: required for `{closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:20:19: 20:76}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
+   = note: expected function signature `for<'a> fn((&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>)) -> _`
+              found function signature `fn((&mut (), pg_proto::grammar::backend::ReadyExternalMessage)) -> _`
+   = note: required for `{async closure@$DIR/tests/ui/typed_middleware_conn_role_mismatch.rs:20:19: 20:82}` to implement `TypedMiddleware<ServerRole, pg_proto::grammar::frontend::Ready, TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>, ()>`
 note: required by a bound in `require_server_ready_middleware`
   --> tests/ui/typed_middleware_conn_role_mismatch.rs:10:14
    |
@@ -28,5 +27,5 @@ note: required by a bound in `require_server_ready_middleware`
    | |_________^ required by this bound in `require_server_ready_middleware`
 help: consider wrapping the function in a closure
    |
-23 |     require_server_ready_middleware(|arg0: &mut (), arg1: TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>| handler(arg0, /* pg_proto::grammar::backend::ReadyExternalMessage */));
-   |                                     +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+23 |     require_server_ready_middleware(|arg0: (&'a mut (), TypedBackendMessage<pg_proto::grammar::frontend::ReadyExternalMessage>)| handler(/* (&mut (), pg_proto::grammar::backend::ReadyExternalMessage) */));
+   |                                     ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++        +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

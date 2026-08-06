@@ -17,7 +17,7 @@ where
 }
 
 fn illegal() {
-    let handler = |_state: &mut (), message: backend::ReadyExternalMessage| {
+    let handler = async |_state: &mut (), message: backend::ReadyExternalMessage| {
         Ok::<_, Infallible>(message)
     };
     require_server_ready_middleware(handler);

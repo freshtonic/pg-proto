@@ -478,6 +478,12 @@ pub struct Then<First, Second> {
     second: Second,
 }
 
+impl<First, Second> Then<First, Second> {
+    pub(crate) fn parts_mut(&mut self) -> (&mut First, &mut Second) {
+        (&mut self.first, &mut self.second)
+    }
+}
+
 impl<Message, State, First, Second> MessageMiddleware<Message, State> for Then<First, Second>
 where
     First: MessageMiddleware<Message, State>,

@@ -17,7 +17,8 @@ use crate::{
     demux::{Demux, SessionItem},
     grammar::backend,
     middleware::{
-        AsynchronousBackendMessage, MessageMiddleware, Middleware, ReconstructableMessage as _,
+        AsynchronousBackendMessage, ChainError, MessageMiddleware, Middleware,
+        ReconstructableMessage as _, Then,
     },
 };
 
@@ -439,6 +440,57 @@ pub trait TypedPipelineMiddleware<State> {
 
 impl<State> TypedPipelineMiddleware<State> for crate::middleware::Identity {
     type Error = Infallible;
+}
+
+macro_rules! chained_pipeline_hooks {
+    ($($method:ident($message:ty)),+ $(,)?) => {
+        $(
+            async fn $method(
+                &mut self,
+                state: &mut State,
+                message: $message,
+            ) -> Result<$message, Self::Error> {
+                let (first, second) = self.parts_mut();
+                let message = first
+                    .$method(state, message)
+                    .await
+                    .map_err(ChainError::First)?;
+                second
+                    .$method(state, message)
+                    .await
+                    .map_err(ChainError::Second)
+            }
+        )+
+    };
+}
+
+impl<State, First, Second> TypedPipelineMiddleware<State> for Then<First, Second>
+where
+    First: TypedPipelineMiddleware<State>,
+    Second: TypedPipelineMiddleware<State>,
+{
+    type Error = ChainError<First::Error, Second::Error>;
+
+    chained_pipeline_hooks!(
+        frontend_ready(backend::ReadyExternalMessage),
+        frontend_building(backend::BuildingExternalMessage),
+        frontend_extended_error(backend::ExtendedErrorExternalMessage),
+        frontend_simple_copy_in(backend::SimpleCopyInExternalMessage),
+        frontend_extended_copy_in(backend::ExtendedCopyInExternalMessage),
+        frontend_simple_copy_both(backend::SimpleCopyBothExternalMessage),
+        frontend_extended_copy_both(backend::ExtendedCopyBothExternalMessage),
+        backend_asynchronous(AsynchronousBackendMessage),
+        backend_query(PipelineBackendMessage<phase::Query>),
+        backend_function_call(PipelineBackendMessage<phase::FunctionCall>),
+        backend_parse(PipelineBackendMessage<phase::Parse>),
+        backend_bind(PipelineBackendMessage<phase::Bind>),
+        backend_describe(PipelineBackendMessage<phase::Describe>),
+        backend_execute(PipelineBackendMessage<phase::Execute>),
+        backend_close(PipelineBackendMessage<phase::Close>),
+        backend_sync(PipelineBackendMessage<phase::Sync>),
+        backend_copy_done(PipelineBackendMessage<phase::CopyDone>),
+        backend_copy_fail(PipelineBackendMessage<phase::CopyFail>),
+    );
 }
 
 /// Adapts direction-wide async middleware to every typed pipeline hook.

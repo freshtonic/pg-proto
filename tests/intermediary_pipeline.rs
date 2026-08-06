@@ -11,7 +11,7 @@ use pg_proto::{
     demux::Demux,
     grammar::backend,
     intermediary::Intermediary,
-    middleware::{AsynchronousBackendMessage, MessageMiddleware, Middleware},
+    middleware::{AsynchronousBackendMessage, MessageMiddleware, MessageMiddlewareExt, Middleware},
     pipeline::{
         BackendAction, BoundedPipeline, FrontendAction, FrontendAdmission, FrontendHandling,
         FrontendProjectionError, NoPipeline, Pipeline, PipelineBackendMessage, PipelineState,
@@ -269,6 +269,38 @@ async fn direction_wide_middleware_adapts_to_typed_pipeline_dispatch() {
         .await
         .expect("direction-wide backend policy remains operation legal");
     assert_eq!(*middleware.state(), 2);
+}
+
+#[tokio::test]
+async fn typed_pipeline_middleware_composes_in_order_with_shared_state() {
+    struct Record(&'static str);
+
+    impl TypedPipelineMiddleware<Vec<&'static str>> for Record {
+        type Error = Infallible;
+
+        async fn frontend_ready(
+            &mut self,
+            calls: &mut Vec<&'static str>,
+            message: backend::ReadyExternalMessage,
+        ) -> Result<backend::ReadyExternalMessage, Self::Error> {
+            calls.push(self.0);
+            Ok(message)
+        }
+    }
+
+    let mut pipeline = bounded(1);
+    let mut middleware = Middleware::new(Vec::new(), Record("first").then(Record("second")));
+
+    pipeline
+        .frontend_action_typed(
+            &mut middleware,
+            FrontendMessage::Query(Bytes::from_static(b"select 1")),
+            FrontendHandling::Forward,
+        )
+        .await
+        .expect("composed typed pipeline middleware accepts Query");
+
+    assert_eq!(middleware.state(), &["first", "second"]);
 }
 
 #[tokio::test]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.3...pg-proto-v0.3.0) - 2026-08-06
+
+### Added
+
+- make message middleware async
+
 ## [0.2.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.2...pg-proto-v0.2.3) - 2026-08-06
 
 ### Added

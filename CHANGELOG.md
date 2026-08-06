@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.2.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.2...pg-proto-v0.2.3) - 2026-08-06
+
+### Added
+
+- generate typed message projections
+- add stateful message middleware core
+- integrate checked message middleware
+- generate phase-typed middleware messages
+- infer typed middleware from connections
+- project typed transport messages
+- migrate rewriting example to typed middleware
+- add typed wire pass-through adapter
+
+### Changed
+
+- reuse successful PR checks on main
+- tolerate post-merge API lag
+
+### Documentation
+
+- plan stateful message middleware
+- clarify runtime middleware validation
+- plan compile-time middleware API
+- document compile-time middleware
+- complete typed middleware plan
+- explain dropped pipeline messages
+
+### Fixed
+
+- preserve negotiation observations in proxy example
+- align typed projections with completion plan
+
+### Testing
+
+- refresh compile-fail diagnostics
+- stabilize compile-fail diagnostics
+
 ## [0.2.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.1...pg-proto-v0.2.2) - 2026-08-05
 
 ### Added

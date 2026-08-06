@@ -241,6 +241,107 @@ pub trait TypedPhase<Role, Wire> {
     type Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>;
 }
 
+/// Associates a connection typestate with messages its local role may send.
+///
+/// Unlike [`TypedPhase`], which describes peer-selected input, this trait indexes
+/// the generated internal message set used before a locally generated value is
+/// encoded and sent.
+pub trait TypedOutboundPhase<Role, Wire> {
+    /// Generated grammar phase corresponding to the connection typestate.
+    type ProtocolPhase;
+    /// Opaque set of locally generated messages legal in this phase.
+    type Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>;
+}
+
+macro_rules! typed_outbound_phase {
+    ($role:ty, $wire:ty; $($connection:ty => $protocol:path, $message:path);+ $(;)?) => {
+        $(
+            impl TypedOutboundPhase<$role, $wire> for $connection {
+                type ProtocolPhase = $protocol;
+                type Message = $message;
+            }
+        )+
+    };
+}
+
+macro_rules! typed_outbound_backend_phase {
+    ($($connection:ty => $protocol:path, $message:path);+ $(;)?) => {
+        $(
+            impl TypedOutboundPhase<ServerRole, BackendMessage> for $connection {
+                type ProtocolPhase = $protocol;
+                type Message = TypedBackendMessage<$message>;
+            }
+        )+
+    };
+}
+
+typed_outbound_phase!(ClientRole, PreStartupMessage;
+    crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
+);
+
+typed_outbound_phase!(ClientRole, FrontendMessage;
+    crate::auth::PasswordResponse => authentication::PasswordResponse, authentication::PasswordResponseInternalMessage;
+    crate::auth::TokenResponse => authentication::TokenResponse, authentication::TokenResponseInternalMessage;
+    crate::auth::SaslInitial => authentication::SaslInitial, authentication::SaslInitialInternalMessage;
+    crate::auth::SaslChallenge => authentication::SaslChallenge, authentication::SaslChallengeInternalMessage;
+    crate::auth::Ready => frontend::Ready, frontend::ReadyInternalMessage;
+    crate::session::Building => frontend::Building, frontend::BuildingInternalMessage;
+    crate::session::BoundBuilding => frontend::BoundBuilding, frontend::BoundBuildingInternalMessage;
+    crate::session::CopyIn => frontend::CopyIn, frontend::CopyInInternalMessage;
+    crate::session::CopyBoth => frontend::CopyBoth, frontend::CopyBothInternalMessage;
+    crate::session::CopyBothServerDone => frontend::CopyBothServerDone, frontend::CopyBothServerDoneInternalMessage;
+);
+
+typed_outbound_phase!(ServerRole, EncryptionReply;
+    crate::pre_startup::ServerSslDecision => server_pre_startup::SslDecision, server_pre_startup::SslDecisionInternalMessage;
+    crate::pre_startup::ServerGssDecision => server_pre_startup::GssDecision, server_pre_startup::GssDecisionInternalMessage;
+);
+
+typed_outbound_backend_phase!(
+    crate::server_auth::ServerStartupRejected => server_authentication::Startup, server_authentication::StartupInternalMessage;
+    crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthInternalMessage;
+    crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseInternalMessage;
+    crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialInternalMessage;
+    crate::server_auth::ServerSasl => server_authentication::Sasl, server_authentication::SaslInternalMessage;
+    crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseInternalMessage;
+    crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseInternalMessage;
+    crate::server_auth::ServerAuthPolicy => server_authentication::TokenPolicy, server_authentication::TokenPolicyInternalMessage;
+    crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyInternalMessage;
+    crate::server_session::ServerSimpleQuery => backend::Simple, backend::SimpleInternalMessage;
+    crate::server_session::ServerSimpleError => backend::SimpleError, backend::SimpleErrorInternalMessage;
+    crate::server_session::ServerFunctionCall => backend::FunctionResponse, backend::FunctionResponseInternalMessage;
+    crate::server_session::ServerFunctionCallDone => backend::FunctionReady, backend::FunctionReadyInternalMessage;
+    crate::server_session::ServerFunctionCallError => backend::FunctionReady, backend::FunctionReadyInternalMessage;
+    crate::server_session::ServerParse => backend::ParseResponse, backend::ParseResponseInternalMessage;
+    crate::server_session::ServerBind => backend::BindResponse, backend::BindResponseInternalMessage;
+    crate::server_session::ServerDescribe => backend::DescribeResponse, backend::DescribeResponseInternalMessage;
+    crate::server_session::ServerExecute => backend::ExecuteResponse, backend::ExecuteResponseInternalMessage;
+    crate::server_session::ServerClose => backend::CloseResponse, backend::CloseResponseInternalMessage;
+    crate::server_session::ServerSync => backend::SyncResponse, backend::SyncResponseInternalMessage;
+    crate::server_session::ServerBuilding => backend::Building, backend::BuildingInternalMessage;
+    crate::server_session::ServerExtendedError => backend::ExtendedError, backend::ExtendedErrorInternalMessage;
+    crate::server_session::ServerCopyIn<crate::server_session::CopySimple> => backend::SimpleCopyIn, backend::SimpleCopyInInternalMessage;
+    crate::server_session::ServerCopyIn<crate::server_session::CopyExtended> => backend::ExtendedCopyIn, backend::ExtendedCopyInInternalMessage;
+    crate::server_session::ServerCopyInDone<crate::server_session::CopySimple> => backend::SimpleCopyInDone, backend::SimpleCopyInDoneInternalMessage;
+    crate::server_session::ServerCopyInDone<crate::server_session::CopyExtended> => backend::ExtendedCopyInDone, backend::ExtendedCopyInDoneInternalMessage;
+    crate::server_session::ServerCopyInFailed<crate::server_session::CopySimple> => backend::SimpleCopyInFailed, backend::SimpleCopyInFailedInternalMessage;
+    crate::server_session::ServerCopyInFailed<crate::server_session::CopyExtended> => backend::ExtendedCopyInFailed, backend::ExtendedCopyInFailedInternalMessage;
+    crate::server_session::ServerCopyOut<crate::server_session::CopySimple> => backend::SimpleCopyOut, backend::SimpleCopyOutInternalMessage;
+    crate::server_session::ServerCopyOut<crate::server_session::CopyExtended> => backend::ExtendedCopyOut, backend::ExtendedCopyOutInternalMessage;
+    crate::server_session::ServerCopyOutDone<crate::server_session::CopySimple> => backend::SimpleCopyOutDone, backend::SimpleCopyOutDoneInternalMessage;
+    crate::server_session::ServerCopyOutDone<crate::server_session::CopyExtended> => backend::ExtendedCopyOutDone, backend::ExtendedCopyOutDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen> => backend::SimpleCopyBoth, backend::SimpleCopyBothInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen> => backend::ExtendedCopyBoth, backend::ExtendedCopyBothInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothClientDone> => backend::SimpleCopyBothClientDone, backend::SimpleCopyBothClientDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothClientDone> => backend::ExtendedCopyBothClientDone, backend::ExtendedCopyBothClientDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone> => backend::SimpleCopyBothServerDone, backend::SimpleCopyBothServerDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone> => backend::ExtendedCopyBothServerDone, backend::ExtendedCopyBothServerDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothDone> => backend::SimpleCopyBothDone, backend::SimpleCopyBothDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothDone> => backend::ExtendedCopyBothDone, backend::ExtendedCopyBothDoneInternalMessage;
+    crate::server_session::ServerCopyBothFailed<crate::server_session::CopySimple> => backend::SimpleCopyBothFailed, backend::SimpleCopyBothFailedInternalMessage;
+    crate::server_session::ServerCopyBothFailed<crate::server_session::CopyExtended> => backend::ExtendedCopyBothFailed, backend::ExtendedCopyBothFailedInternalMessage;
+);
+
 impl TypedPhase<ServerRole, BackendMessage> for crate::auth::Ready {
     type ProtocolPhase = frontend::Ready;
     type Message = TypedBackendMessage<frontend::ReadyExternalMessage>;
@@ -306,7 +407,7 @@ macro_rules! typed_frontend_phase {
 typed_frontend_phase!(crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialExternalMessage);
-typed_frontend_phase!(crate::server_auth::ServerSasl => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyExternalMessage);
 typed_frontend_phase!(crate::server_session::ServerBuilding => backend::Building, backend::BuildingExternalMessage);
@@ -478,6 +579,12 @@ pub struct Then<First, Second> {
     second: Second,
 }
 
+impl<First, Second> Then<First, Second> {
+    pub(crate) fn parts_mut(&mut self) -> (&mut First, &mut Second) {
+        (&mut self.first, &mut self.second)
+    }
+}
+
 impl<Message, State, First, Second> MessageMiddleware<Message, State> for Then<First, Second>
 where
     First: MessageMiddleware<Message, State>,
@@ -605,6 +712,10 @@ impl<State, Handler> Middleware<State, Handler> {
         (self.state, self.handler)
     }
 
+    pub(crate) fn parts_mut(&mut self) -> (&mut State, &mut Handler) {
+        (&mut self.state, &mut self.handler)
+    }
+
     /// Intercepts one owned message.
     ///
     /// # Errors
@@ -673,6 +784,48 @@ impl<State, Handler> Middleware<State, Handler> {
     }
 }
 
+impl<Transport, Phase, Cleanliness> crate::Conn<Transport, Phase, Cleanliness> {
+    /// Intercepts one locally generated message indexed by this connection phase.
+    ///
+    /// The returned generated enum may select a different legal transition in
+    /// the same phase. Match it and apply the corresponding existing typestate
+    /// operation before encoding or forwarding the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a middleware policy error or an invalid replacement wire shape.
+    pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
+        &self,
+        middleware: &mut Middleware<State, Handler>,
+        message: <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+    ) -> Result<
+        <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+        TypedReceiveError<Handler::Error, Wire>,
+    >
+    where
+        Phase: TypedOutboundPhase<Role, Wire>,
+        Wire: ReconstructableMessage,
+        Handler: TypedMiddleware<
+                Role,
+                <Phase as TypedOutboundPhase<Role, Wire>>::ProtocolPhase,
+                <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+                State,
+            >,
+    {
+        let message = middleware
+            .intercept_typed::<Role, <Phase as TypedOutboundPhase<Role, Wire>>::ProtocolPhase, _>(
+                message,
+            )
+            .await
+            .map_err(TypedReceiveError::Middleware)?;
+        if message.as_ref().is_reconstructable() {
+            Ok(message)
+        } else {
+            Err(TypedReceiveError::InvalidWire(message.into()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -684,8 +837,11 @@ mod tests {
         MessageMiddlewareExt as _, Middleware, WireAdapter,
     };
     use crate::{
+        Conn,
         codec::{FrontendMessage, Parse},
-        grammar::{backend, server_authentication, server_pre_startup},
+        grammar::{
+            backend, pre_startup as pre_startup_grammar, server_authentication, server_pre_startup,
+        },
         pre_startup::PreStartupMessage,
     };
 
@@ -713,6 +869,39 @@ mod tests {
             Ok(String::from("HELLO"))
         );
         assert_eq!(middleware.state(), &[String::from("hello")]);
+    }
+
+    #[tokio::test]
+    async fn connection_phase_indexes_locally_generated_typed_middleware() {
+        let conn = Conn::new(());
+        let message =
+            pre_startup_grammar::PreStartupInternalMessage::try_from(PreStartupMessage::SslRequest)
+                .expect("SSLRequest is legal before startup");
+        let mut middleware = Middleware::new(
+            Vec::new(),
+            async |seen: &mut Vec<&'static str>,
+                   _message: pre_startup_grammar::PreStartupInternalMessage| {
+                seen.push("outbound");
+                Ok::<_, Infallible>(
+                    pre_startup_grammar::PreStartupInternalMessage::try_from(
+                        PreStartupMessage::GssEncRequest,
+                    )
+                    .expect("GSSENCRequest is another legal pre-startup choice"),
+                )
+            },
+        );
+
+        let output = conn
+            .intercept_outbound_typed::<ClientRole, PreStartupMessage, _, _>(
+                &mut middleware,
+                message,
+            )
+            .await
+            .expect("replacement remains legal in the connection phase");
+
+        assert!(matches!(output.as_ref(), PreStartupMessage::GssEncRequest));
+        assert_eq!(middleware.state(), &["outbound"]);
+        conn.into_transport();
     }
 
     #[tokio::test]

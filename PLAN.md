@@ -330,6 +330,16 @@ checked middleware belongs on the state-aware session APIs above it.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.
+- [x] Add async typed middleware dispatch to the runtime bounded pipeline so
+  frontend phases and pending backend operation responses constrain replacements
+  at compile time without duplicating the runtime ledger.
+  - [x] Track the generated backend response subphase independently for every
+    queued operation, including COPY and multi-message response sequences.
+  - [x] Compose typed pipeline policies in deterministic order with shared state.
+  - [x] Index locally generated middleware by the sending `Conn` typestate and
+    include non-advancing asynchronous server messages.
+  - [x] Split server SASL and token authentication into distinct policy and
+    client-response typestates so replies cannot precede required input.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

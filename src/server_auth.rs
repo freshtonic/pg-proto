@@ -41,8 +41,16 @@ pub enum ServerSaslInitial {}
 pub enum ServerSasl {}
 
 #[derive(Debug)]
+/// A recursive SASL response is expected from the client.
+pub enum ServerSaslResponse {}
+
+#[derive(Debug)]
 /// A GSS, SSPI, or Kerberos response token is expected.
 pub enum ServerAuthResponse {}
+
+#[derive(Debug)]
+/// Policy is selecting the next GSS, SSPI, or Kerberos authentication action.
+pub enum ServerAuthPolicy {}
 
 #[derive(Debug)]
 /// Authentication succeeded and startup metadata may be sent before readiness.
@@ -98,6 +106,12 @@ pub type PasswordProjection<S, C> =
 /// Projection of a valid SASL initial response or the unchanged initial state.
 pub type SaslInitialProjection<S, C> =
     ServerProjection<(Conn<S, ServerSasl, C>, SaslInitialResponse), S, ServerSaslInitial, C>;
+/// Projection of a recursive SASL response into the next policy decision.
+pub type SaslResponseProjection<S, C> =
+    ServerProjection<(Conn<S, ServerSasl, C>, Bytes), S, ServerSaslResponse, C>;
+/// Projection of a token response into the next authentication policy decision.
+pub type TokenResponseProjection<S, C> =
+    ServerProjection<(Conn<S, ServerAuthPolicy, C>, Bytes), S, ServerAuthResponse, C>;
 
 impl<S, C> Conn<S, Startup, C> {
     /// Validates the startup protocol before authentication can begin.
@@ -277,34 +291,17 @@ impl<S, C> Conn<S, ServerSaslInitial, C> {
 }
 
 impl<S, C> Conn<S, ServerSasl, C> {
-    /// Projects one client SASL response and remains in the recursive exchange.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged state and message if it is not a SASL response.
-    pub fn receive_response(
-        self,
-        message: FrontendMessage,
-    ) -> ServerProjection<(Self, Bytes), S, ServerSasl, C> {
-        match (
-            auth_grammar::project_external(auth_grammar::RuntimeState::SaslResponse, &message),
-            message,
-        ) {
-            (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(response)) => {
-                Ok((self, response))
-            }
-            (_, other) => Err(Box::new((self, other))),
-        }
-    }
-
-    /// Sends a SASL challenge and remains in the recursive exchange.
+    /// Sends a SASL challenge and waits for the next client response.
     ///
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn continue_with(self, challenge: Bytes) -> io::Result<(Self, Frame)> {
+    pub fn continue_with(
+        self,
+        challenge: Bytes,
+    ) -> io::Result<(Conn<S, ServerSaslResponse, C>, Frame)> {
         Ok((
-            self,
+            self.transition(),
             authentication_frame(Authentication::SaslContinue(challenge))?,
         ))
     }
@@ -322,35 +319,53 @@ impl<S, C> Conn<S, ServerSasl, C> {
     }
 }
 
+impl<S, C> Conn<S, ServerSaslResponse, C> {
+    /// Projects one client SASL response and returns to policy selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged state and message if it is not a SASL response.
+    pub fn receive_response(self, message: FrontendMessage) -> SaslResponseProjection<S, C> {
+        match (
+            auth_grammar::project_external(auth_grammar::RuntimeState::SaslResponse, &message),
+            message,
+        ) {
+            (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(response)) => {
+                Ok((self.transition(), response))
+            }
+            (_, other) => Err(Box::new((self, other))),
+        }
+    }
+}
+
 impl<S, C> Conn<S, ServerAuthResponse, C> {
     /// Projects one GSS, SSPI, or Kerberos response token.
     ///
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not an authentication token.
-    pub fn receive_response(
-        self,
-        message: FrontendMessage,
-    ) -> ServerProjection<(Self, Bytes), S, ServerAuthResponse, C> {
+    pub fn receive_response(self, message: FrontendMessage) -> TokenResponseProjection<S, C> {
         match (
             auth_grammar::project_external(auth_grammar::RuntimeState::TokenResponse, &message),
             message,
         ) {
             (Some(auth_grammar::Event::Response), FrontendMessage::PasswordResponse(response)) => {
-                Ok((self, response))
+                Ok((self.transition(), response))
             }
             (_, other) => Err(Box::new((self, other))),
         }
     }
+}
 
-    /// Sends a GSS continuation token and remains in the authentication exchange.
+impl<S, C> Conn<S, ServerAuthPolicy, C> {
+    /// Sends a GSS continuation token and waits for another client response.
     ///
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn continue_gss(self, token: Bytes) -> io::Result<(Self, Frame)> {
+    pub fn continue_gss(self, token: Bytes) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
         Ok((
-            self,
+            self.transition(),
             authentication_frame(Authentication::GssContinue(token))?,
         ))
     }
@@ -475,6 +490,8 @@ mod tests {
     use super::*;
     use crate::{
         Pristine,
+        grammar::server_authentication,
+        middleware::{Identity, Middleware, ServerRole, TypedBackendMessage},
         scram::{SCRAM_SHA_256, ScramServer, ServerChannelBinding},
     };
     use bytes::{BufMut as _, BytesMut};
@@ -515,6 +532,24 @@ mod tests {
         let (ready, ok) = auth.authentication_ok().unwrap();
         assert_eq!(ok, authentication_frame(Authentication::Ok).unwrap());
         ready.into_transport();
+    }
+
+    #[tokio::test]
+    async fn server_outbound_middleware_includes_asynchronous_messages() {
+        let conn = validated_startup().begin_server_auth();
+        let message = TypedBackendMessage::<server_authentication::AuthInternalMessage>::try_from(
+            BackendMessage::NoticeResponse(DiagnosticResponse { fields: vec![] }),
+        )
+        .expect("NoticeResponse is legal without advancing authentication");
+        let mut middleware = Middleware::new((), Identity);
+
+        let output = conn
+            .intercept_outbound_typed::<ServerRole, BackendMessage, _, _>(&mut middleware, message)
+            .await
+            .expect("asynchronous server traffic remains phase legal");
+
+        assert!(matches!(output, TypedBackendMessage::Asynchronous(_)));
+        conn.into_transport();
     }
 
     #[test]

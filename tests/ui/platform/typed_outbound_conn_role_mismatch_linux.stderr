@@ -1,0 +1,80 @@
+error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundPhase<ServerRole, PreStartupMessage>` is not satisfied
+  --> tests/ui/platform/typed_outbound_conn_role_mismatch_linux.rs:17:10
+   |
+17 |         .intercept_outbound_typed::<ServerRole, PreStartupMessage, _, _>(
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+   |
+help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+      but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
+  --> src/middleware.rs
+   |
+   |               impl TypedOutboundPhase<$role, $wire> for $connection {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
+   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
+   = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundPhase<ServerRole, PreStartupMessage>` is not satisfied
+  --> tests/ui/platform/typed_outbound_conn_role_mismatch_linux.rs:16:13
+   |
+16 |       let _ = conn
+   |  _____________^
+17 | |         .intercept_outbound_typed::<ServerRole, PreStartupMessage, _, _>(
+18 | |             &mut middleware,
+19 | |             message,
+20 | |         )
+   | |_________^ the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+   |
+help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+      but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
+  --> src/middleware.rs
+   |
+   |               impl TypedOutboundPhase<$role, $wire> for $connection {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
+   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
+note: required by a bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+  --> src/middleware.rs
+   |
+   |     pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
+   |                  ------------------------ required by a bound in this associated function
+...
+   |         Phase: TypedOutboundPhase<Role, Wire>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+   = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundPhase<ServerRole, PreStartupMessage>` is not satisfied
+  --> tests/ui/platform/typed_outbound_conn_role_mismatch_linux.rs:21:10
+   |
+21 |         .await;
+   |          ^^^^^ the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+   |
+help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
+      but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
+  --> src/middleware.rs
+   |
+   |               impl TypedOutboundPhase<$role, $wire> for $connection {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
+   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
+   | | );
+   | |_- in this macro invocation
+   = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
+note: required by a bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+  --> src/middleware.rs
+   |
+   |     pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
+   |                  ------------------------ required by a bound in this associated function
+...
+   |         Phase: TypedOutboundPhase<Role, Wire>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+   = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)

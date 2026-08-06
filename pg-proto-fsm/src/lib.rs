@@ -450,6 +450,12 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                             message.into_wire()
                         }
                     }
+
+                    impl ::core::convert::AsRef<#wire_type> for #type_name {
+                        fn as_ref(&self) -> &#wire_type {
+                            self.as_wire()
+                        }
+                    }
                 }
             };
 

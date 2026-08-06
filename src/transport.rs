@@ -18,7 +18,10 @@ use crate::{
         CancelKey, Demux, Notification, OrderedAsyncEvent, ParameterStatus, SessionItem,
         TaggedNotice,
     },
-    middleware::{AcceptsMessage, MessageMiddleware, Middleware, ReceiveError},
+    middleware::{
+        AcceptsMessage, ClientRole, MessageMiddleware, Middleware, ReceiveError,
+        ReconstructableMessage as _, ServerRole, TypedMiddleware, TypedPhase, TypedReceiveError,
+    },
     pre_startup::{
         AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
         PreStartup, PreStartupMessage, ServerSslDecision, SslMode, SslModeNegotiation,
@@ -528,6 +531,52 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         self.transport_mut().receive_backend().await
     }
 
+    /// Receives one backend message through middleware indexed by this connection phase.
+    ///
+    /// Unlike [`Self::receive_backend_wire_with_middleware`], callers do not pass
+    /// a runtime protocol state. `Phase` selects the generated legal message set
+    /// and the server sender role at compile time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or decoding error, an illegal peer message, a middleware
+    /// policy error, or a phase-legal replacement with an invalid wire shape.
+    pub async fn receive_backend_typed<State, Handler>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+    ) -> Result<
+        <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+        TypedReceiveError<Handler::Error, BackendMessage>,
+    >
+    where
+        Phase: TypedPhase<ServerRole, BackendMessage>,
+        Handler: TypedMiddleware<
+                ServerRole,
+                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
+                <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+                State,
+            >,
+    {
+        let message = self
+            .receive_backend_wire()
+            .await
+            .map_err(TypedReceiveError::Io)?;
+        let message = <Phase as TypedPhase<ServerRole, BackendMessage>>::Message::try_from(message)
+            .map_err(TypedReceiveError::Illegal)?;
+        let message = middleware
+            .intercept_typed::<
+                ServerRole,
+                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
+                _,
+            >(message)
+            .map_err(TypedReceiveError::Middleware)?;
+        if message.as_ref().is_reconstructable() {
+            Ok(message)
+        } else {
+            Err(TypedReceiveError::InvalidWire(message.into()))
+        }
+    }
+
     /// Receives, intercepts, and validates one backend message before projection.
     ///
     /// # Errors
@@ -647,6 +696,52 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
         self.transport_mut().receive_wire().await
     }
 
+    /// Receives one frontend message through middleware indexed by this connection phase.
+    ///
+    /// `Phase` selects the generated legal message set and the client sender role
+    /// at compile time, so no runtime protocol-state argument is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or decoding error, an illegal peer message, a middleware
+    /// policy error, or a phase-legal replacement with an invalid wire shape.
+    pub async fn receive_frontend_typed<State, Handler>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+    ) -> Result<
+        <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message,
+        TypedReceiveError<Handler::Error, FrontendMessage>,
+    >
+    where
+        Phase: TypedPhase<ClientRole, FrontendMessage>,
+        Handler: TypedMiddleware<
+                ClientRole,
+                <Phase as TypedPhase<ClientRole, FrontendMessage>>::ProtocolPhase,
+                <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message,
+                State,
+            >,
+    {
+        let message = self
+            .receive_frontend_wire()
+            .await
+            .map_err(TypedReceiveError::Io)?;
+        let message =
+            <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message::try_from(message)
+                .map_err(TypedReceiveError::Illegal)?;
+        let message = middleware
+            .intercept_typed::<
+                ClientRole,
+                <Phase as TypedPhase<ClientRole, FrontendMessage>>::ProtocolPhase,
+                _,
+            >(message)
+            .map_err(TypedReceiveError::Middleware)?;
+        if message.as_ref().is_reconstructable() {
+            Ok(message)
+        } else {
+            Err(TypedReceiveError::InvalidWire(message.into()))
+        }
+    }
+
     /// Receives, intercepts, and validates one frontend message before projection.
     ///
     /// # Errors
@@ -679,6 +774,48 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
     /// Returns malformed pre-startup data and underlying transport read errors.
     pub async fn receive_pre_startup_wire(&mut self) -> io::Result<PreStartupMessage> {
         self.transport_mut().receive_pre_startup().await
+    }
+
+    /// Receives a client pre-startup packet through phase-typed middleware.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or decoding error, an illegal pre-startup packet, a
+    /// middleware policy error, or an invalid replacement wire shape.
+    pub async fn receive_pre_startup_typed<State, Handler>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+    ) -> Result<
+        <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message,
+        TypedReceiveError<Handler::Error, PreStartupMessage>,
+    >
+    where
+        Handler: TypedMiddleware<
+                ClientRole,
+                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::ProtocolPhase,
+                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message,
+                State,
+            >,
+    {
+        let message = self
+            .receive_pre_startup_wire()
+            .await
+            .map_err(TypedReceiveError::Io)?;
+        let message =
+            <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message::try_from(message)
+                .map_err(TypedReceiveError::Illegal)?;
+        let message = middleware
+            .intercept_typed::<
+                ClientRole,
+                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::ProtocolPhase,
+                _,
+            >(message)
+            .map_err(TypedReceiveError::Middleware)?;
+        if message.as_ref().is_reconstructable() {
+            Ok(message)
+        } else {
+            Err(TypedReceiveError::InvalidWire(message.into()))
+        }
     }
 
     /// Receives, intercepts, and validates one untagged pre-startup message.
@@ -911,6 +1048,49 @@ mod tests {
                 .get(&Bytes::from_static(b"application_name")),
             Some(&Bytes::from_static(b"proxy"))
         );
+    }
+
+    #[tokio::test]
+    async fn typed_middleware_accepts_async_traffic_without_advancing_ready() {
+        let (client, mut server) = tokio::io::duplex(128);
+        let original = BackendMessage::ParameterStatus {
+            name: Bytes::from_static(b"application_name"),
+            value: Bytes::from_static(b"upstream"),
+        };
+        let mut bytes = BytesMut::new();
+        PgCodec::<Backend>::default()
+            .encode(
+                original.to_frame().expect("reconstructable message"),
+                &mut bytes,
+            )
+            .expect("encodable message");
+        server.write_all(&bytes).await.expect("writable test peer");
+
+        let transport = Buffered::new(client);
+        let mut conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
+        let mut middleware = Middleware::new(0_usize, |seen: &mut usize, _message| {
+            *seen += 1;
+            let replacement = BackendMessage::ParameterStatus {
+                name: Bytes::from_static(b"application_name"),
+                value: Bytes::from_static(b"proxy"),
+            };
+            match crate::middleware::TypedBackendMessage::try_from(replacement) {
+                Ok(replacement) => Ok::<_, Infallible>(replacement),
+                Err(message) => panic!("parameter status must be asynchronous: {message:?}"),
+            }
+        });
+
+        let message = conn
+            .receive_backend_typed(&mut middleware)
+            .await
+            .expect("typed asynchronous message");
+        assert!(conn.project_backend(message.into()).is_none());
+        assert_eq!(*middleware.state(), 1);
+        assert_eq!(
+            conn.parameters().get(b"application_name".as_slice()),
+            Some(&Bytes::from_static(b"proxy"))
+        );
+        conn.into_transport();
     }
 
     #[tokio::test]

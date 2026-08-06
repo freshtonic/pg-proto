@@ -53,6 +53,81 @@ impl ReconstructableMessage for EncryptionReply {
     }
 }
 
+/// Validated backend traffic which does not advance the current protocol phase.
+pub struct AsynchronousBackendMessage(BackendMessage);
+
+impl AsynchronousBackendMessage {
+    /// Borrows the decoded asynchronous backend message.
+    #[must_use]
+    pub const fn as_wire(&self) -> &BackendMessage {
+        &self.0
+    }
+
+    /// Returns the decoded asynchronous backend message.
+    #[must_use]
+    pub fn into_wire(self) -> BackendMessage {
+        self.0
+    }
+}
+
+impl TryFrom<BackendMessage> for AsynchronousBackendMessage {
+    type Error = BackendMessage;
+
+    fn try_from(message: BackendMessage) -> Result<Self, Self::Error> {
+        if Demux::is_asynchronous(&message) {
+            Ok(Self(message))
+        } else {
+            Err(message)
+        }
+    }
+}
+
+/// Any server message legal in a phase, including non-advancing asynchronous traffic.
+pub enum TypedBackendMessage<ProtocolMessage> {
+    /// A message represented by a transition in the current grammar phase.
+    Protocol(ProtocolMessage),
+    /// An asynchronous message which leaves the current grammar phase unchanged.
+    Asynchronous(AsynchronousBackendMessage),
+}
+
+impl<ProtocolMessage> AsRef<BackendMessage> for TypedBackendMessage<ProtocolMessage>
+where
+    ProtocolMessage: AsRef<BackendMessage>,
+{
+    fn as_ref(&self) -> &BackendMessage {
+        match self {
+            Self::Protocol(message) => message.as_ref(),
+            Self::Asynchronous(message) => message.as_wire(),
+        }
+    }
+}
+
+impl<ProtocolMessage> TryFrom<BackendMessage> for TypedBackendMessage<ProtocolMessage>
+where
+    ProtocolMessage: TryFrom<BackendMessage, Error = BackendMessage>,
+{
+    type Error = BackendMessage;
+
+    fn try_from(message: BackendMessage) -> Result<Self, Self::Error> {
+        match AsynchronousBackendMessage::try_from(message) {
+            Ok(message) => Ok(Self::Asynchronous(message)),
+            Err(message) => ProtocolMessage::try_from(message).map(Self::Protocol),
+        }
+    }
+}
+
+impl<ProtocolMessage> From<TypedBackendMessage<ProtocolMessage>> for BackendMessage
+where
+    ProtocolMessage: Into<Self>,
+{
+    fn from(message: TypedBackendMessage<ProtocolMessage>) -> Self {
+        match message {
+            TypedBackendMessage::Protocol(message) => message.into(),
+            TypedBackendMessage::Asynchronous(message) => message.into_wire(),
+        }
+    }
+}
+
 macro_rules! projected_messages {
     ($state:path, $internal:ty, $external:ty, $project_internal:path, $project_external:path) => {
         impl AcceptsMessage<$internal> for $state {
@@ -146,6 +221,95 @@ pub enum ClientRole {}
 /// Marker for middleware handling messages sent by a PostgreSQL server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerRole {}
+
+/// Associates a connection typestate with its generated legal message type.
+///
+/// Implementations are provided only for matching sender roles and decoded wire
+/// directions. This is the bridge which lets [`crate::Conn`] infer middleware's
+/// `Role`, `ProtocolPhase`, and `Message` indices from its own phase parameter.
+pub trait TypedPhase<Role, Wire> {
+    /// Generated grammar phase corresponding to the connection typestate.
+    type ProtocolPhase;
+    /// Opaque set of decoded messages legal for this role and phase.
+    type Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>;
+}
+
+impl TypedPhase<ServerRole, BackendMessage> for crate::auth::Ready {
+    type ProtocolPhase = frontend::Ready;
+    type Message = TypedBackendMessage<frontend::ReadyExternalMessage>;
+}
+
+impl TypedPhase<ClientRole, FrontendMessage> for crate::auth::Ready {
+    type ProtocolPhase = backend::Ready;
+    type Message = backend::ReadyExternalMessage;
+}
+
+impl TypedPhase<ClientRole, PreStartupMessage> for crate::pre_startup::PreStartup {
+    type ProtocolPhase = server_pre_startup::PreStartup;
+    type Message = server_pre_startup::PreStartupExternalMessage;
+}
+
+impl TypedPhase<ServerRole, EncryptionReply> for crate::pre_startup::AwaitingSslReply {
+    type ProtocolPhase = pre_startup::AwaitingSslReply;
+    type Message = pre_startup::AwaitingSslReplyExternalMessage;
+}
+
+impl TypedPhase<ServerRole, EncryptionReply> for crate::pre_startup::AwaitingGssReply {
+    type ProtocolPhase = pre_startup::AwaitingGssReply;
+    type Message = pre_startup::AwaitingGssReplyExternalMessage;
+}
+
+macro_rules! typed_backend_phase {
+    ($connection:path => $protocol:path, $message:path) => {
+        impl TypedPhase<ServerRole, BackendMessage> for $connection {
+            type ProtocolPhase = $protocol;
+            type Message = TypedBackendMessage<$message>;
+        }
+    };
+}
+
+typed_backend_phase!(crate::auth::Auth => authentication::Auth, authentication::AuthExternalMessage);
+typed_backend_phase!(crate::auth::TokenChallenge => authentication::TokenChallenge, authentication::TokenChallengeExternalMessage);
+typed_backend_phase!(crate::auth::Sasl => authentication::Sasl, authentication::SaslExternalMessage);
+typed_backend_phase!(crate::auth::AwaitingAuthOk => authentication::AwaitingAuthOk, authentication::AwaitingAuthOkExternalMessage);
+typed_backend_phase!(crate::auth::AwaitingStartupReady => authentication::AwaitingStartupReady, authentication::AwaitingStartupReadyExternalMessage);
+typed_backend_phase!(crate::session::SimpleQuery => frontend::Simple, frontend::SimpleExternalMessage);
+typed_backend_phase!(crate::session::FunctionCalling => frontend::FunctionCalling, frontend::FunctionCallingExternalMessage);
+typed_backend_phase!(crate::session::Building => frontend::Building, frontend::BuildingExternalMessage);
+typed_backend_phase!(crate::session::BoundBuilding => frontend::BoundBuilding, frontend::BoundBuildingExternalMessage);
+typed_backend_phase!(crate::session::AwaitingReady => frontend::AwaitingReady, frontend::AwaitingReadyExternalMessage);
+typed_backend_phase!(crate::session::CopyIn => frontend::CopyIn, frontend::CopyInExternalMessage);
+typed_backend_phase!(crate::session::CopyOut => frontend::CopyOut, frontend::CopyOutExternalMessage);
+typed_backend_phase!(crate::session::CopyBoth => frontend::CopyBoth, frontend::CopyBothExternalMessage);
+typed_backend_phase!(crate::session::CopyBothClientDone => frontend::CopyBothClientDone, frontend::CopyBothClientDoneExternalMessage);
+typed_backend_phase!(crate::session::CopyBothServerDone => frontend::CopyBothServerDone, frontend::CopyBothServerDoneExternalMessage);
+typed_backend_phase!(crate::session::Draining => frontend::Draining, frontend::DrainingExternalMessage);
+typed_backend_phase!(crate::session::Resetting => frontend::Resetting, frontend::ResettingExternalMessage);
+typed_backend_phase!(crate::session::ResetComplete => frontend::ResetComplete, frontend::ResetCompleteExternalMessage);
+
+macro_rules! typed_frontend_phase {
+    ($connection:ty => $protocol:path, $message:path) => {
+        impl TypedPhase<ClientRole, FrontendMessage> for $connection {
+            type ProtocolPhase = $protocol;
+            type Message = $message;
+        }
+    };
+}
+
+typed_frontend_phase!(crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerSasl => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerBuilding => backend::Building, backend::BuildingExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerExtendedError => backend::ExtendedError, backend::ExtendedErrorExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyIn<crate::server_session::CopySimple> => backend::SimpleCopyIn, backend::SimpleCopyInExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyIn<crate::server_session::CopyExtended> => backend::ExtendedCopyIn, backend::ExtendedCopyInExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen> => backend::SimpleCopyBoth, backend::SimpleCopyBothExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen> => backend::ExtendedCopyBoth, backend::ExtendedCopyBothExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone> => backend::SimpleCopyBothServerDone, backend::SimpleCopyBothServerDoneExternalMessage);
+typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone> => backend::ExtendedCopyBothServerDone, backend::ExtendedCopyBothServerDoneExternalMessage);
 
 /// Middleware whose role, protocol phase, and legal message set are type indexed.
 ///
@@ -306,6 +470,19 @@ pub enum ReceiveError<Error, Message> {
     Io(io::Error),
     /// Middleware rejected the message or produced an illegal replacement.
     Intercept(InterceptError<Error, Message>),
+}
+
+/// Failure while receiving through compile-time phase-checked middleware.
+#[derive(Debug)]
+pub enum TypedReceiveError<Error, Wire> {
+    /// Reading or decoding the message failed.
+    Io(io::Error),
+    /// The peer sent a decoded message which is illegal in the connection phase.
+    Illegal(Wire),
+    /// Middleware rejected the phase-legal message according to its policy.
+    Middleware(Error),
+    /// Middleware produced a phase-legal value with an invalid wire shape.
+    InvalidWire(Wire),
 }
 
 /// Owns user state and middleware as one reusable interception unit.

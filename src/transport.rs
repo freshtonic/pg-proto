@@ -1203,6 +1203,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_receive_keeps_wire_shape_validation_at_runtime() {
+        let (client, mut peer) = tokio::io::duplex(256);
+        let query = FrontendMessage::Query(Bytes::from_static(b"select 1"));
+        let mut bytes = BytesMut::new();
+        PgCodec::<Frontend>::default()
+            .encode(query.to_frame().expect("reconstructable query"), &mut bytes)
+            .expect("encodable query");
+        peer.write_all(&bytes).await.expect("writable test peer");
+
+        let transport = Buffered::<_, Frontend>::new_frontend(client);
+        let mut conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
+        let invalid = FrontendMessage::Parse(crate::codec::Parse {
+            statement: Bytes::from_static(b"invalid\0statement"),
+            query: Bytes::from_static(b"select 2"),
+            parameter_types: Vec::new(),
+        });
+        let mut middleware = Middleware::new((), move |_state: &mut (), _message| {
+            let invalid = invalid.clone();
+            match backend::ReadyExternalMessage::try_from(invalid) {
+                Ok(invalid) => Ok::<_, Infallible>(invalid),
+                Err(message) => panic!("parse must be protocol-legal while ready: {message:?}"),
+            }
+        });
+
+        let result = conn.receive_frontend_typed(&mut middleware).await;
+        assert!(matches!(
+            result,
+            Err(TypedReceiveError::InvalidWire(FrontendMessage::Parse(_)))
+        ));
+        conn.into_transport();
+    }
+
+    #[tokio::test]
     async fn middleware_rewrites_backend_before_demux_bookkeeping() {
         let (client, mut server) = tokio::io::duplex(256);
         let mut wire = BytesMut::new();

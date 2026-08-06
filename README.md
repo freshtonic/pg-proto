@@ -103,60 +103,59 @@ let _terminated = ready.terminate();
 ## Stateful message middleware
 
 A proxy can inspect or replace any owned frontend, backend, or pre-startup
-message before reconstructing its checked wire representation. Middleware has
-mutable access to a caller-defined state value, so statistics and other
-connection-local policy do not require global storage. Returning the message
-unchanged is the identity operation.
+message before reconstructing its checked wire representation. `TypedMiddleware`
+indexes each policy by sender role and generated grammar phase. Its input and
+output enums contain only messages legal in that phase, so a replacement from a
+different role or phase is a compile error. `Conn::receive_frontend_typed`,
+`Conn::receive_backend_typed`, `Conn::receive_pre_startup_typed`, and
+`Conn::receive_encryption_reply_typed` infer those indices from the connection;
+there is no caller-supplied runtime state to mismatch.
 
-`intercept_checked` validates the final replacement at runtime against a
-generated `RuntimeState` value and verifies that it can be encoded. The compiler
-still enforces message direction and that the state type supplies the correct
-validator, but replacement-variant legality cannot be decided at compile time
-because middleware may choose a different variant dynamically. Illegal
-replacements are returned without advancing the session.
-`MessageMiddlewareExt::then` chains stages in order, passing each replacement to
-the next stage and stopping at the first error.
+Middleware has mutable access to caller-defined state. Returning the message
+unchanged is the identity operation, `Identity` supplies a universal pass-through,
+and `MessageMiddlewareExt::then` chains typed stages deterministically. A
+`WireAdapter` can apply a direction-wide policy across generated phases while
+rechecking any replacement before it re-enters the typed API.
 
 ```rust
 use bytes::Bytes;
 use pg_proto::{
-    codec::{FrontendMessage, Parse},
+    codec::FrontendMessage,
     grammar::backend,
-    middleware::Middleware,
+    middleware::{ClientRole, Middleware},
 };
 
-let mut proxy = Middleware::new(0_usize, |rewrites: &mut usize, message| {
-    let FrontendMessage::Parse(mut parse) = message else {
-        return Ok::<_, std::convert::Infallible>(message);
-    };
+let mut proxy = Middleware::new(0_usize, |rewrites: &mut usize, _message| {
     *rewrites += 1;
-    parse.query = Bytes::from_static(
-        b"select decrypt_email(email) from customers where active",
-    );
-    Ok(FrontendMessage::Parse(parse))
+    backend::ReadyExternalMessage::try_from(FrontendMessage::Query(
+        Bytes::from_static(b"select visible_email from customers"),
+    ))
 });
-let message = FrontendMessage::Parse(Parse {
-    statement: Bytes::from_static(b"report"),
-    query: Bytes::from_static(b"select email from customers"),
-    parameter_types: vec![],
-});
+let message = backend::ReadyExternalMessage::try_from(
+    FrontendMessage::Query(Bytes::from_static(b"select email from customers")),
+).unwrap();
 
 let rewritten = proxy
-    .intercept_checked(&backend::RuntimeState::Ready, message)
-    .unwrap();
+    .intercept_typed::<ClientRole, backend::Ready, _>(message)
+    .unwrap()
+    .into_wire();
 
 let frame = rewritten.to_frame()?;
 assert_eq!(*proxy.state(), 1);
 # Ok::<(), std::io::Error>(())
 ```
 
-The buffered connection helpers
-`receive_frontend_wire_with_middleware`,
-`receive_backend_wire_with_middleware`, and
-`receive_pre_startup_wire_with_middleware` apply this lifecycle directly after
-decoding. `receive_with_middleware` additionally places backend interception
-before asynchronous-message demultiplexing, ensuring rewritten parameter,
-cancellation-key, and transaction-status values become the recorded values.
+Protocol legality is compile-time checked, while wire-shape constraints remain
+runtime checked. For example, embedded NUL bytes, oversized frames, and other
+encoding failures are reported as `TypedReceiveError::InvalidWire`. Backend
+asynchronous messages pass through typed middleware in wire order without
+advancing the connection phase; `receive_typed` then records them before
+returning the next protocol-advancing `SessionItem`.
+
+The older `intercept_checked` and `receive_*_with_middleware` APIs remain
+available for runtime-selected sessions. They validate replacement legality
+against a supplied generated `RuntimeState` at runtime. Prefer the typed receive
+APIs whenever the connection typestate is available.
 
 For a complete networked example, see the TLS-terminating
 [`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion

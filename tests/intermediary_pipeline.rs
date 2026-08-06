@@ -13,9 +13,9 @@ use pg_proto::{
     intermediary::Intermediary,
     middleware::{AsynchronousBackendMessage, MessageMiddleware, MessageMiddlewareExt, Middleware},
     pipeline::{
-        BackendAction, BoundedPipeline, FrontendAction, FrontendAdmission, FrontendHandling,
-        FrontendProjectionError, NoPipeline, Pipeline, PipelineState, PipelineWireAdapter,
-        TypedPipelineMiddleware,
+        BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
+        FrontendAdmission, FrontendHandling, FrontendPipelineMiddleware, FrontendProjectionError,
+        NoPipeline, Pipeline, PipelineState, PipelineWireAdapter,
     },
 };
 
@@ -83,7 +83,7 @@ fn bounded(limit: usize) -> Pipeline<BoundedPipeline> {
 #[derive(Default)]
 struct TypedDispatchPolicy;
 
-impl TypedPipelineMiddleware<Vec<&'static str>> for TypedDispatchPolicy {
+impl FrontendPipelineMiddleware<Vec<&'static str>> for TypedDispatchPolicy {
     type Error = Infallible;
 
     async fn frontend_ready(
@@ -106,6 +106,10 @@ impl TypedPipelineMiddleware<Vec<&'static str>> for TypedDispatchPolicy {
         state.push("frontend-building");
         Ok(message)
     }
+}
+
+impl BackendPipelineMiddleware<Vec<&'static str>> for TypedDispatchPolicy {
+    type Error = &'static str;
 
     async fn backend_parse_response(
         &mut self,
@@ -180,7 +184,7 @@ async fn deferred_backend_messages_are_intercepted_only_when_retried_at_head() {
     #[derive(Default)]
     struct Counts;
 
-    impl TypedPipelineMiddleware<usize> for Counts {
+    impl BackendPipelineMiddleware<usize> for Counts {
         type Error = Infallible;
 
         async fn backend_bind_response(
@@ -274,7 +278,7 @@ async fn direction_wide_middleware_adapts_to_typed_pipeline_dispatch() {
 async fn typed_pipeline_middleware_composes_in_order_with_shared_state() {
     struct Record(&'static str);
 
-    impl TypedPipelineMiddleware<Vec<&'static str>> for Record {
+    impl FrontendPipelineMiddleware<Vec<&'static str>> for Record {
         type Error = Infallible;
 
         async fn frontend_ready(
@@ -306,7 +310,7 @@ async fn typed_pipeline_middleware_composes_in_order_with_shared_state() {
 async fn capacity_skips_typed_middleware_but_async_backend_traffic_does_not() {
     struct Counts;
 
-    impl TypedPipelineMiddleware<usize> for Counts {
+    impl FrontendPipelineMiddleware<usize> for Counts {
         type Error = Infallible;
 
         async fn frontend_ready(
@@ -317,6 +321,10 @@ async fn capacity_skips_typed_middleware_but_async_backend_traffic_does_not() {
             *calls += 1;
             Ok(message)
         }
+    }
+
+    impl BackendPipelineMiddleware<usize> for Counts {
+        type Error = Infallible;
 
         async fn backend_asynchronous(
             &mut self,
@@ -361,7 +369,7 @@ async fn capacity_skips_typed_middleware_but_async_backend_traffic_does_not() {
 async fn copy_hooks_preserve_simple_and_extended_origins() {
     struct CopyOrigins;
 
-    impl TypedPipelineMiddleware<Vec<&'static str>> for CopyOrigins {
+    impl FrontendPipelineMiddleware<Vec<&'static str>> for CopyOrigins {
         type Error = Infallible;
 
         async fn frontend_simple_copy_in(
@@ -439,7 +447,7 @@ async fn copy_hooks_preserve_simple_and_extended_origins() {
 async fn backend_copy_responses_dispatch_through_exact_generated_subphases() {
     struct CopyResponses;
 
-    impl TypedPipelineMiddleware<Vec<&'static str>> for CopyResponses {
+    impl BackendPipelineMiddleware<Vec<&'static str>> for CopyResponses {
         type Error = Infallible;
 
         async fn backend_simple_copy_out(
@@ -933,4 +941,67 @@ fn later_valid_backend_response_is_deferred_not_illegal() {
             .unwrap(),
         BackendAction::Deferred(BackendMessage::BindComplete)
     ));
+}
+
+#[tokio::test]
+async fn typed_and_untyped_paths_commit_the_same_prepared_decisions() {
+    let mut untyped = bounded(2);
+    let mut typed = bounded(2);
+    let mut middleware = Middleware::new((), pg_proto::middleware::Identity);
+
+    let untyped_frontend = untyped
+        .accept_frontend(parse(b"parity"), FrontendHandling::Forward)
+        .unwrap();
+    let typed_frontend = typed
+        .accept_frontend_typed(&mut middleware, parse(b"parity"), FrontendHandling::Forward)
+        .await
+        .unwrap();
+    assert_eq!(typed_frontend, untyped_frontend);
+
+    let untyped_backend = untyped
+        .accept_backend(BackendMessage::ParseComplete)
+        .unwrap();
+    let typed_backend = typed
+        .accept_backend_typed(&mut middleware, BackendMessage::ParseComplete)
+        .await
+        .unwrap();
+    assert_eq!(typed_backend, untyped_backend);
+    assert_eq!(typed.state(), untyped.state());
+    assert_eq!(typed.len(), untyped.len());
+}
+
+#[tokio::test]
+async fn rejected_middleware_does_not_commit_a_prepared_decision() {
+    struct Reject;
+
+    impl FrontendPipelineMiddleware<()> for Reject {
+        type Error = &'static str;
+
+        async fn frontend_ready(
+            &mut self,
+            _state: &mut (),
+            _message: backend::ReadyExternalMessage,
+        ) -> Result<backend::ReadyExternalMessage, Self::Error> {
+            Err("rejected")
+        }
+    }
+
+    let mut pipeline = bounded(2);
+    let mut middleware = Middleware::new((), Reject);
+    let state = pipeline.state();
+    let error = pipeline
+        .accept_frontend_typed(
+            &mut middleware,
+            parse(b"rejected"),
+            FrontendHandling::Forward,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        pg_proto::pipeline::PipelineMiddlewareError::Middleware("rejected")
+    ));
+    assert_eq!(pipeline.state(), state);
+    assert!(pipeline.is_empty());
 }

@@ -9,13 +9,14 @@ use pg_proto::{
     intermediary::Intermediary,
     middleware::Middleware,
     pipeline::{
-        BackendAction, BoundedPipeline, FrontendAction, FrontendHandling, TypedPipelineMiddleware,
+        BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
+        FrontendHandling, FrontendPipelineMiddleware,
     },
 };
 
 struct Statistics;
 
-impl TypedPipelineMiddleware<usize> for Statistics {
+impl FrontendPipelineMiddleware<usize> for Statistics {
     type Error = Infallible;
 
     async fn frontend_ready(
@@ -26,6 +27,10 @@ impl TypedPipelineMiddleware<usize> for Statistics {
         *messages += 1;
         Ok(message)
     }
+}
+
+impl BackendPipelineMiddleware<usize> for Statistics {
+    type Error = Infallible;
 
     async fn backend_parse_response(
         &mut self,

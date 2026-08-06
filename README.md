@@ -111,11 +111,13 @@ different role or phase is a compile error. `Conn::receive_frontend_typed`,
 `Conn::receive_encryption_reply_typed` infer those indices from the connection;
 there is no caller-supplied runtime state to mismatch.
 
-Middleware has mutable access to caller-defined state. Returning the message
+Middleware is async and has mutable access to caller-defined state across
+`.await`, so policy can consult a database, authorization service, or async
+telemetry sink before deciding which message continues. Returning the message
 unchanged is the identity operation, `Identity` supplies a universal pass-through,
-and `MessageMiddlewareExt::then` chains typed stages deterministically. A
-`WireAdapter` can apply a direction-wide policy across generated phases while
-rechecking any replacement before it re-enters the typed API.
+and `MessageMiddlewareExt::then` awaits typed stages deterministically. A
+`WireAdapter` can apply an async direction-wide policy across generated phases
+while rechecking any replacement before it re-enters the typed API.
 
 ```rust
 use bytes::Bytes;
@@ -125,7 +127,11 @@ use pg_proto::{
     middleware::{ClientRole, Middleware},
 };
 
-let mut proxy = Middleware::new(0_usize, |rewrites: &mut usize, _message| {
+# async fn example() -> Result<(), std::io::Error> {
+
+let mut proxy = Middleware::new(0_usize, async |rewrites: &mut usize, _message| {
+    // Async authorization, routing, or storage work can be awaited here.
+    tokio::task::yield_now().await;
     *rewrites += 1;
     backend::ReadyExternalMessage::try_from(FrontendMessage::Query(
         Bytes::from_static(b"select visible_email from customers"),
@@ -137,12 +143,14 @@ let message = backend::ReadyExternalMessage::try_from(
 
 let rewritten = proxy
     .intercept_typed::<ClientRole, backend::Ready, _>(message)
+    .await
     .unwrap()
     .into_wire();
 
 let frame = rewritten.to_frame()?;
 assert_eq!(*proxy.state(), 1);
 # Ok::<(), std::io::Error>(())
+# }
 ```
 
 Protocol legality is compile-time checked, while wire-shape constraints remain

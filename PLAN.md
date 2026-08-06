@@ -302,8 +302,9 @@ checked middleware belongs on the state-aware session APIs above it.
   be unrepresentable rather than rejected using a `RuntimeState` value.
   - [x] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
     cannot supply a mismatched runtime state.
-  - [x] Retain caller-owned mutable state, closure adapters, identity middleware,
-    deterministic chaining, and typed short-circuit errors.
+  - [x] Retain caller-owned mutable state across async interception, async closure
+    adapters, identity middleware, deterministic awaited chaining, and typed
+    short-circuit errors.
   - [x] Represent asynchronous backend traffic in each applicable phase without
     advancing the connection state or disturbing wire order.
 - [x] Generate projection result enums whose variants carry the correctly typed

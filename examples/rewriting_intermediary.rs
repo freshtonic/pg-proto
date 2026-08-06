@@ -25,7 +25,7 @@ impl TypedMiddleware<ClientRole, backend::Ready, backend::ReadyExternalMessage, 
 {
     type Error = Infallible;
 
-    fn intercept_typed(
+    async fn intercept_typed(
         &mut self,
         statistics: &mut RewriteStatistics,
         message: backend::ReadyExternalMessage,
@@ -62,7 +62,7 @@ impl
 {
     type Error = Infallible;
 
-    fn intercept_typed(
+    async fn intercept_typed(
         &mut self,
         statistics: &mut RewriteStatistics,
         message: backend::BuildingExternalMessage,
@@ -82,7 +82,7 @@ impl
 {
     type Error = Infallible;
 
-    fn intercept_typed(
+    async fn intercept_typed(
         &mut self,
         statistics: &mut RewriteStatistics,
         message: frontend::SimpleExternalMessage,
@@ -107,7 +107,8 @@ impl
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut middleware = Middleware::new(RewriteStatistics::default(), Rewriter);
 
     let parse = FrontendMessage::Parse(Parse {
@@ -118,6 +119,7 @@ fn main() {
     let parse = backend::ReadyExternalMessage::try_from(parse).unwrap();
     let parse = middleware
         .intercept_typed::<ClientRole, backend::Ready, _>(parse)
+        .await
         .unwrap()
         .into_wire();
 
@@ -131,6 +133,7 @@ fn main() {
     let bind = backend::BuildingExternalMessage::try_from(bind).unwrap();
     let bind = middleware
         .intercept_typed::<ClientRole, backend::Building, _>(bind)
+        .await
         .unwrap()
         .into_wire();
 
@@ -141,6 +144,7 @@ fn main() {
     let describe = backend::BuildingExternalMessage::try_from(describe).unwrap();
     let describe = middleware
         .intercept_typed::<ClientRole, backend::Building, _>(describe)
+        .await
         .unwrap()
         .into_wire();
 
@@ -158,6 +162,7 @@ fn main() {
     let rows = frontend::SimpleExternalMessage::try_from(rows).unwrap();
     let rows = middleware
         .intercept_typed::<ServerRole, frontend::Simple, _>(rows)
+        .await
         .unwrap()
         .into_wire();
 

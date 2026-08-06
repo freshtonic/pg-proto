@@ -569,6 +569,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
                 <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
                 _,
             >(message)
+            .await
             .map_err(TypedReceiveError::Middleware)?;
         if message.as_ref().is_reconstructable() {
             Ok(message)
@@ -645,6 +646,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
                 <Phase as TypedPhase<ServerRole, EncryptionReply>>::ProtocolPhase,
                 _,
             >(message)
+            .await
             .map_err(TypedReceiveError::Middleware)?;
         if message.as_ref().is_reconstructable() {
             Ok(message)
@@ -673,6 +675,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
             .map_err(ReceiveError::Io)?;
         middleware
             .intercept_checked(protocol_state, message)
+            .await
             .map_err(ReceiveError::Intercept)
     }
 
@@ -810,6 +813,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
                 <Phase as TypedPhase<ClientRole, FrontendMessage>>::ProtocolPhase,
                 _,
             >(message)
+            .await
             .map_err(TypedReceiveError::Middleware)?;
         if message.as_ref().is_reconstructable() {
             Ok(message)
@@ -838,6 +842,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
             .map_err(ReceiveError::Io)?;
         middleware
             .intercept_checked(protocol_state, message)
+            .await
             .map_err(ReceiveError::Intercept)
     }
 }
@@ -886,6 +891,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
                 <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::ProtocolPhase,
                 _,
             >(message)
+            .await
             .map_err(TypedReceiveError::Middleware)?;
         if message.as_ref().is_reconstructable() {
             Ok(message)
@@ -914,6 +920,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
             .map_err(ReceiveError::Io)?;
         middleware
             .intercept_checked(protocol_state, message)
+            .await
             .map_err(ReceiveError::Intercept)
     }
 }
@@ -1144,7 +1151,7 @@ mod tests {
 
         let transport = Buffered::new(client);
         let mut conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
-        let mut middleware = Middleware::new(0_usize, |seen: &mut usize, _message| {
+        let mut middleware = Middleware::new(0_usize, async |seen: &mut usize, _message| {
             *seen += 1;
             let replacement = BackendMessage::ParameterStatus {
                 name: Bytes::from_static(b"application_name"),
@@ -1219,7 +1226,7 @@ mod tests {
             query: Bytes::from_static(b"select 2"),
             parameter_types: Vec::new(),
         });
-        let mut middleware = Middleware::new((), move |_state: &mut (), _message| {
+        let mut middleware = Middleware::new((), async move |_state: &mut (), _message| {
             let invalid = invalid.clone();
             match backend::ReadyExternalMessage::try_from(invalid) {
                 Ok(invalid) => Ok::<_, Infallible>(invalid),
@@ -1262,7 +1269,7 @@ mod tests {
 
         let transport = Buffered::new(client);
         let mut conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
-        let mut middleware = Middleware::new(0_usize, |seen: &mut usize, mut message| {
+        let mut middleware = Middleware::new(0_usize, async |seen: &mut usize, mut message| {
             *seen += 1;
             if let BackendMessage::ParameterStatus { value, .. } = &mut message {
                 *value = Bytes::from_static(b"proxy");
@@ -1324,7 +1331,7 @@ mod tests {
         client.write_all(&bytes).await.expect("writable client");
 
         let mut conn = Conn::new(Buffered::<_, Frontend>::new_frontend(proxy));
-        let mut middleware = Middleware::new((), |_state: &mut (), _message| {
+        let mut middleware = Middleware::new((), async |_state: &mut (), _message| {
             Ok::<_, Infallible>(FrontendMessage::Query(Bytes::from_static(b"select 1")))
         });
         let result = conn
@@ -1357,7 +1364,7 @@ mod tests {
         client.write_all(&bytes).await.expect("writable client");
 
         let mut downstream = Conn::new(Buffered::<_, Frontend>::new_frontend(client_side));
-        let mut middleware = Middleware::new((), |_state: &mut (), _message| {
+        let mut middleware = Middleware::new((), async |_state: &mut (), _message| {
             Ok::<_, Infallible>(FrontendMessage::Query(Bytes::from_static(
                 b"select encrypted",
             )))
@@ -1408,7 +1415,7 @@ mod tests {
             secret_key: Bytes::from_static(b"key!"),
         };
         let expected = replacement.clone();
-        let mut middleware = Middleware::new((), move |_state: &mut (), _message| {
+        let mut middleware = Middleware::new((), async move |_state: &mut (), _message| {
             Ok::<_, Infallible>(replacement.clone())
         });
 

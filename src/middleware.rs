@@ -300,8 +300,12 @@ typed_outbound_phase!(ServerRole, EncryptionReply;
 typed_outbound_backend_phase!(
     crate::server_auth::ServerStartupRejected => server_authentication::Startup, server_authentication::StartupInternalMessage;
     crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthInternalMessage;
+    crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseInternalMessage;
+    crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialInternalMessage;
     crate::server_auth::ServerSasl => server_authentication::Sasl, server_authentication::SaslInternalMessage;
-    crate::server_auth::ServerAuthResponse => server_authentication::TokenPolicy, server_authentication::TokenPolicyInternalMessage;
+    crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseInternalMessage;
+    crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseInternalMessage;
+    crate::server_auth::ServerAuthPolicy => server_authentication::TokenPolicy, server_authentication::TokenPolicyInternalMessage;
     crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyInternalMessage;
     crate::server_session::ServerSimpleQuery => backend::Simple, backend::SimpleInternalMessage;
     crate::server_session::ServerSimpleError => backend::SimpleError, backend::SimpleErrorInternalMessage;
@@ -314,6 +318,10 @@ typed_outbound_backend_phase!(
     crate::server_session::ServerExecute => backend::ExecuteResponse, backend::ExecuteResponseInternalMessage;
     crate::server_session::ServerClose => backend::CloseResponse, backend::CloseResponseInternalMessage;
     crate::server_session::ServerSync => backend::SyncResponse, backend::SyncResponseInternalMessage;
+    crate::server_session::ServerBuilding => backend::Building, backend::BuildingInternalMessage;
+    crate::server_session::ServerExtendedError => backend::ExtendedError, backend::ExtendedErrorInternalMessage;
+    crate::server_session::ServerCopyIn<crate::server_session::CopySimple> => backend::SimpleCopyIn, backend::SimpleCopyInInternalMessage;
+    crate::server_session::ServerCopyIn<crate::server_session::CopyExtended> => backend::ExtendedCopyIn, backend::ExtendedCopyInInternalMessage;
     crate::server_session::ServerCopyInDone<crate::server_session::CopySimple> => backend::SimpleCopyInDone, backend::SimpleCopyInDoneInternalMessage;
     crate::server_session::ServerCopyInDone<crate::server_session::CopyExtended> => backend::ExtendedCopyInDone, backend::ExtendedCopyInDoneInternalMessage;
     crate::server_session::ServerCopyInFailed<crate::server_session::CopySimple> => backend::SimpleCopyInFailed, backend::SimpleCopyInFailedInternalMessage;
@@ -326,6 +334,8 @@ typed_outbound_backend_phase!(
     crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen> => backend::ExtendedCopyBoth, backend::ExtendedCopyBothInternalMessage;
     crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothClientDone> => backend::SimpleCopyBothClientDone, backend::SimpleCopyBothClientDoneInternalMessage;
     crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothClientDone> => backend::ExtendedCopyBothClientDone, backend::ExtendedCopyBothClientDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone> => backend::SimpleCopyBothServerDone, backend::SimpleCopyBothServerDoneInternalMessage;
+    crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone> => backend::ExtendedCopyBothServerDone, backend::ExtendedCopyBothServerDoneInternalMessage;
     crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothDone> => backend::SimpleCopyBothDone, backend::SimpleCopyBothDoneInternalMessage;
     crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothDone> => backend::ExtendedCopyBothDone, backend::ExtendedCopyBothDoneInternalMessage;
     crate::server_session::ServerCopyBothFailed<crate::server_session::CopySimple> => backend::SimpleCopyBothFailed, backend::SimpleCopyBothFailedInternalMessage;
@@ -397,7 +407,7 @@ macro_rules! typed_frontend_phase {
 typed_frontend_phase!(crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialExternalMessage);
-typed_frontend_phase!(crate::server_auth::ServerSasl => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
+typed_frontend_phase!(crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseExternalMessage);
 typed_frontend_phase!(crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyExternalMessage);
 typed_frontend_phase!(crate::server_session::ServerBuilding => backend::Building, backend::BuildingExternalMessage);

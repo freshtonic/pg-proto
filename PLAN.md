@@ -338,6 +338,8 @@ checked middleware belongs on the state-aware session APIs above it.
   - [x] Compose typed pipeline policies in deterministic order with shared state.
   - [x] Index locally generated middleware by the sending `Conn` typestate and
     include non-advancing asynchronous server messages.
+  - [x] Split server SASL and token authentication into distinct policy and
+    client-response typestates so replies cannot precede required input.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

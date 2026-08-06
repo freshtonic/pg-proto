@@ -1,9 +1,9 @@
-use pg_proto::pipeline::{PipelineBackendMessage, phase};
+use pg_proto::grammar::backend;
 
 fn replace_parse_with_bind(
-    _message: PipelineBackendMessage<phase::Parse>,
-    replacement: PipelineBackendMessage<phase::Bind>,
-) -> PipelineBackendMessage<phase::Parse> {
+    _message: backend::ParseResponseInternalMessage,
+    replacement: backend::BindResponseInternalMessage,
+) -> backend::ParseResponseInternalMessage {
     replacement
 }
 

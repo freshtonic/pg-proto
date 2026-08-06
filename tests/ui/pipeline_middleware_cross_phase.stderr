@@ -1,10 +1,7 @@
 error[E0308]: mismatched types
  --> tests/ui/pipeline_middleware_cross_phase.rs:7:5
   |
-6 | ) -> PipelineBackendMessage<phase::Parse> {
-  |      ------------------------------------ expected `PipelineBackendMessage<pg_proto::pipeline::phase::Parse>` because of return type
+6 | ) -> backend::ParseResponseInternalMessage {
+  |      ------------------------------------- expected `ParseResponseInternalMessage` because of return type
 7 |     replacement
-  |     ^^^^^^^^^^^ expected `PipelineBackendMessage<Parse>`, found `PipelineBackendMessage<Bind>`
-  |
-  = note: expected struct `PipelineBackendMessage<pg_proto::pipeline::phase::Parse>`
-             found struct `PipelineBackendMessage<pg_proto::pipeline::phase::Bind>`
+  |     ^^^^^^^^^^^ expected `ParseResponseInternalMessage`, found `BindResponseInternalMessage`

@@ -298,6 +298,7 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         DescribeResponse internal {
+            ParameterDescription(parameter_description: Vec<u32>) => DescribeResponse <= crate::codec::BackendMessage::ParameterDescription(_),
             RowDescription(row_description: crate::codec::RowDescription) => Building <= crate::codec::BackendMessage::RowDescription(_),
             NoData(no_data) => Building <= crate::codec::BackendMessage::NoData,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),

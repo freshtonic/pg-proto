@@ -9,8 +9,7 @@ use pg_proto::{
     intermediary::Intermediary,
     middleware::Middleware,
     pipeline::{
-        BackendAction, BoundedPipeline, FrontendAction, FrontendHandling, PipelineBackendMessage,
-        TypedPipelineMiddleware, phase,
+        BackendAction, BoundedPipeline, FrontendAction, FrontendHandling, TypedPipelineMiddleware,
     },
 };
 
@@ -28,11 +27,11 @@ impl TypedPipelineMiddleware<usize> for Statistics {
         Ok(message)
     }
 
-    async fn backend_parse(
+    async fn backend_parse_response(
         &mut self,
         messages: &mut usize,
-        message: PipelineBackendMessage<phase::Parse>,
-    ) -> Result<PipelineBackendMessage<phase::Parse>, Self::Error> {
+        message: backend::ParseResponseInternalMessage,
+    ) -> Result<backend::ParseResponseInternalMessage, Self::Error> {
         *messages += 1;
         Ok(message)
     }

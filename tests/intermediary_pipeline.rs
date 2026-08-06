@@ -14,8 +14,8 @@ use pg_proto::{
     middleware::{AsynchronousBackendMessage, MessageMiddleware, MessageMiddlewareExt, Middleware},
     pipeline::{
         BackendAction, BoundedPipeline, FrontendAction, FrontendAdmission, FrontendHandling,
-        FrontendProjectionError, NoPipeline, Pipeline, PipelineBackendMessage, PipelineState,
-        PipelineWireAdapter, TypedPipelineMiddleware, phase,
+        FrontendProjectionError, NoPipeline, Pipeline, PipelineState, PipelineWireAdapter,
+        TypedPipelineMiddleware,
     },
 };
 
@@ -107,15 +107,14 @@ impl TypedPipelineMiddleware<Vec<&'static str>> for TypedDispatchPolicy {
         Ok(message)
     }
 
-    async fn backend_parse(
+    async fn backend_parse_response(
         &mut self,
         state: &mut Vec<&'static str>,
-        message: PipelineBackendMessage<phase::Parse>,
-    ) -> Result<PipelineBackendMessage<phase::Parse>, Self::Error> {
+        _message: backend::ParseResponseInternalMessage,
+    ) -> Result<backend::ParseResponseInternalMessage, Self::Error> {
         state.push("backend-parse");
-        Ok(message
-            .try_map_wire(|_| error())
-            .expect("ErrorResponse is legal for Parse"))
+        Ok(backend::ParseResponseInternalMessage::try_from(error())
+            .expect("ErrorResponse is legal for ParseResponse"))
     }
 }
 
@@ -184,11 +183,11 @@ async fn deferred_backend_messages_are_intercepted_only_when_retried_at_head() {
     impl TypedPipelineMiddleware<usize> for Counts {
         type Error = Infallible;
 
-        async fn backend_bind(
+        async fn backend_bind_response(
             &mut self,
             calls: &mut usize,
-            message: PipelineBackendMessage<phase::Bind>,
-        ) -> Result<PipelineBackendMessage<phase::Bind>, Self::Error> {
+            message: backend::BindResponseInternalMessage,
+        ) -> Result<backend::BindResponseInternalMessage, Self::Error> {
             *calls += 1;
             Ok(message)
         }
@@ -434,6 +433,92 @@ async fn copy_hooks_preserve_simple_and_extended_origins() {
         .expect("extended COPY-IN dispatches");
 
     assert_eq!(middleware.state(), &["simple", "extended"]);
+}
+
+#[tokio::test]
+async fn backend_copy_responses_dispatch_through_exact_generated_subphases() {
+    struct CopyResponses;
+
+    impl TypedPipelineMiddleware<Vec<&'static str>> for CopyResponses {
+        type Error = Infallible;
+
+        async fn backend_simple_copy_out(
+            &mut self,
+            phases: &mut Vec<&'static str>,
+            _message: backend::SimpleCopyOutInternalMessage,
+        ) -> Result<backend::SimpleCopyOutInternalMessage, Self::Error> {
+            phases.push("copy-out");
+            Ok(
+                backend::SimpleCopyOutInternalMessage::try_from(BackendMessage::CopyDone)
+                    .expect("CopyDone is legal in SimpleCopyOut"),
+            )
+        }
+
+        async fn backend_simple_copy_out_done(
+            &mut self,
+            phases: &mut Vec<&'static str>,
+            message: backend::SimpleCopyOutDoneInternalMessage,
+        ) -> Result<backend::SimpleCopyOutDoneInternalMessage, Self::Error> {
+            phases.push("copy-out-done");
+            Ok(message)
+        }
+
+        async fn backend_simple_copy_ready(
+            &mut self,
+            phases: &mut Vec<&'static str>,
+            message: backend::SimpleCopyReadyInternalMessage,
+        ) -> Result<backend::SimpleCopyReadyInternalMessage, Self::Error> {
+            phases.push("copy-ready");
+            Ok(message)
+        }
+    }
+
+    let mut pipeline = bounded(2);
+    pipeline
+        .accept_frontend(
+            FrontendMessage::Query(Bytes::from_static(b"copy records to stdout")),
+            FrontendHandling::Forward,
+        )
+        .unwrap();
+    let mut middleware = Middleware::new(Vec::new(), CopyResponses);
+    let copy = CopyResponse {
+        overall_format: 0,
+        column_formats: vec![],
+    };
+
+    pipeline
+        .accept_backend_typed(&mut middleware, BackendMessage::CopyOutResponse(copy))
+        .await
+        .expect("Query enters SimpleCopyOut");
+    assert!(matches!(
+        pipeline
+            .accept_backend_typed(
+                &mut middleware,
+                BackendMessage::CopyData(Bytes::from_static(b"row\n")),
+            )
+            .await
+            .expect("COPY data is rewritten within its exact phase"),
+        BackendAction::Emit(BackendMessage::CopyDone)
+    ));
+    pipeline
+        .accept_backend_typed(
+            &mut middleware,
+            BackendMessage::CommandComplete(Bytes::from_static(b"COPY 1")),
+        )
+        .await
+        .expect("command completion follows CopyDone");
+    pipeline
+        .accept_backend_typed(
+            &mut middleware,
+            BackendMessage::ReadyForQuery(TransactionStatus::Idle),
+        )
+        .await
+        .expect("ready follows copy command completion");
+
+    assert_eq!(
+        middleware.state(),
+        &["copy-out", "copy-out-done", "copy-ready"]
+    );
 }
 
 #[test]

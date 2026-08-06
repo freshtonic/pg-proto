@@ -24,11 +24,13 @@ fn main() {
         FrontendAction::Discard { id } => id,
         FrontendAction::Forward { message, .. } => {
             // Encode `message` to the upstream transport here.
+            // This transport-free example drops it only as a stand-in for sending it.
             drop(message);
             return;
         }
         FrontendAction::Backpressure(message) => {
             // Pause downstream reads and retry this same owned value later.
+            // This minimal example exits, but a real intermediary must retain and retry it.
             drop(message);
             return;
         }
@@ -42,10 +44,12 @@ fn main() {
     {
         BackendAction::Emit(message) => {
             // Encode `message` to the downstream transport here.
+            // This transport-free example drops it only as a stand-in for sending it.
             drop(message);
         }
         BackendAction::Deferred(message) => {
             // An earlier response must be processed first; retry this owned value.
+            // This minimal example ends, but a real intermediary must retain and retry it.
             drop(message);
         }
     }

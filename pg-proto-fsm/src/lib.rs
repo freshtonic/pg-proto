@@ -306,6 +306,268 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
         }
     });
+    let phase_message_types = messages.as_ref().map_or_else(Vec::new, |messages| {
+        let internal_type = &messages.internal;
+        let external_type = &messages.external;
+
+        states.iter().map(|state| {
+            let state_name = &state.name;
+            let internal_name = format_ident!("{}InternalMessage", state_name);
+            let external_name = format_ident!("{}ExternalMessage", state_name);
+
+            let directional = |kind: ChoiceKind, wire_type: &Type, type_name: &Ident| {
+                let transitions = state
+                    .transitions
+                    .iter()
+                    .filter(|transition| {
+                        transition.projection.is_some()
+                            && matches!(
+                                (transition.choice.unwrap_or(state.choice), kind),
+                                (ChoiceKind::Internal, ChoiceKind::Internal)
+                                    | (ChoiceKind::External, ChoiceKind::External)
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                let variants = transitions
+                    .iter()
+                    .map(|transition| &transition.event)
+                    .collect::<Vec<_>>();
+                let borrow_variants = variants.clone();
+                let wrapper_names = transitions
+                    .iter()
+                    .map(|transition| {
+                        format_ident!("{}{}{}TransitionMessage", state_name, transition.event, match kind {
+                            ChoiceKind::Internal => "Internal",
+                            ChoiceKind::External => "External",
+                            ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let wrapper_definitions = wrapper_names.iter().zip(transitions.iter()).map(|(wrapper, transition)| {
+                    let event = &transition.event;
+                    let wrapper_projector = match kind {
+                        ChoiceKind::Internal => quote!(project_internal),
+                        ChoiceKind::External => quote!(project_external),
+                        ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                    };
+                    quote! {
+                        #[doc = concat!("Validated wire message for one legal `", stringify!(#state_name), "` transition.")]
+                        pub struct #wrapper(#wire_type);
+
+                        impl #wrapper {
+                            /// Borrows the validated wire message.
+                            #[must_use]
+                            pub const fn as_wire(&self) -> &#wire_type {
+                                &self.0
+                            }
+
+                            /// Returns the validated wire message.
+                            #[must_use]
+                            pub fn into_wire(self) -> #wire_type {
+                                self.0
+                            }
+
+                            /// Mutates or replaces the wire value while preserving this transition variant.
+                            ///
+                            /// # Errors
+                            ///
+                            /// Returns the replacement when it no longer denotes this phase transition.
+                            pub fn try_map_wire(
+                                self,
+                                map: impl FnOnce(#wire_type) -> #wire_type,
+                            ) -> ::core::result::Result<Self, #wire_type> {
+                                let message = map(self.0);
+                                if #wrapper_projector(RuntimeState::#state_name, &message)
+                                    == Some(Event::#event)
+                                {
+                                    Ok(Self(message))
+                                } else {
+                                    Err(message)
+                                }
+                            }
+                        }
+                    }
+                });
+                let enum_wrappers = wrapper_names.clone();
+                let match_variants = transitions.iter().map(|transition| {
+                    let event = &transition.event;
+                    let wrapper = format_ident!("{}{}{}TransitionMessage", state_name, event, match kind {
+                        ChoiceKind::Internal => "Internal",
+                        ChoiceKind::External => "External",
+                        ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                    });
+                    quote!(Some(Event::#event) => Ok(Self::#event(#wrapper(message))))
+                });
+                let wire_variants = variants
+                    .iter()
+                    .map(|event| quote!(Self::#event(message) => message.into_wire()));
+                let event_variants = transitions.iter().map(|transition| {
+                    let event = &transition.event;
+                    quote!(Self::#event(_) => Event::#event)
+                });
+                let projector = match kind {
+                    ChoiceKind::Internal => quote!(project_internal),
+                    ChoiceKind::External => quote!(project_external),
+                    ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                };
+                let direction = match kind {
+                    ChoiceKind::Internal => "role-initiated",
+                    ChoiceKind::External => "peer-initiated",
+                    ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                };
+                let projection_name = format_ident!(
+                    "{}{}Projection",
+                    state_name,
+                    match kind {
+                        ChoiceKind::Internal => "Internal",
+                        ChoiceKind::External => "External",
+                        ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                    }
+                );
+                let projection_method = match kind {
+                    ChoiceKind::Internal => format_ident!("project_internal_message"),
+                    ChoiceKind::External => format_ident!("project_external_message"),
+                    ChoiceKind::Mixed => unreachable!("a message direction cannot be mixed"),
+                };
+                let projection_variants = transitions.iter().zip(wrapper_names.iter()).map(
+                    |(transition, wrapper)| {
+                        let event = &transition.event;
+                        let target = &transition.target;
+                        let cleanliness = transition.cleanliness.as_ref().map_or_else(
+                            || quote!(SourceCleanliness),
+                            |cleanliness| quote!(#cleanliness),
+                        );
+                        quote! {
+                            #[doc = concat!("The [`Event::", stringify!(#event), "`] transition and its correctly typed next connection.")]
+                            #event {
+                                /// Connection after applying the selected message transition.
+                                connection: Conn<Transport, #target, #cleanliness>,
+                                /// Validated message which selected this transition.
+                                message: #wrapper,
+                                /// Retains the source cleanliness parameter even when replaced.
+                                source_cleanliness: ::core::marker::PhantomData<SourceCleanliness>,
+                            }
+                        }
+                    },
+                );
+                let projection_arms = transitions.iter().map(|transition| {
+                    let event = &transition.event;
+                    quote! {
+                        #type_name::#event(message) => #projection_name::#event {
+                            connection: TypedSession {
+                                transport,
+                                _state: ::core::marker::PhantomData,
+                            },
+                            message,
+                            source_cleanliness: ::core::marker::PhantomData,
+                        }
+                    }
+                });
+
+                quote! {
+                    #(#wrapper_definitions)*
+
+                    #[doc = concat!("Owned ", #direction, " messages legal in [`", stringify!(#state_name), "`].")]
+                    pub enum #type_name {
+                        #(
+                            #[doc = concat!("The [`Event::", stringify!(#variants), "`] transition.")]
+                            #variants(#enum_wrappers),
+                        )*
+                    }
+
+                    #[doc = concat!("Typed next-connection projection for [`", stringify!(#type_name), "`].")]
+                    pub enum #projection_name<Transport, SourceCleanliness> {
+                        #(#projection_variants,)*
+                        #[doc(hidden)]
+                        __Impossible {
+                            never: ::core::convert::Infallible,
+                            marker: ::core::marker::PhantomData<(Transport, SourceCleanliness)>,
+                        },
+                    }
+
+                    impl<Transport, SourceCleanliness>
+                        TypedSession<Transport, #state_name, SourceCleanliness>
+                    {
+                        #[doc = concat!("Projects one [`", stringify!(#type_name), "`] into its message-selected next connection.")]
+                        #[must_use]
+                        #[allow(unreachable_patterns)]
+                        pub fn #projection_method(
+                            self,
+                            message: #type_name,
+                        ) -> #projection_name<Transport, SourceCleanliness> {
+                            let transport = self.transport;
+                            match message {
+                                #(#projection_arms,)*
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+
+                    impl #type_name {
+                        /// Returns the protocol event represented by this message.
+                        #[must_use]
+                        #[allow(unreachable_patterns)]
+                        pub const fn event(&self) -> Event {
+                            match self {
+                                #(#event_variants,)*
+                                _ => unreachable!(),
+                            }
+                        }
+
+                        /// Borrows the underlying decoded wire message.
+                        #[must_use]
+                        #[allow(unreachable_patterns)]
+                        pub const fn as_wire(&self) -> &#wire_type {
+                            match self {
+                                #(Self::#borrow_variants(message) => message.as_wire(),)*
+                                _ => unreachable!(),
+                            }
+                        }
+
+                        /// Returns the underlying decoded wire message.
+                        #[must_use]
+                        #[allow(unreachable_patterns)]
+                        pub fn into_wire(self) -> #wire_type {
+                            match self {
+                                #(#wire_variants,)*
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+
+                    impl ::core::convert::TryFrom<#wire_type> for #type_name {
+                        type Error = #wire_type;
+
+                        fn try_from(message: #wire_type) -> ::core::result::Result<Self, #wire_type> {
+                            match #projector(RuntimeState::#state_name, &message) {
+                                #(#match_variants,)*
+                                _ => Err(message),
+                            }
+                        }
+                    }
+
+                    impl ::core::convert::From<#type_name> for #wire_type {
+                        fn from(message: #type_name) -> Self {
+                            message.into_wire()
+                        }
+                    }
+
+                    impl ::core::convert::AsRef<#wire_type> for #type_name {
+                        fn as_ref(&self) -> &#wire_type {
+                            self.as_wire()
+                        }
+                    }
+                }
+            };
+
+            let internal = directional(ChoiceKind::Internal, internal_type, &internal_name);
+            let external = directional(ChoiceKind::External, external_type, &external_name);
+            quote! {
+                #internal
+                #external
+            }
+        }).collect::<Vec<_>>()
+    });
     let typestate_impls = states.iter().map(|state| {
         let source = &state.name;
         let methods = state.transitions.iter().map(|transition| {
@@ -531,6 +793,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             pub const TRANSITIONS: &[RuntimeTransition] = &[#(#transition_descriptors),*];
 
             #projection_functions
+            #(#phase_message_types)*
 
             /// Looks up one legal transition from `state` for `event`.
             #[must_use]
@@ -664,6 +927,10 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 transport: Transport,
                 _state: ::core::marker::PhantomData<(Phase, Cleanliness)>,
             }
+
+            /// Generated connection carrying transport, protocol phase, and cleanliness.
+            pub type Conn<Transport, Phase, Cleanliness = ()> =
+                TypedSession<Transport, Phase, Cleanliness>;
 
             /// Transport-carrying typestate for the peer role.
             #[must_use = "dropping a generated dual session abandons its protocol state"]

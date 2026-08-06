@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `ReadyTerminateExternalTransitionMessage: From<FrontendMessage>` is not satisfied
+ --> tests/ui/typed_middleware_unchecked_construction.rs:7:90
+  |
+7 |     let _unchecked: ReadyTerminateExternalTransitionMessage = FrontendMessage::Terminate.into();
+  |                                                                                          ^^^^ the trait `From<FrontendMessage>` is not implemented for `ReadyTerminateExternalTransitionMessage`
+  |
+  = note: required for `FrontendMessage` to implement `Into<ReadyTerminateExternalTransitionMessage>`

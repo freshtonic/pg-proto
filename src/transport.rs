@@ -577,6 +577,82 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         }
     }
 
+    /// Receives typed backend traffic until one protocol-advancing item remains.
+    ///
+    /// Asynchronous messages pass through the same middleware, are recorded by
+    /// the demultiplexer in wire order, and leave `Phase` unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::receive_backend_typed`].
+    pub async fn receive_typed<State, Handler>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+    ) -> Result<SessionItem, TypedReceiveError<Handler::Error, BackendMessage>>
+    where
+        Phase: TypedPhase<ServerRole, BackendMessage>,
+        Handler: TypedMiddleware<
+                ServerRole,
+                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
+                <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+                State,
+            >,
+    {
+        loop {
+            let message = self.receive_backend_typed(middleware).await?;
+            if let Some(item) = self.project_backend(message.into()) {
+                return Ok(item);
+            }
+        }
+    }
+
+    /// Receives one SSL or GSSENC decision through phase-typed middleware.
+    ///
+    /// `Phase` must be an encryption-reply phase; callers then consume the
+    /// connection with its existing typed `receive_reply` projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error, illegal decision, middleware policy error, or an
+    /// invalid replacement wire shape.
+    pub async fn receive_encryption_reply_typed<State, Handler>(
+        &mut self,
+        middleware: &mut Middleware<State, Handler>,
+    ) -> Result<
+        <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message,
+        TypedReceiveError<Handler::Error, EncryptionReply>,
+    >
+    where
+        Phase: TypedPhase<ServerRole, EncryptionReply>,
+        Handler: TypedMiddleware<
+                ServerRole,
+                <Phase as TypedPhase<ServerRole, EncryptionReply>>::ProtocolPhase,
+                <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message,
+                State,
+            >,
+    {
+        let message = self
+            .transport_mut()
+            .receive_encryption_reply()
+            .await
+            .map_err(TypedReceiveError::Io)?;
+        let message =
+            <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message::try_from(message)
+                .map_err(TypedReceiveError::Illegal)?;
+        let message = middleware
+            .intercept_typed::<
+                ServerRole,
+                <Phase as TypedPhase<ServerRole, EncryptionReply>>::ProtocolPhase,
+                _,
+            >(message)
+            .map_err(TypedReceiveError::Middleware)?;
+        if message.as_ref().is_reconstructable() {
+            Ok(message)
+        } else {
+            Err(TypedReceiveError::InvalidWire(message.into()))
+        }
+    }
+
     /// Receives, intercepts, and validates one backend message before projection.
     ///
     /// # Errors
@@ -1091,6 +1167,39 @@ mod tests {
             Some(&Bytes::from_static(b"proxy"))
         );
         conn.into_transport();
+    }
+
+    #[tokio::test]
+    async fn typed_receive_projects_into_the_existing_next_connection_enum() {
+        let (client, mut server) = tokio::io::duplex(128);
+        let ready = BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle);
+        let mut bytes = BytesMut::new();
+        PgCodec::<Backend>::default()
+            .encode(
+                ready.to_frame().expect("reconstructable message"),
+                &mut bytes,
+            )
+            .expect("encodable message");
+        server.write_all(&bytes).await.expect("writable test peer");
+
+        let transport = Buffered::new(client);
+        let conn: Conn<_, crate::auth::Ready> = Conn::new(transport).transition();
+        let (mut query, _) = conn
+            .push_stateless_query(b"select 1")
+            .expect("encodable query");
+        let mut middleware = Middleware::new((), crate::middleware::Identity);
+        let item = query
+            .receive_typed(&mut middleware)
+            .await
+            .expect("phase-legal ready message");
+
+        let transition = query.offer(item).expect("typed next-state projection");
+        let crate::session::SimpleTransition::Ready(crate::session::ReadyState::Clean(ready)) =
+            transition
+        else {
+            panic!("idle readiness must return a clean ready connection");
+        };
+        ready.into_transport();
     }
 
     #[tokio::test]

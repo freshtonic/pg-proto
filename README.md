@@ -109,7 +109,11 @@ output enums contain only messages legal in that phase, so a replacement from a
 different role or phase is a compile error. `Conn::receive_frontend_typed`,
 `Conn::receive_backend_typed`, `Conn::receive_pre_startup_typed`, and
 `Conn::receive_encryption_reply_typed` infer those indices from the connection;
-there is no caller-supplied runtime state to mismatch.
+there is no caller-supplied runtime state to mismatch. Locally generated traffic
+uses `Conn::intercept_outbound_typed`: the connection phase selects the generated
+internal message enum before the caller applies its corresponding existing
+typestate transition and encodes it. Server-originated asynchronous traffic is
+included without advancing that phase.
 
 Middleware is async and has mutable access to caller-defined state across
 `.await`, so policy can consult a database, authorization service, or async
@@ -164,12 +168,15 @@ returning the next protocol-advancing `SessionItem`.
 `TypedPipelineMiddleware` using `frontend_action_typed`,
 `accept_backend_typed`, `try_emit_local_typed`, and
 `accept_session_item_typed`. The ledger chooses the hook at runtime, while each
-hook's owned input and output are restricted to that frontend phase or pending
-backend operation. Implementations override only the phases they inspect;
-unimplemented hooks are identity operations. Deferred backend messages are not
-intercepted until retried at the response head. `PipelineWireAdapter` adapts an
-existing async direction-wide policy when compile-time specialization is not
-needed.
+hook's owned input and output are restricted to that frontend phase or the exact
+generated backend response subphase of the pending operation. The ledger tracks
+COPY half-closes, function-call readiness, extended responses, and error recovery
+independently for every queued operation. Implementations override only the
+phases they inspect; unimplemented hooks are identity operations, and typed
+pipeline policies compose with `MessageMiddlewareExt::then`. Deferred backend
+messages are not intercepted until retried at the response head.
+`PipelineWireAdapter` adapts an existing async direction-wide policy when
+compile-time specialization is not needed.
 
 The older `intercept_checked` and `receive_*_with_middleware` APIs remain
 available for runtime-selected sessions. They validate replacement legality

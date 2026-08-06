@@ -446,7 +446,7 @@ protocol! {
         }
         Startup internal {
             Begin(begin) => Auth,
-            Reject(reject) => Terminated,
+            Reject(reject: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Auth internal {
             Negotiate(negotiate: crate::codec::NegotiateProtocolVersion) => Auth <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),

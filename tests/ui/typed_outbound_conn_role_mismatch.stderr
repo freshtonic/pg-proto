@@ -6,15 +6,10 @@ error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundP
    |
 help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
       but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
-  --> src/middleware.rs
+  --> <WORKSPACE>/src/middleware.rs:259:12
+  ::: <WORKSPACE>/src/middleware.rs:280:1
    |
-   |               impl TypedOutboundPhase<$role, $wire> for $connection {
-   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-...
-   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
-   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
-   | | );
-   | |_- in this macro invocation
+   = note: in this macro invocation
    = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
    = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -31,24 +26,13 @@ error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundP
    |
 help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
       but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
-  --> src/middleware.rs
+  --> <WORKSPACE>/src/middleware.rs:259:12
+  ::: <WORKSPACE>/src/middleware.rs:280:1
    |
-   |               impl TypedOutboundPhase<$role, $wire> for $connection {
-   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-...
-   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
-   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
-   | | );
-   | |_- in this macro invocation
+   = note: in this macro invocation
    = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
 note: required by a bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
-  --> src/middleware.rs
-   |
-   |     pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
-   |                  ------------------------ required by a bound in this associated function
-...
-   |         Phase: TypedOutboundPhase<Role, Wire>,
-   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+  --> <WORKSPACE>/src/middleware.rs:797:4
    = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundPhase<ServerRole, PreStartupMessage>` is not satisfied
@@ -59,22 +43,11 @@ error[E0277]: the trait bound `pg_proto::pre_startup::PreStartup: TypedOutboundP
    |
 help: the trait `TypedOutboundPhase<ServerRole, PreStartupMessage>` is not implemented for `pg_proto::pre_startup::PreStartup`
       but trait `TypedOutboundPhase<ClientRole, PreStartupMessage>` is implemented for it
-  --> src/middleware.rs
+  --> <WORKSPACE>/src/middleware.rs:259:12
+  ::: <WORKSPACE>/src/middleware.rs:280:1
    |
-   |               impl TypedOutboundPhase<$role, $wire> for $connection {
-   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-...
-   | / typed_outbound_phase!(ClientRole, PreStartupMessage;
-   | |     crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
-   | | );
-   | |_- in this macro invocation
+   = note: in this macro invocation
    = help: for that trait implementation, expected `ClientRole`, found `ServerRole`
 note: required by a bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
-  --> src/middleware.rs
-   |
-   |     pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
-   |                  ------------------------ required by a bound in this associated function
-...
-   |         Phase: TypedOutboundPhase<Role, Wire>,
-   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `middleware::<impl Conn<Transport, Phase, Cleanliness>>::intercept_outbound_typed`
+  --> <WORKSPACE>/src/middleware.rs:797:4
    = note: this error originates in the macro `typed_outbound_phase` (in Nightly builds, run with -Z macro-backtrace for more info)

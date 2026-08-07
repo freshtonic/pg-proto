@@ -351,6 +351,9 @@ checked middleware belongs on the state-aware session APIs above it.
   - [x] Deepen the pipeline ledger interface by removing overlapping projection,
     action-remapping, and session-item entry points, leaving one frontend
     admission seam and one backend response seam.
+  - [x] Consolidate inbound receipt, middleware interception, phase legality,
+    and reconstruction validation across backend, frontend, pre-startup, and
+    encryption-reply traffic without combining receipt with projection.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

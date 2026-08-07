@@ -19,8 +19,8 @@ use crate::{
         TaggedNotice,
     },
     middleware::{
-        AcceptsMessage, ClientRole, MessageMiddleware, Middleware, ReceiveError,
-        ReconstructableMessage as _, ServerRole, TypedMiddleware, TypedPhase, TypedReceiveError,
+        AcceptsMessage, ClientRole, Inbound, MessageMiddleware, Middleware, PhaseAssociation,
+        ReceiveError, ReconstructableMessage as _, ServerRole, TypedMiddleware, TypedReceiveError,
     },
     pre_startup::{
         AwaitingSslReply, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, EncryptionReply, Negotiation,
@@ -545,15 +545,15 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
-        <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+        <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::Message,
         TypedReceiveError<Handler::Error, BackendMessage>,
     >
     where
-        Phase: TypedPhase<ServerRole, BackendMessage>,
+        Phase: PhaseAssociation<Inbound, ServerRole, BackendMessage>,
         Handler: TypedMiddleware<
                 ServerRole,
-                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
-                <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+                <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::Message,
                 State,
             >,
     {
@@ -561,12 +561,15 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
             .receive_backend_wire()
             .await
             .map_err(TypedReceiveError::Io)?;
-        let message = <Phase as TypedPhase<ServerRole, BackendMessage>>::Message::try_from(message)
+        let message =
+            <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::Message::try_from(
+                message,
+            )
             .map_err(TypedReceiveError::Illegal)?;
         let message = middleware
             .intercept_typed::<
                 ServerRole,
-                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::ProtocolPhase,
                 _,
             >(message)
             .await
@@ -591,11 +594,11 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<SessionItem, TypedReceiveError<Handler::Error, BackendMessage>>
     where
-        Phase: TypedPhase<ServerRole, BackendMessage>,
+        Phase: PhaseAssociation<Inbound, ServerRole, BackendMessage>,
         Handler: TypedMiddleware<
                 ServerRole,
-                <Phase as TypedPhase<ServerRole, BackendMessage>>::ProtocolPhase,
-                <Phase as TypedPhase<ServerRole, BackendMessage>>::Message,
+                <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ServerRole, BackendMessage>>::Message,
                 State,
             >,
     {
@@ -620,15 +623,15 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
-        <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message,
+        <Phase as PhaseAssociation<Inbound, ServerRole, EncryptionReply>>::Message,
         TypedReceiveError<Handler::Error, EncryptionReply>,
     >
     where
-        Phase: TypedPhase<ServerRole, EncryptionReply>,
+        Phase: PhaseAssociation<Inbound, ServerRole, EncryptionReply>,
         Handler: TypedMiddleware<
                 ServerRole,
-                <Phase as TypedPhase<ServerRole, EncryptionReply>>::ProtocolPhase,
-                <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message,
+                <Phase as PhaseAssociation<Inbound, ServerRole, EncryptionReply>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ServerRole, EncryptionReply>>::Message,
                 State,
             >,
     {
@@ -638,12 +641,14 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
             .await
             .map_err(TypedReceiveError::Io)?;
         let message =
-            <Phase as TypedPhase<ServerRole, EncryptionReply>>::Message::try_from(message)
-                .map_err(TypedReceiveError::Illegal)?;
+            <Phase as PhaseAssociation<Inbound, ServerRole, EncryptionReply>>::Message::try_from(
+                message,
+            )
+            .map_err(TypedReceiveError::Illegal)?;
         let message = middleware
             .intercept_typed::<
                 ServerRole,
-                <Phase as TypedPhase<ServerRole, EncryptionReply>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ServerRole, EncryptionReply>>::ProtocolPhase,
                 _,
             >(message)
             .await
@@ -788,15 +793,15 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
-        <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message,
+        <Phase as PhaseAssociation<Inbound, ClientRole, FrontendMessage>>::Message,
         TypedReceiveError<Handler::Error, FrontendMessage>,
     >
     where
-        Phase: TypedPhase<ClientRole, FrontendMessage>,
+        Phase: PhaseAssociation<Inbound, ClientRole, FrontendMessage>,
         Handler: TypedMiddleware<
                 ClientRole,
-                <Phase as TypedPhase<ClientRole, FrontendMessage>>::ProtocolPhase,
-                <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message,
+                <Phase as PhaseAssociation<Inbound, ClientRole, FrontendMessage>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ClientRole, FrontendMessage>>::Message,
                 State,
             >,
     {
@@ -805,12 +810,14 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
             .await
             .map_err(TypedReceiveError::Io)?;
         let message =
-            <Phase as TypedPhase<ClientRole, FrontendMessage>>::Message::try_from(message)
-                .map_err(TypedReceiveError::Illegal)?;
+            <Phase as PhaseAssociation<Inbound, ClientRole, FrontendMessage>>::Message::try_from(
+                message,
+            )
+            .map_err(TypedReceiveError::Illegal)?;
         let message = middleware
             .intercept_typed::<
                 ClientRole,
-                <Phase as TypedPhase<ClientRole, FrontendMessage>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Inbound, ClientRole, FrontendMessage>>::ProtocolPhase,
                 _,
             >(message)
             .await
@@ -867,14 +874,14 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
-        <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message,
+        <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::Message,
         TypedReceiveError<Handler::Error, PreStartupMessage>,
     >
     where
         Handler: TypedMiddleware<
                 ClientRole,
-                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::ProtocolPhase,
-                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message,
+                <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::ProtocolPhase,
+                <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::Message,
                 State,
             >,
     {
@@ -883,12 +890,12 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
             .await
             .map_err(TypedReceiveError::Io)?;
         let message =
-            <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::Message::try_from(message)
+            <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::Message::try_from(message)
                 .map_err(TypedReceiveError::Illegal)?;
         let message = middleware
             .intercept_typed::<
                 ClientRole,
-                <PreStartup as TypedPhase<ClientRole, PreStartupMessage>>::ProtocolPhase,
+                <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::ProtocolPhase,
                 _,
             >(message)
             .await

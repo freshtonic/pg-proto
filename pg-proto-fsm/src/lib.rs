@@ -10,14 +10,26 @@ use railroad::{
     svg::{self, HDir},
 };
 use syn::{
-    Ident, Pat, Result, Token, Type, Visibility, braced,
+    Ident, Pat, Path, Result, Token, Type, Visibility, braced, bracketed,
     parse::{Parse, ParseStream},
     parse_macro_input,
+    visit_mut::{self, VisitMut},
 };
 
 mod keyword {
     syn::custom_keyword!(initial);
     syn::custom_keyword!(messages);
+    syn::custom_keyword!(associations);
+    syn::custom_keyword!(interface);
+    syn::custom_keyword!(seal);
+    syn::custom_keyword!(inbound);
+    syn::custom_keyword!(outbound);
+    syn::custom_keyword!(direction);
+    syn::custom_keyword!(role);
+    syn::custom_keyword!(wire);
+    syn::custom_keyword!(message);
+    syn::custom_keyword!(associate);
+    syn::custom_keyword!(none);
 }
 
 struct Protocol {
@@ -25,7 +37,27 @@ struct Protocol {
     module: Ident,
     initial: Ident,
     messages: Option<MessageTypes>,
+    associations: Option<Associations>,
     states: Vec<State>,
+}
+
+struct Associations {
+    interface: Path,
+    seal: Path,
+    inbound: AssociationLane,
+    outbound: AssociationLane,
+}
+
+struct AssociationLane {
+    direction: Type,
+    role: Type,
+    wire: Type,
+    message: Type,
+}
+
+struct StateAssociations {
+    inbound: Vec<Type>,
+    outbound: Vec<Type>,
 }
 
 struct MessageTypes {
@@ -37,6 +69,7 @@ struct State {
     name: Ident,
     choice: ChoiceKind,
     transitions: Vec<Transition>,
+    associations: Option<StateAssociations>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,6 +123,11 @@ impl Parse for Protocol {
         } else {
             None
         };
+        let associations = if content.peek(keyword::associations) {
+            Some(content.parse()?)
+        } else {
+            None
+        };
         let mut states = Vec::new();
         while !content.is_empty() {
             states.push(content.parse()?);
@@ -99,9 +137,69 @@ impl Parse for Protocol {
             module,
             initial,
             messages,
+            associations,
             states,
         })
     }
+}
+
+impl Parse for Associations {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        input.parse::<keyword::associations>()?;
+        let content;
+        braced!(content in input);
+        content.parse::<keyword::interface>()?;
+        content.parse::<Token![:]>()?;
+        let interface = content.parse()?;
+        content.parse::<Token![;]>()?;
+        content.parse::<keyword::seal>()?;
+        content.parse::<Token![:]>()?;
+        let seal = content.parse()?;
+        content.parse::<Token![;]>()?;
+        content.parse::<keyword::inbound>()?;
+        let inbound = parse_lane(&content)?;
+        content.parse::<keyword::outbound>()?;
+        let outbound = parse_lane(&content)?;
+        if !content.is_empty() {
+            return Err(content.error("unexpected association configuration"));
+        }
+        Ok(Self {
+            interface,
+            seal,
+            inbound,
+            outbound,
+        })
+    }
+}
+
+fn parse_lane(input: ParseStream<'_>) -> Result<AssociationLane> {
+    let content;
+    braced!(content in input);
+    content.parse::<keyword::direction>()?;
+    content.parse::<Token![:]>()?;
+    let direction = content.parse()?;
+    content.parse::<Token![;]>()?;
+    content.parse::<keyword::role>()?;
+    content.parse::<Token![:]>()?;
+    let role = content.parse()?;
+    content.parse::<Token![;]>()?;
+    content.parse::<keyword::wire>()?;
+    content.parse::<Token![:]>()?;
+    let wire = content.parse()?;
+    content.parse::<Token![;]>()?;
+    content.parse::<keyword::message>()?;
+    content.parse::<Token![:]>()?;
+    let message = content.parse()?;
+    content.parse::<Token![;]>()?;
+    if !content.is_empty() {
+        return Err(content.error("unexpected association lane configuration"));
+    }
+    Ok(AssociationLane {
+        direction,
+        role,
+        wire,
+        message,
+    })
 }
 
 impl Parse for State {
@@ -121,6 +219,11 @@ impl Parse for State {
         };
         let content;
         braced!(content in input);
+        let associations = if content.peek(keyword::associate) {
+            Some(content.parse()?)
+        } else {
+            None
+        };
         let transitions = content
             .parse_terminated(Transition::parse, Token![,])?
             .into_iter()
@@ -129,8 +232,46 @@ impl Parse for State {
             name,
             choice,
             transitions,
+            associations,
         })
     }
+}
+
+impl Parse for StateAssociations {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        input.parse::<keyword::associate>()?;
+        let content;
+        braced!(content in input);
+        content.parse::<keyword::inbound>()?;
+        content.parse::<Token![:]>()?;
+        let inbound = parse_association_types(&content)?;
+        content.parse::<Token![;]>()?;
+        content.parse::<keyword::outbound>()?;
+        content.parse::<Token![:]>()?;
+        let outbound = parse_association_types(&content)?;
+        content.parse::<Token![;]>()?;
+        if !content.is_empty() {
+            return Err(content.error("unexpected state association"));
+        }
+        Ok(Self { inbound, outbound })
+    }
+}
+
+fn parse_association_types(input: ParseStream<'_>) -> Result<Vec<Type>> {
+    if input.peek(keyword::none) {
+        input.parse::<keyword::none>()?;
+        return Ok(Vec::new());
+    }
+    if input.peek(syn::token::Bracket) {
+        let content;
+        bracketed!(content in input);
+        let types = content.parse_terminated(Type::parse, Token![,])?;
+        if types.is_empty() {
+            return Err(content.error("association list cannot be empty; use `none`"));
+        }
+        return Ok(types.into_iter().collect());
+    }
+    Ok(vec![input.parse()?])
 }
 
 impl Parse for Transition {
@@ -193,14 +334,59 @@ pub fn protocol(input: TokenStream) -> TokenStream {
         .into()
 }
 
+fn expand_associations(protocol: &Protocol) -> Result<Vec<proc_macro2::TokenStream>> {
+    let Some(associations) = &protocol.associations else {
+        return Ok(Vec::new());
+    };
+    let interface = &associations.interface;
+    let seal = &associations.seal;
+    protocol
+        .states
+        .iter()
+        .flat_map(|state| {
+            [
+                (
+                    &associations.inbound,
+                    state.associations.as_ref().map(|value| &value.inbound),
+                ),
+                (
+                    &associations.outbound,
+                    state.associations.as_ref().map(|value| &value.outbound),
+                ),
+            ]
+            .into_iter()
+            .map(move |(lane, connections)| {
+                let state_name = &state.name;
+                let direction = &lane.direction;
+                let role = &lane.role;
+                let wire = &lane.wire;
+                let message = instantiate_message_type(&lane.message, state_name)?;
+                let connections = connections.expect("validated state associations");
+                Ok(quote! {
+                    #(
+                        impl #seal<#direction, #role, #wire> for #connections {}
+
+                        impl #interface<#direction, #role, #wire> for #connections {
+                            type ProtocolPhase = #state_name;
+                            type Message = #message;
+                        }
+                    )*
+                })
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)]
 fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
     validate(&protocol)?;
+    let association_impls = expand_associations(&protocol)?;
     let Protocol {
         visibility,
         module,
         initial,
         messages,
+        associations: _,
         states,
     } = protocol;
     let state_names = states.iter().map(|state| &state.name).collect::<Vec<_>>();
@@ -794,6 +980,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
 
             #projection_functions
             #(#phase_message_types)*
+            #(#association_impls)*
 
             /// Looks up one legal transition from `state` for `event`.
             #[must_use]
@@ -1024,6 +1211,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
 }
 
 fn validate(protocol: &Protocol) -> Result<()> {
+    validate_associations(protocol)?;
     if protocol.messages.is_none()
         && let Some(transition) = protocol
             .states
@@ -1090,6 +1278,147 @@ fn validate(protocol: &Protocol) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_associations(protocol: &Protocol) -> Result<()> {
+    match &protocol.associations {
+        Some(associations) => {
+            if protocol.messages.is_none() {
+                return Err(syn::Error::new_spanned(
+                    &associations.interface,
+                    "associations require a `messages` declaration",
+                ));
+            }
+            validate_message_template(&associations.inbound.message)?;
+            validate_message_template(&associations.outbound.message)?;
+            let mut implementations = BTreeSet::new();
+            for state in &protocol.states {
+                let Some(state_associations) = &state.associations else {
+                    return Err(syn::Error::new(
+                        state.name.span(),
+                        "state requires an `associate` block",
+                    ));
+                };
+                validate_association_types(&state_associations.inbound)?;
+                validate_association_types(&state_associations.outbound)?;
+                for (lane, connections) in [
+                    (&associations.inbound, &state_associations.inbound),
+                    (&associations.outbound, &state_associations.outbound),
+                ] {
+                    let direction = &lane.direction;
+                    let role = &lane.role;
+                    let wire = &lane.wire;
+                    let lane_key = quote!(#direction, #role, #wire).to_string();
+                    for connection in connections {
+                        let connection_key = quote!(#connection).to_string();
+                        if !implementations.insert((lane_key.clone(), connection_key)) {
+                            return Err(syn::Error::new_spanned(
+                                connection,
+                                "connection type has a duplicate association for this direction, role, and wire type",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        None => {
+            if let Some(state) = protocol
+                .states
+                .iter()
+                .find(|state| state.associations.is_some())
+            {
+                return Err(syn::Error::new(
+                    state.name.span(),
+                    "state association requires an `associations` declaration",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_association_types(types: &[Type]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for ty in types {
+        if !seen.insert(quote!(#ty).to_string()) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "duplicate connection type in association lane",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_message_template(message: &Type) -> Result<()> {
+    let (message, count) = replace_message_placeholder(message, None);
+    match count {
+        1 => Ok(()),
+        0 => Err(syn::Error::new_spanned(
+            message,
+            "association message type requires exactly one bare `internal` or `external` placeholder",
+        )),
+        _ => Err(syn::Error::new_spanned(
+            message,
+            "association message type contains more than one message placeholder",
+        )),
+    }
+}
+
+fn instantiate_message_type(message: &Type, state: &Ident) -> Result<Type> {
+    let (message, count) = replace_message_placeholder(message, Some(state));
+    if count == 1 {
+        Ok(message)
+    } else {
+        Err(syn::Error::new_spanned(
+            message,
+            "association message type requires exactly one message placeholder",
+        ))
+    }
+}
+
+fn replace_message_placeholder(message: &Type, state: Option<&Ident>) -> (Type, usize) {
+    let mut message = message.clone();
+    let mut replacer = MessagePlaceholderReplacer {
+        state: state.cloned(),
+        count: 0,
+    };
+    replacer.visit_type_mut(&mut message);
+    (message, replacer.count)
+}
+
+#[derive(Default)]
+struct MessagePlaceholderReplacer {
+    state: Option<Ident>,
+    count: usize,
+}
+
+impl VisitMut for MessagePlaceholderReplacer {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        let Type::Path(type_path) = ty else {
+            visit_mut::visit_type_mut(self, ty);
+            return;
+        };
+        if type_path.qself.is_none() && type_path.path.segments.len() == 1 {
+            let segment = &type_path.path.segments[0];
+            let direction = segment.ident.to_string();
+            if segment.arguments.is_empty() && matches!(direction.as_str(), "internal" | "external")
+            {
+                self.count += 1;
+                if let Some(state) = &self.state {
+                    let suffix = if direction == "internal" {
+                        "InternalMessage"
+                    } else {
+                        "ExternalMessage"
+                    };
+                    let replacement = format_ident!("{state}{suffix}");
+                    *ty = syn::parse_quote!(#replacement);
+                }
+                return;
+            }
+        }
+        visit_mut::visit_type_mut(self, ty);
+    }
 }
 
 fn railroad_svg(states: &[State]) -> String {

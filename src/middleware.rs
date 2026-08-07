@@ -229,203 +229,31 @@ pub enum ClientRole {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerRole {}
 
-/// Associates a connection typestate with its generated legal message type.
+/// Marker selecting associations for messages received from a peer.
+pub enum Inbound {}
+
+/// Marker selecting associations for messages sent by the local role.
+pub enum Outbound {}
+
+/// Associates a connection typestate with a generated protocol phase and legal message set.
 ///
-/// Implementations are provided only for matching sender roles and decoded wire
-/// directions. This is the bridge which lets [`crate::Conn`] infer middleware's
-/// `Role`, `ProtocolPhase`, and `Message` indices from its own phase parameter.
-pub trait TypedPhase<Role, Wire> {
+/// Grammar declarations generate all implementations. The direction, sender role, and decoded
+/// wire type remain explicit indices so callers can use one interface for inbound and outbound
+/// capabilities without exposing generated association machinery.
+pub trait PhaseAssociation<Direction, Role, Wire>:
+    phase_association_seal::Sealed<Direction, Role, Wire>
+{
     /// Generated grammar phase corresponding to the connection typestate.
     type ProtocolPhase;
-    /// Opaque set of decoded messages legal for this role and phase.
+    /// Opaque set of messages legal for this direction, role, and phase.
     type Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>;
 }
 
-/// Associates a connection typestate with messages its local role may send.
-///
-/// Unlike [`TypedPhase`], which describes peer-selected input, this trait indexes
-/// the generated internal message set used before a locally generated value is
-/// encoded and sent.
-pub trait TypedOutboundPhase<Role, Wire> {
-    /// Generated grammar phase corresponding to the connection typestate.
-    type ProtocolPhase;
-    /// Opaque set of locally generated messages legal in this phase.
-    type Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>;
-}
-
-macro_rules! typed_outbound_phase {
-    ($role:ty, $wire:ty; $($connection:ty => $protocol:path, $message:path);+ $(;)?) => {
-        $(
-            impl TypedOutboundPhase<$role, $wire> for $connection {
-                type ProtocolPhase = $protocol;
-                type Message = $message;
-            }
-        )+
-    };
-}
-
-macro_rules! typed_outbound_backend_phase {
-    ($($connection:ty => $protocol:path, $message:path);+ $(;)?) => {
-        $(
-            impl TypedOutboundPhase<ServerRole, BackendMessage> for $connection {
-                type ProtocolPhase = $protocol;
-                type Message = TypedBackendMessage<$message>;
-            }
-        )+
-    };
-}
-
-/// Authoritative connection-typestate to generated-grammar association catalogue.
-mod grammar_associations {
-    use super::{
-        BackendMessage, ClientRole, EncryptionReply, FrontendMessage, PreStartupMessage,
-        ServerRole, TypedBackendMessage, TypedOutboundPhase, TypedPhase, authentication, backend,
-        frontend, pre_startup, server_authentication, server_pre_startup,
-    };
-
-    typed_outbound_phase!(ClientRole, PreStartupMessage;
-        crate::pre_startup::PreStartup => pre_startup::PreStartup, pre_startup::PreStartupInternalMessage;
-    );
-
-    typed_outbound_phase!(ClientRole, FrontendMessage;
-        crate::auth::PasswordResponse => authentication::PasswordResponse, authentication::PasswordResponseInternalMessage;
-        crate::auth::TokenResponse => authentication::TokenResponse, authentication::TokenResponseInternalMessage;
-        crate::auth::SaslInitial => authentication::SaslInitial, authentication::SaslInitialInternalMessage;
-        crate::auth::SaslChallenge => authentication::SaslChallenge, authentication::SaslChallengeInternalMessage;
-        crate::auth::Ready => frontend::Ready, frontend::ReadyInternalMessage;
-        crate::session::Building => frontend::Building, frontend::BuildingInternalMessage;
-        crate::session::BoundBuilding => frontend::BoundBuilding, frontend::BoundBuildingInternalMessage;
-        crate::session::CopyIn => frontend::CopyIn, frontend::CopyInInternalMessage;
-        crate::session::CopyBoth => frontend::CopyBoth, frontend::CopyBothInternalMessage;
-        crate::session::CopyBothServerDone => frontend::CopyBothServerDone, frontend::CopyBothServerDoneInternalMessage;
-    );
-
-    typed_outbound_phase!(ServerRole, EncryptionReply;
-        crate::pre_startup::ServerSslDecision => server_pre_startup::SslDecision, server_pre_startup::SslDecisionInternalMessage;
-        crate::pre_startup::ServerGssDecision => server_pre_startup::GssDecision, server_pre_startup::GssDecisionInternalMessage;
-    );
-
-    typed_outbound_backend_phase!(
-        crate::server_auth::ServerStartupRejected => server_authentication::Startup, server_authentication::StartupInternalMessage;
-        crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthInternalMessage;
-        crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseInternalMessage;
-        crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialInternalMessage;
-        crate::server_auth::ServerSasl => server_authentication::Sasl, server_authentication::SaslInternalMessage;
-        crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseInternalMessage;
-        crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseInternalMessage;
-        crate::server_auth::ServerAuthPolicy => server_authentication::TokenPolicy, server_authentication::TokenPolicyInternalMessage;
-        crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyInternalMessage;
-        crate::server_session::ServerSimpleQuery => backend::Simple, backend::SimpleInternalMessage;
-        crate::server_session::ServerSimpleError => backend::SimpleError, backend::SimpleErrorInternalMessage;
-        crate::server_session::ServerFunctionCall => backend::FunctionResponse, backend::FunctionResponseInternalMessage;
-        crate::server_session::ServerFunctionCallDone => backend::FunctionReady, backend::FunctionReadyInternalMessage;
-        crate::server_session::ServerFunctionCallError => backend::FunctionReady, backend::FunctionReadyInternalMessage;
-        crate::server_session::ServerParse => backend::ParseResponse, backend::ParseResponseInternalMessage;
-        crate::server_session::ServerBind => backend::BindResponse, backend::BindResponseInternalMessage;
-        crate::server_session::ServerDescribe => backend::DescribeResponse, backend::DescribeResponseInternalMessage;
-        crate::server_session::ServerExecute => backend::ExecuteResponse, backend::ExecuteResponseInternalMessage;
-        crate::server_session::ServerClose => backend::CloseResponse, backend::CloseResponseInternalMessage;
-        crate::server_session::ServerSync => backend::SyncResponse, backend::SyncResponseInternalMessage;
-        crate::server_session::ServerBuilding => backend::Building, backend::BuildingInternalMessage;
-        crate::server_session::ServerExtendedError => backend::ExtendedError, backend::ExtendedErrorInternalMessage;
-        crate::server_session::ServerCopyIn<crate::server_session::CopySimple> => backend::SimpleCopyIn, backend::SimpleCopyInInternalMessage;
-        crate::server_session::ServerCopyIn<crate::server_session::CopyExtended> => backend::ExtendedCopyIn, backend::ExtendedCopyInInternalMessage;
-        crate::server_session::ServerCopyInDone<crate::server_session::CopySimple> => backend::SimpleCopyInDone, backend::SimpleCopyInDoneInternalMessage;
-        crate::server_session::ServerCopyInDone<crate::server_session::CopyExtended> => backend::ExtendedCopyInDone, backend::ExtendedCopyInDoneInternalMessage;
-        crate::server_session::ServerCopyInFailed<crate::server_session::CopySimple> => backend::SimpleCopyInFailed, backend::SimpleCopyInFailedInternalMessage;
-        crate::server_session::ServerCopyInFailed<crate::server_session::CopyExtended> => backend::ExtendedCopyInFailed, backend::ExtendedCopyInFailedInternalMessage;
-        crate::server_session::ServerCopyOut<crate::server_session::CopySimple> => backend::SimpleCopyOut, backend::SimpleCopyOutInternalMessage;
-        crate::server_session::ServerCopyOut<crate::server_session::CopyExtended> => backend::ExtendedCopyOut, backend::ExtendedCopyOutInternalMessage;
-        crate::server_session::ServerCopyOutDone<crate::server_session::CopySimple> => backend::SimpleCopyOutDone, backend::SimpleCopyOutDoneInternalMessage;
-        crate::server_session::ServerCopyOutDone<crate::server_session::CopyExtended> => backend::ExtendedCopyOutDone, backend::ExtendedCopyOutDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen> => backend::SimpleCopyBoth, backend::SimpleCopyBothInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen> => backend::ExtendedCopyBoth, backend::ExtendedCopyBothInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothClientDone> => backend::SimpleCopyBothClientDone, backend::SimpleCopyBothClientDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothClientDone> => backend::ExtendedCopyBothClientDone, backend::ExtendedCopyBothClientDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone> => backend::SimpleCopyBothServerDone, backend::SimpleCopyBothServerDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone> => backend::ExtendedCopyBothServerDone, backend::ExtendedCopyBothServerDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothDone> => backend::SimpleCopyBothDone, backend::SimpleCopyBothDoneInternalMessage;
-        crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothDone> => backend::ExtendedCopyBothDone, backend::ExtendedCopyBothDoneInternalMessage;
-        crate::server_session::ServerCopyBothFailed<crate::server_session::CopySimple> => backend::SimpleCopyBothFailed, backend::SimpleCopyBothFailedInternalMessage;
-        crate::server_session::ServerCopyBothFailed<crate::server_session::CopyExtended> => backend::ExtendedCopyBothFailed, backend::ExtendedCopyBothFailedInternalMessage;
-    );
-
-    impl TypedPhase<ServerRole, BackendMessage> for crate::auth::Ready {
-        type ProtocolPhase = frontend::Ready;
-        type Message = TypedBackendMessage<frontend::ReadyExternalMessage>;
-    }
-
-    impl TypedPhase<ClientRole, FrontendMessage> for crate::auth::Ready {
-        type ProtocolPhase = backend::Ready;
-        type Message = backend::ReadyExternalMessage;
-    }
-
-    impl TypedPhase<ClientRole, PreStartupMessage> for crate::pre_startup::PreStartup {
-        type ProtocolPhase = server_pre_startup::PreStartup;
-        type Message = server_pre_startup::PreStartupExternalMessage;
-    }
-
-    impl TypedPhase<ServerRole, EncryptionReply> for crate::pre_startup::AwaitingSslReply {
-        type ProtocolPhase = pre_startup::AwaitingSslReply;
-        type Message = pre_startup::AwaitingSslReplyExternalMessage;
-    }
-
-    impl TypedPhase<ServerRole, EncryptionReply> for crate::pre_startup::AwaitingGssReply {
-        type ProtocolPhase = pre_startup::AwaitingGssReply;
-        type Message = pre_startup::AwaitingGssReplyExternalMessage;
-    }
-
-    macro_rules! typed_backend_phase {
-        ($connection:path => $protocol:path, $message:path) => {
-            impl TypedPhase<ServerRole, BackendMessage> for $connection {
-                type ProtocolPhase = $protocol;
-                type Message = TypedBackendMessage<$message>;
-            }
-        };
-    }
-
-    typed_backend_phase!(crate::auth::Auth => authentication::Auth, authentication::AuthExternalMessage);
-    typed_backend_phase!(crate::auth::TokenChallenge => authentication::TokenChallenge, authentication::TokenChallengeExternalMessage);
-    typed_backend_phase!(crate::auth::Sasl => authentication::Sasl, authentication::SaslExternalMessage);
-    typed_backend_phase!(crate::auth::AwaitingAuthOk => authentication::AwaitingAuthOk, authentication::AwaitingAuthOkExternalMessage);
-    typed_backend_phase!(crate::auth::AwaitingStartupReady => authentication::AwaitingStartupReady, authentication::AwaitingStartupReadyExternalMessage);
-    typed_backend_phase!(crate::session::SimpleQuery => frontend::Simple, frontend::SimpleExternalMessage);
-    typed_backend_phase!(crate::session::FunctionCalling => frontend::FunctionCalling, frontend::FunctionCallingExternalMessage);
-    typed_backend_phase!(crate::session::Building => frontend::Building, frontend::BuildingExternalMessage);
-    typed_backend_phase!(crate::session::BoundBuilding => frontend::BoundBuilding, frontend::BoundBuildingExternalMessage);
-    typed_backend_phase!(crate::session::AwaitingReady => frontend::AwaitingReady, frontend::AwaitingReadyExternalMessage);
-    typed_backend_phase!(crate::session::CopyIn => frontend::CopyIn, frontend::CopyInExternalMessage);
-    typed_backend_phase!(crate::session::CopyOut => frontend::CopyOut, frontend::CopyOutExternalMessage);
-    typed_backend_phase!(crate::session::CopyBoth => frontend::CopyBoth, frontend::CopyBothExternalMessage);
-    typed_backend_phase!(crate::session::CopyBothClientDone => frontend::CopyBothClientDone, frontend::CopyBothClientDoneExternalMessage);
-    typed_backend_phase!(crate::session::CopyBothServerDone => frontend::CopyBothServerDone, frontend::CopyBothServerDoneExternalMessage);
-    typed_backend_phase!(crate::session::Draining => frontend::Draining, frontend::DrainingExternalMessage);
-    typed_backend_phase!(crate::session::Resetting => frontend::Resetting, frontend::ResettingExternalMessage);
-    typed_backend_phase!(crate::session::ResetComplete => frontend::ResetComplete, frontend::ResetCompleteExternalMessage);
-
-    macro_rules! typed_frontend_phase {
-        ($connection:ty => $protocol:path, $message:path) => {
-            impl TypedPhase<ClientRole, FrontendMessage> for $connection {
-                type ProtocolPhase = $protocol;
-                type Message = $message;
-            }
-        };
-    }
-
-    typed_frontend_phase!(crate::server_auth::ServerAuth => server_authentication::Auth, server_authentication::AuthExternalMessage);
-    typed_frontend_phase!(crate::server_auth::ServerPassword => server_authentication::PasswordResponse, server_authentication::PasswordResponseExternalMessage);
-    typed_frontend_phase!(crate::server_auth::ServerSaslInitial => server_authentication::SaslInitial, server_authentication::SaslInitialExternalMessage);
-    typed_frontend_phase!(crate::server_auth::ServerSaslResponse => server_authentication::SaslResponse, server_authentication::SaslResponseExternalMessage);
-    typed_frontend_phase!(crate::server_auth::ServerAuthResponse => server_authentication::TokenResponse, server_authentication::TokenResponseExternalMessage);
-    typed_frontend_phase!(crate::server_auth::ServerStartupReady => server_authentication::StartupReady, server_authentication::StartupReadyExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerBuilding => backend::Building, backend::BuildingExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerExtendedError => backend::ExtendedError, backend::ExtendedErrorExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyIn<crate::server_session::CopySimple> => backend::SimpleCopyIn, backend::SimpleCopyInExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyIn<crate::server_session::CopyExtended> => backend::ExtendedCopyIn, backend::ExtendedCopyInExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen> => backend::SimpleCopyBoth, backend::SimpleCopyBothExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen> => backend::ExtendedCopyBoth, backend::ExtendedCopyBothExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone> => backend::SimpleCopyBothServerDone, backend::SimpleCopyBothServerDoneExternalMessage);
-    typed_frontend_phase!(crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone> => backend::ExtendedCopyBothServerDone, backend::ExtendedCopyBothServerDoneExternalMessage);
+/// Seals [`PhaseAssociation`] while remaining nameable by generated grammar implementations.
+#[doc(hidden)]
+pub(crate) mod phase_association_seal {
+    /// Implemented alongside each generated phase association.
+    pub trait Sealed<Direction, Role, Wire> {}
 }
 
 /// Async middleware whose role, protocol phase, and legal message set are type indexed.
@@ -806,23 +634,23 @@ impl<Transport, Phase, Cleanliness> crate::Conn<Transport, Phase, Cleanliness> {
     pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
         &self,
         middleware: &mut Middleware<State, Handler>,
-        message: <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+        message: <Phase as PhaseAssociation<Outbound, Role, Wire>>::Message,
     ) -> Result<
-        <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+        <Phase as PhaseAssociation<Outbound, Role, Wire>>::Message,
         TypedReceiveError<Handler::Error, Wire>,
     >
     where
-        Phase: TypedOutboundPhase<Role, Wire>,
+        Phase: PhaseAssociation<Outbound, Role, Wire>,
         Wire: ReconstructableMessage,
         Handler: TypedMiddleware<
                 Role,
-                <Phase as TypedOutboundPhase<Role, Wire>>::ProtocolPhase,
-                <Phase as TypedOutboundPhase<Role, Wire>>::Message,
+                <Phase as PhaseAssociation<Outbound, Role, Wire>>::ProtocolPhase,
+                <Phase as PhaseAssociation<Outbound, Role, Wire>>::Message,
                 State,
             >,
     {
         let message = middleware
-            .intercept_typed::<Role, <Phase as TypedOutboundPhase<Role, Wire>>::ProtocolPhase, _>(
+            .intercept_typed::<Role, <Phase as PhaseAssociation<Outbound, Role, Wire>>::ProtocolPhase, _>(
                 message,
             )
             .await
@@ -842,16 +670,17 @@ mod tests {
     use bytes::Bytes;
 
     use super::{
-        AcceptsMessage as _, ChainError, ClientRole, Identity, InterceptError,
-        MessageMiddlewareExt as _, Middleware, ServerRole, TypedOutboundPhase, TypedPhase,
-        WireAdapter,
+        AcceptsMessage as _, ChainError, ClientRole, Identity, Inbound, InterceptError,
+        MessageMiddlewareExt as _, Middleware, Outbound, PhaseAssociation, ServerRole, WireAdapter,
     };
     use crate::{
         Conn,
         codec::{BackendMessage, FrontendMessage, Parse},
         grammar::{
-            backend, pre_startup as pre_startup_grammar, server_authentication, server_pre_startup,
+            authentication, backend, frontend, pre_startup as pre_startup_grammar,
+            server_authentication, server_pre_startup,
         },
+        middleware::TypedBackendMessage,
         pre_startup::{EncryptionReply, PreStartupMessage},
     };
 
@@ -1132,17 +961,126 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn grammar_catalogue_covers_inbound_and_outbound_typestate_indices() {
+    fn grammar_associations_cover_inbound_and_outbound_typestate_indices() {
         fn inbound<Connection, Role, Wire>()
         where
-            Connection: TypedPhase<Role, Wire>,
+            Connection: PhaseAssociation<Inbound, Role, Wire>,
         {
         }
         fn outbound<Connection, Role, Wire>()
         where
-            Connection: TypedOutboundPhase<Role, Wire>,
+            Connection: PhaseAssociation<Outbound, Role, Wire>,
         {
         }
+        fn exact<Connection, Direction, Role, Wire, ProtocolPhase, Message>()
+        where
+            Connection: PhaseAssociation<
+                    Direction,
+                    Role,
+                    Wire,
+                    ProtocolPhase = ProtocolPhase,
+                    Message = Message,
+                >,
+            Message: AsRef<Wire> + TryFrom<Wire, Error = Wire> + Into<Wire>,
+        {
+        }
+
+        exact::<
+            crate::auth::Ready,
+            Inbound,
+            ServerRole,
+            BackendMessage,
+            frontend::Ready,
+            TypedBackendMessage<frontend::ReadyExternalMessage>,
+        >();
+        exact::<
+            crate::auth::Ready,
+            Outbound,
+            ClientRole,
+            FrontendMessage,
+            frontend::Ready,
+            frontend::ReadyInternalMessage,
+        >();
+        exact::<
+            crate::auth::Ready,
+            Inbound,
+            ClientRole,
+            FrontendMessage,
+            backend::Ready,
+            backend::ReadyExternalMessage,
+        >();
+        exact::<
+            crate::server_session::ServerFunctionCallDone,
+            Outbound,
+            ServerRole,
+            BackendMessage,
+            backend::FunctionReady,
+            TypedBackendMessage<backend::FunctionReadyInternalMessage>,
+        >();
+        exact::<
+            crate::pre_startup::AwaitingSslReply,
+            Inbound,
+            ServerRole,
+            EncryptionReply,
+            pre_startup_grammar::AwaitingSslReply,
+            pre_startup_grammar::AwaitingSslReplyExternalMessage,
+        >();
+        exact::<
+            crate::pre_startup::PreStartup,
+            Outbound,
+            ClientRole,
+            PreStartupMessage,
+            pre_startup_grammar::PreStartup,
+            pre_startup_grammar::PreStartupInternalMessage,
+        >();
+        exact::<
+            crate::pre_startup::PreStartup,
+            Inbound,
+            ClientRole,
+            PreStartupMessage,
+            server_pre_startup::PreStartup,
+            server_pre_startup::PreStartupExternalMessage,
+        >();
+        exact::<
+            crate::pre_startup::ServerSslDecision,
+            Outbound,
+            ServerRole,
+            EncryptionReply,
+            server_pre_startup::SslDecision,
+            server_pre_startup::SslDecisionInternalMessage,
+        >();
+        exact::<
+            crate::auth::Auth,
+            Inbound,
+            ServerRole,
+            BackendMessage,
+            authentication::Auth,
+            TypedBackendMessage<authentication::AuthExternalMessage>,
+        >();
+        exact::<
+            crate::auth::PasswordResponse,
+            Outbound,
+            ClientRole,
+            FrontendMessage,
+            authentication::PasswordResponse,
+            authentication::PasswordResponseInternalMessage,
+        >();
+        exact::<
+            crate::server_auth::ServerAuth,
+            Inbound,
+            ClientRole,
+            FrontendMessage,
+            server_authentication::Auth,
+            server_authentication::AuthExternalMessage,
+        >();
+        exact::<
+            crate::server_auth::ServerAuth,
+            Outbound,
+            ServerRole,
+            BackendMessage,
+            server_authentication::Auth,
+            TypedBackendMessage<server_authentication::AuthInternalMessage>,
+        >();
 
         inbound::<crate::auth::Ready, ServerRole, BackendMessage>();
         inbound::<crate::auth::Ready, ClientRole, FrontendMessage>();

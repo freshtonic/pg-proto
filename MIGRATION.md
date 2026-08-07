@@ -31,6 +31,18 @@ Use:
 - `CleanlinessPolicy` for application-owned pool release decisions; and
 - `GssEncUpgrade` or `TokenAuthEngine` for platform credential adapters.
 
+## Replace direct phase-association bounds
+
+Code which names middleware's phase-association traits directly should replace
+`TypedPhase<Role, Wire>` with `PhaseAssociation<Inbound, Role, Wire>` and
+`TypedOutboundPhase<Role, Wire>` with
+`PhaseAssociation<Outbound, Role, Wire>`. The generated protocol grammars now
+own these implementations; application code cannot implement the sealed trait.
+
+Most callers need no explicit bound. Typed receive and outbound interception
+methods infer the association from the connection phase, direction, sender role,
+and wire message type.
+
 ## Replace proxy message queues with a bounded pipeline ledger
 
 Opt in with `Intermediary::with_pipeline(BoundedPipeline::new(limit)?)`. Feed

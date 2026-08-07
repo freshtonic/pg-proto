@@ -2,6 +2,25 @@
 
 use pg_proto_fsm::protocol;
 
+enum Inbound {}
+enum Outbound {}
+enum TestRole {}
+
+trait PhaseAssociation<Direction, Role, Wire>:
+    private::PhaseAssociationSeal<Direction, Role, Wire>
+{
+    type ProtocolPhase;
+    type Message;
+}
+
+mod private {
+    pub trait PhaseAssociationSeal<Direction, Role, Wire> {}
+}
+
+struct Wrapped<Message>(Message);
+struct ConnectionA;
+struct ConnectionB;
+
 enum TestInternal {
     Query(u8),
     Parse,
@@ -31,6 +50,75 @@ protocol! {
             Sync(sync) => Ready <= crate::TestInternal::Sync,
         }
     }
+}
+
+protocol! {
+    mod associated {
+        initial Open;
+        messages {
+            internal: crate::TestInternal,
+            external: crate::TestExternal,
+        }
+        associations {
+            interface: crate::PhaseAssociation;
+            seal: crate::private::PhaseAssociationSeal;
+            inbound {
+                direction: crate::Inbound;
+                role: crate::TestRole;
+                wire: crate::TestExternal;
+                message: crate::Wrapped<external>;
+            }
+            outbound {
+                direction: crate::Outbound;
+                role: crate::TestRole;
+                wire: crate::TestInternal;
+                message: internal;
+            }
+        }
+        Open internal {
+            associate {
+                inbound: [crate::ConnectionA, crate::ConnectionB];
+                outbound: crate::ConnectionA;
+            }
+            Query(query: u8) => Closed <= crate::TestInternal::Query(_),
+        }
+        Closed external {
+            associate {
+                inbound: none;
+                outbound: none;
+            }
+        }
+    }
+}
+
+#[test]
+fn grammar_owns_connection_phase_associations() {
+    fn assert_inbound<Connection>()
+    where
+        Connection: PhaseAssociation<
+                Inbound,
+                TestRole,
+                TestExternal,
+                ProtocolPhase = associated::Open,
+                Message = Wrapped<associated::OpenExternalMessage>,
+            >,
+    {
+    }
+    fn assert_outbound<Connection>()
+    where
+        Connection: PhaseAssociation<
+                Outbound,
+                TestRole,
+                TestInternal,
+                ProtocolPhase = associated::Open,
+                Message = associated::OpenInternalMessage,
+            >,
+    {
+    }
+
+    assert_inbound::<ConnectionA>();
+    assert_inbound::<ConnectionB>();
+    assert_outbound::<ConnectionA>();
 }
 
 protocol! {

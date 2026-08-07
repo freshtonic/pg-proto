@@ -1501,6 +1501,7 @@ dependencies = [
  "quote",
  "railroad",
  "syn 3.0.3",
+ "trybuild",
 ]
 
 [[package]]

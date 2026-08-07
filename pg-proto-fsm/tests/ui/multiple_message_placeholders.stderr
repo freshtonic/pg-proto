@@ -1,0 +1,5 @@
+error: association message type contains more than one message placeholder
+  --> tests/ui/multiple_message_placeholders.rs:16:99
+   |
+16 |             inbound { direction: crate::Direction; role: crate::Role; wire: crate::Wire; message: (internal, external); }
+   |                                                                                                   ^^^^^^^^^^^^^^^^^^^^

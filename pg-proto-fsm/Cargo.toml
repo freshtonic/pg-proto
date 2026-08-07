@@ -35,4 +35,7 @@ option_if_let_else = "allow"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 railroad = { version = "0.3.8", default-features = false }
-syn = { version = "3.0.3", features = ["full"] }
+syn = { version = "3.0.3", features = ["full", "visit-mut"] }
+
+[dev-dependencies]
+trybuild = "1.0.120"

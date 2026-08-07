@@ -345,8 +345,9 @@ checked middleware belongs on the state-aware session APIs above it.
   - [x] Split frontend and backend pipeline middleware with independent errors,
     and prepare admission/response decisions before policy so the ledger commits
     each validated decision once.
-  - [x] Gather inbound and outbound typestate-to-grammar associations into one
-    local middleware catalogue while retaining their distinct indexing traits.
+  - [x] Make each generated grammar the authoritative source for inbound and
+    outbound connection-typestate associations, exposed through one sealed
+    direction-indexed trait without a manual middleware catalogue.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

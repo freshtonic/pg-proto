@@ -10,7 +10,8 @@ use pg_proto::{
     middleware::Middleware,
     pipeline::{
         BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
-        FrontendHandling, FrontendPipelineMiddleware,
+        FrontendAdmission, FrontendHandling, FrontendPipelineMiddleware, FrontendProjectionError,
+        PipelineMiddlewareError,
     },
 };
 
@@ -53,22 +54,25 @@ async fn main() {
         query: Bytes::from_static(b"select secret"),
         parameter_types: vec![],
     });
-    let local_id = match proxy
+    let action = match proxy
         .pipeline_mut()
-        .frontend_action_typed(&mut middleware, parse, FrontendHandling::Local)
+        .accept_frontend_typed(&mut middleware, parse, FrontendHandling::Local)
         .await
-        .expect("legal Parse")
     {
+        Ok(FrontendAdmission::Immediate(action) | FrontendAdmission::Waiting(action)) => action,
+        Err(PipelineMiddlewareError::Projection(FrontendProjectionError::Capacity(message))) => {
+            // Pause downstream reads and retry this same owned value later.
+            // This minimal example exits, but a real intermediary must retain and retry it.
+            drop(message);
+            return;
+        }
+        Err(error) => panic!("frontend admission failed: {error:?}"),
+    };
+    let local_id = match action {
         FrontendAction::Discard { id } => id,
         FrontendAction::Forward { message, .. } => {
             // Encode `message` to the upstream transport here.
             // This transport-free example drops it only as a stand-in for sending it.
-            drop(message);
-            return;
-        }
-        FrontendAction::Backpressure(message) => {
-            // Pause downstream reads and retry this same owned value later.
-            // This minimal example exits, but a real intermediary must retain and retry it.
             drop(message);
             return;
         }
@@ -95,7 +99,7 @@ async fn main() {
 
     let _ = proxy
         .pipeline_mut()
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::Sync,
             FrontendHandling::Forward,

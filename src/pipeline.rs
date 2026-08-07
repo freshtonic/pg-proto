@@ -3,10 +3,12 @@
 //! The ledger in this module records protocol obligations, not wire messages.
 //! Applications retain ownership of decoded messages until [`FrontendAction`] or
 //! [`BackendAction`] tells them to forward, emit, retry, or discard the value.
-//! Upstream transports may continue using [`Demux`]: drain its ordered async
-//! events before passing each returned [`SessionItem`] to
-//! [`Pipeline::accept_session_item`]. This retains the existing notice tagging,
-//! parameter map, notification queue, cancellation key, and transaction evidence.
+//! [`Pipeline::accept_frontend`] and [`Pipeline::accept_backend`] are the canonical
+//! ledger interface. Their typed counterparts additionally dispatch accepted
+//! messages through phase-specific middleware before committing them.
+//! Callers receiving [`crate::demux::SessionItem`] values should first consume
+//! any pooling or attribution evidence they need, then convert the item with
+//! [`crate::demux::SessionItem::into_backend_message`] before backend acceptance.
 
 use std::{collections::VecDeque, convert::Infallible, sync::Arc};
 
@@ -14,7 +16,7 @@ use tokio::sync::Notify;
 
 use crate::{
     codec::{BackendMessage, FrontendMessage},
-    demux::{Demux, SessionItem},
+    demux::Demux,
     grammar::backend,
     middleware::{
         AsynchronousBackendMessage, ChainError, MessageMiddleware, Middleware,
@@ -116,8 +118,6 @@ pub enum FrontendAction {
         /// Accepted operation identity.
         id: OperationId,
     },
-    /// Capacity is exhausted; pause reads and retry this unchanged message.
-    Backpressure(FrontendMessage),
 }
 
 /// Position of a successfully accepted operation.
@@ -648,42 +648,6 @@ impl<P: PipelinePolicy> Pipeline<P> {
         admission
     }
 
-    /// Convenience projection which reports capacity as [`FrontendAction::Backpressure`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged message for capacity or protocol illegality.
-    pub fn project_frontend(
-        &mut self,
-        message: FrontendMessage,
-        handling: FrontendHandling,
-    ) -> Result<FrontendAdmission, FrontendProjectionError> {
-        self.accept_frontend(message, handling)
-    }
-
-    /// Projects a frontend value into the compact application-action vocabulary.
-    ///
-    /// Use [`Self::accept_frontend`] when the caller also needs to distinguish an
-    /// immediately emittable operation from an accepted waiting operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an illegal message; capacity is represented as a successful
-    /// [`FrontendAction::Backpressure`] action.
-    pub fn frontend_action(
-        &mut self,
-        message: FrontendMessage,
-        handling: FrontendHandling,
-    ) -> Result<FrontendAction, FrontendProjectionError> {
-        match self.accept_frontend(message, handling) {
-            Ok(admission) => Ok(admission.into_action()),
-            Err(FrontendProjectionError::Capacity(message)) => {
-                Ok(FrontendAction::Backpressure(*message))
-            }
-            Err(error @ FrontendProjectionError::Illegal { .. }) => Err(error),
-        }
-    }
-
     /// Projects, asynchronously intercepts, and accepts one frontend message.
     ///
     /// The ledger selects the phase-specific middleware hook at runtime. The
@@ -722,53 +686,6 @@ impl<P: PipelinePolicy> Pipeline<P> {
         Ok(self.commit_frontend(prepared, message, handling))
     }
 
-    /// Typed-middleware counterpart to [`Self::project_frontend`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::accept_frontend_typed`].
-    pub async fn project_frontend_typed<State, Handler>(
-        &mut self,
-        middleware: &mut Middleware<State, Handler>,
-        message: FrontendMessage,
-        handling: FrontendHandling,
-    ) -> Result<FrontendAdmission, PipelineMiddlewareError<Handler::Error, FrontendProjectionError>>
-    where
-        Handler: FrontendPipelineMiddleware<State>,
-    {
-        self.accept_frontend_typed(middleware, message, handling)
-            .await
-    }
-
-    /// Typed-middleware counterpart to [`Self::frontend_action`].
-    ///
-    /// Capacity is returned as [`FrontendAction::Backpressure`] without running
-    /// middleware. Accepted messages are dispatched to their phase-specific hook.
-    ///
-    /// # Errors
-    ///
-    /// Returns a middleware error or an illegal original or replacement message.
-    pub async fn frontend_action_typed<State, Handler>(
-        &mut self,
-        middleware: &mut Middleware<State, Handler>,
-        message: FrontendMessage,
-        handling: FrontendHandling,
-    ) -> Result<FrontendAction, PipelineMiddlewareError<Handler::Error, FrontendProjectionError>>
-    where
-        Handler: FrontendPipelineMiddleware<State>,
-    {
-        match self
-            .accept_frontend_typed(middleware, message, handling)
-            .await
-        {
-            Ok(admission) => Ok(admission.into_action()),
-            Err(PipelineMiddlewareError::Projection(FrontendProjectionError::Capacity(
-                message,
-            ))) => Ok(FrontendAction::Backpressure(*message)),
-            Err(error) => Err(error),
-        }
-    }
-
     /// Projects one upstream backend message and preserves response order.
     ///
     /// # Errors
@@ -800,49 +717,6 @@ impl<P: PipelinePolicy> Pipeline<P> {
         Handler: BackendPipelineMiddleware<State>,
     {
         self.accept_response_typed(None, middleware, message).await
-    }
-
-    /// Projects one protocol-advancing item returned by the existing [`Demux`].
-    ///
-    /// Before calling this method, forward any values from
-    /// [`Demux::pop_async_event`] in queue order. Command notices remain available
-    /// through the demux's notice queue; the ledger itself stores no notice payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an unchanged reconstructed response which cannot belong to any
-    /// outstanding operation.
-    pub fn accept_session_item(
-        &mut self,
-        item: SessionItem,
-    ) -> Result<BackendAction, BackendProjectionError> {
-        let message = match item {
-            SessionItem::Message(message) => message,
-            SessionItem::ReadyForQuery { status, .. } => BackendMessage::ReadyForQuery(status),
-            SessionItem::CommandComplete { tag, .. } => BackendMessage::CommandComplete(tag),
-        };
-        self.accept_backend(message)
-    }
-
-    /// Typed-middleware counterpart to [`Self::accept_session_item`].
-    ///
-    /// # Errors
-    ///
-    /// Returns a middleware or backend projection error.
-    pub async fn accept_session_item_typed<State, Handler>(
-        &mut self,
-        middleware: &mut Middleware<State, Handler>,
-        item: SessionItem,
-    ) -> Result<BackendAction, PipelineMiddlewareError<Handler::Error, BackendProjectionError>>
-    where
-        Handler: BackendPipelineMiddleware<State>,
-    {
-        let message = match item {
-            SessionItem::Message(message) => message,
-            SessionItem::ReadyForQuery { status, .. } => BackendMessage::ReadyForQuery(status),
-            SessionItem::CommandComplete { tag, .. } => BackendMessage::CommandComplete(tag),
-        };
-        self.accept_backend_typed(middleware, message).await
     }
 
     /// Attempts to register and emit a locally synthesized response.

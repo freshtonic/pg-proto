@@ -348,6 +348,9 @@ checked middleware belongs on the state-aware session APIs above it.
   - [x] Make each generated grammar the authoritative source for inbound and
     outbound connection-typestate associations, exposed through one sealed
     direction-indexed trait without a manual middleware catalogue.
+  - [x] Deepen the pipeline ledger interface by removing overlapping projection,
+    action-remapping, and session-item entry points, leaving one frontend
+    admission seam and one backend response seam.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

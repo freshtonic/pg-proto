@@ -65,14 +65,18 @@ fn error() -> BackendMessage {
 fn forwarded_id(admission: FrontendAdmission) -> pg_proto::pipeline::OperationId {
     match admission.into_action() {
         FrontendAction::Forward { id, .. } => id,
-        other => panic!("expected forwarding action, got {other:?}"),
+        other @ FrontendAction::Discard { .. } => {
+            panic!("expected forwarding action, got {other:?}")
+        }
     }
 }
 
 fn local_id(admission: FrontendAdmission) -> pg_proto::pipeline::OperationId {
     match admission.into_action() {
         FrontendAction::Discard { id } => id,
-        other => panic!("expected discard action, got {other:?}"),
+        other @ FrontendAction::Forward { .. } => {
+            panic!("expected discard action, got {other:?}")
+        }
     }
 }
 
@@ -128,13 +132,14 @@ async fn runtime_pipeline_dispatches_to_compile_time_checked_phase_hooks() {
     let mut middleware = Middleware::new(Vec::new(), TypedDispatchPolicy);
 
     let action = pipeline
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::Query(Bytes::from_static(b"select secret")),
             FrontendHandling::Forward,
         )
         .await
-        .expect("ready middleware replacement is legal");
+        .expect("ready middleware replacement is legal")
+        .into_action();
     assert!(matches!(
         action,
         FrontendAction::Forward {
@@ -144,7 +149,7 @@ async fn runtime_pipeline_dispatches_to_compile_time_checked_phase_hooks() {
     ));
 
     pipeline
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::Sync,
             FrontendHandling::Forward,
@@ -257,7 +262,7 @@ async fn direction_wide_middleware_adapts_to_typed_pipeline_dispatch() {
     let mut pipeline = bounded(2);
     let mut middleware = Middleware::new(0, PipelineWireAdapter::new(DirectionWide));
     pipeline
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::Query(Bytes::from_static(b"select 1")),
             FrontendHandling::Forward,
@@ -295,7 +300,7 @@ async fn typed_pipeline_middleware_composes_in_order_with_shared_state() {
     let mut middleware = Middleware::new(Vec::new(), Record("first").then(Record("second")));
 
     pipeline
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::Query(Bytes::from_static(b"select 1")),
             FrontendHandling::Forward,
@@ -341,16 +346,20 @@ async fn capacity_skips_typed_middleware_but_async_backend_traffic_does_not() {
         .accept_frontend(parse(b"full"), FrontendHandling::Forward)
         .unwrap();
     let mut middleware = Middleware::new(0, Counts);
+    let body = Bytes::from(vec![7_u8; 2 * 1024 * 1024]);
+    let pointer = body.as_ptr();
     assert!(matches!(
         pipeline
-            .frontend_action_typed(
+            .accept_frontend_typed(
                 &mut middleware,
-                FrontendMessage::Sync,
+                FrontendMessage::Query(body),
                 FrontendHandling::Forward,
             )
             .await
-            .expect("capacity is an action rather than an error"),
-        FrontendAction::Backpressure(FrontendMessage::Sync)
+            .unwrap_err(),
+        pg_proto::pipeline::PipelineMiddlewareError::Projection(
+            FrontendProjectionError::Capacity(message)
+        ) if matches!(&*message, FrontendMessage::Query(body) if body.as_ptr() == pointer)
     ));
     assert_eq!(*middleware.state(), 0);
 
@@ -408,7 +417,7 @@ async fn copy_hooks_preserve_simple_and_extended_origins() {
         .accept_backend(BackendMessage::CopyInResponse(copy.clone()))
         .unwrap();
     simple
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::CopyData(Bytes::from_static(b"simple\n")),
             FrontendHandling::Forward,
@@ -432,7 +441,7 @@ async fn copy_hooks_preserve_simple_and_extended_origins() {
         .accept_backend(BackendMessage::CopyInResponse(copy))
         .unwrap();
     extended
-        .frontend_action_typed(
+        .accept_frontend_typed(
             &mut middleware,
             FrontendMessage::CopyData(Bytes::from_static(b"extended\n")),
             FrontendHandling::Forward,
@@ -562,6 +571,31 @@ fn large_payload_is_returned_not_retained() {
     let mut pipeline = bounded(2);
     let admission = pipeline
         .accept_frontend(FrontendMessage::Query(body), FrontendHandling::Forward)
+        .unwrap();
+    let FrontendAction::Forward {
+        message: FrontendMessage::Query(body),
+        ..
+    } = admission.into_action()
+    else {
+        panic!("query must be returned to the application")
+    };
+    assert_eq!(body.as_ptr(), pointer);
+    assert_eq!(pipeline.len(), 1);
+}
+
+#[tokio::test]
+async fn typed_admission_returns_large_payload_without_copying_or_retaining_it() {
+    let body = Bytes::from(vec![7_u8; 2 * 1024 * 1024]);
+    let pointer = body.as_ptr();
+    let mut pipeline = bounded(2);
+    let mut middleware = Middleware::new((), pg_proto::middleware::Identity);
+    let admission = pipeline
+        .accept_frontend_typed(
+            &mut middleware,
+            FrontendMessage::Query(body),
+            FrontendHandling::Forward,
+        )
+        .await
         .unwrap();
     let FrontendAction::Forward {
         message: FrontendMessage::Query(body),
@@ -862,7 +896,9 @@ fn demuxed_session_items_share_the_pipeline_ordering_path() {
         .route(BackendMessage::ParseComplete)
         .expect("ParseComplete advances the session");
     assert!(matches!(
-        pipeline.accept_session_item(item).unwrap(),
+        pipeline
+            .accept_backend(item.into_backend_message())
+            .unwrap(),
         BackendAction::Emit(BackendMessage::ParseComplete)
     ));
 }
@@ -958,6 +994,24 @@ async fn typed_and_untyped_paths_commit_the_same_prepared_decisions() {
         .unwrap();
     assert_eq!(typed_frontend, untyped_frontend);
 
+    let untyped_waiting = untyped
+        .accept_frontend(bind(), FrontendHandling::Forward)
+        .unwrap();
+    let typed_waiting = typed
+        .accept_frontend_typed(&mut middleware, bind(), FrontendHandling::Forward)
+        .await
+        .unwrap();
+    assert_eq!(typed_waiting, untyped_waiting);
+
+    let untyped_deferred = untyped
+        .accept_backend(BackendMessage::BindComplete)
+        .unwrap();
+    let typed_deferred = typed
+        .accept_backend_typed(&mut middleware, BackendMessage::BindComplete)
+        .await
+        .unwrap();
+    assert_eq!(typed_deferred, untyped_deferred);
+
     let untyped_backend = untyped
         .accept_backend(BackendMessage::ParseComplete)
         .unwrap();
@@ -966,6 +1020,15 @@ async fn typed_and_untyped_paths_commit_the_same_prepared_decisions() {
         .await
         .unwrap();
     assert_eq!(typed_backend, untyped_backend);
+    assert_eq!(
+        typed
+            .accept_backend_typed(&mut middleware, BackendMessage::BindComplete)
+            .await
+            .unwrap(),
+        untyped
+            .accept_backend(BackendMessage::BindComplete)
+            .unwrap()
+    );
     assert_eq!(typed.state(), untyped.state());
     assert_eq!(typed.len(), untyped.len());
 }
@@ -1004,4 +1067,12 @@ async fn rejected_middleware_does_not_commit_a_prepared_decision() {
     ));
     assert_eq!(pipeline.state(), state);
     assert!(pipeline.is_empty());
+
+    let accepted_after_rejection = pipeline
+        .accept_frontend(parse(b"accepted"), FrontendHandling::Forward)
+        .unwrap();
+    let first_fresh_admission = bounded(2)
+        .accept_frontend(parse(b"accepted"), FrontendHandling::Forward)
+        .unwrap();
+    assert_eq!(accepted_after_rejection, first_fresh_admission);
 }

@@ -165,18 +165,25 @@ advancing the connection phase; `receive_typed` then records them before
 returning the next protocol-advancing `SessionItem`.
 
 `BoundedPipeline` retains its runtime operation ledger but can dispatch through
-`FrontendPipelineMiddleware` and `BackendPipelineMiddleware` using `frontend_action_typed`,
-`accept_backend_typed`, `try_emit_local_typed`, and
-`accept_session_item_typed`. The ledger chooses the hook at runtime, while each
-hook's owned input and output are restricted to that frontend phase or the exact
-generated backend response subphase of the pending operation. The ledger tracks
-COPY half-closes, function-call readiness, extended responses, and error recovery
-independently for every queued operation. Implementations override only the
-phases they inspect; unimplemented hooks are identity operations, and typed
+`FrontendPipelineMiddleware` and `BackendPipelineMiddleware` using
+`accept_frontend_typed`, `accept_backend_typed`, and `try_emit_local_typed`.
+Frontend admission reports whether an accepted `Forward` or `Discard` action is
+immediate or waiting; capacity returns the original message in
+`FrontendProjectionError::Capacity` for retry. The ledger chooses the hook at
+runtime, while each hook's owned input and output are restricted to that frontend
+phase or the exact generated backend response subphase of the pending operation.
+The ledger tracks COPY half-closes, function-call readiness, extended responses,
+and error recovery independently for every queued operation. Implementations
+override only the phases they inspect; unimplemented hooks are identity operations, and typed
 pipeline policies compose with `MessageMiddlewareExt::then`. Deferred backend
 messages are not intercepted until retried at the response head.
 `PipelineWireAdapter` adapts an existing async direction-wide policy when
 compile-time specialization is not needed.
+
+When a `Demux` returns a `SessionItem`, first consume any pooling, command, or
+notice evidence the application needs. `SessionItem::into_backend_message` is a
+deliberately lossy adapter; pass its result to `accept_backend_typed` only after
+using that evidence.
 
 ### Migrating typed pipeline middleware
 

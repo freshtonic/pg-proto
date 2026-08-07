@@ -48,8 +48,20 @@ and wire message type.
 Opt in with `Intermediary::with_pipeline(BoundedPipeline::new(limit)?)`. Feed
 each decoded frontend message to `pipeline_mut().accept_frontend(...)`. A
 `Forward` action returns the original owned message for upstream encoding; a
-`Discard` action identifies a locally handled operation; and capacity returns
-the original message so the proxy can pause downstream reads and retry it.
+`Discard` action identifies a locally handled operation. `FrontendAdmission`
+wraps either action as `Immediate` or `Waiting`. Capacity and protocol illegality
+return the original message in `FrontendProjectionError`, so the proxy can pause
+downstream reads and retry without cloning a payload.
+
+The pre-1.0 overlapping entry points have been removed. Replace
+`project_frontend` and `frontend_action` with `accept_frontend`, and replace their
+`_typed` counterparts with `accept_frontend_typed`. Handle the former
+`FrontendAction::Backpressure` case as `FrontendProjectionError::Capacity`.
+Replace `accept_session_item` with `SessionItem::into_backend_message` followed
+by `accept_backend`, using the corresponding `_typed` method when middleware is
+required. This conversion is deliberately lossy: consume `parameters_changed`,
+command position, and attributed notices from the `SessionItem` before converting
+it.
 
 The ledger stores only operation metadata. It does not clone or retain SQL,
 Bind values, COPY chunks, rows, or forwarded responses. For a local response,

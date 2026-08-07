@@ -103,6 +103,23 @@ pub enum SessionItem {
     },
 }
 
+impl SessionItem {
+    /// Returns the protocol-advancing backend message represented by this item.
+    ///
+    /// This conversion is intentionally lossy: readiness evidence, command
+    /// identity, and attributed notices are discarded. Consume any evidence
+    /// needed by application policy before passing the returned message to a
+    /// pipeline ledger.
+    #[must_use]
+    pub fn into_backend_message(self) -> BackendMessage {
+        match self {
+            Self::Message(message) => message,
+            Self::ReadyForQuery { status, .. } => BackendMessage::ReadyForQuery(status),
+            Self::CommandComplete { tag, .. } => BackendMessage::CommandComplete(tag),
+        }
+    }
+}
+
 /// State owned below the typestate API for causally independent backend messages.
 #[derive(Debug, Default)]
 pub struct Demux {

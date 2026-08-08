@@ -19,7 +19,7 @@ use crate::ClientMiddleware as _;
 use crate::{
     Conn, Dirty, Pristine,
     auth::{AuthEvent, AuthOffer, Ready},
-    codec::Backend,
+    codec::{Backend, FrontendMessage},
     demux::SessionItem,
     session::{ReadyState, SimpleTransition},
     startup::{ProtocolVersion, StartupMessage},
@@ -543,6 +543,46 @@ impl StartupParameters {
         }
     }
 
+    /// Returns the configured user, when present.
+    #[must_use]
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    /// Returns the configured database, when present.
+    #[must_use]
+    pub fn database_name(&self) -> Option<&str> {
+        self.database.as_deref()
+    }
+
+    pub(crate) fn from_wire(message: &StartupMessage) -> io::Result<Self> {
+        let mut parameters = Self::default();
+        for (name, value) in &message.parameters {
+            let name = std::str::from_utf8(name).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "startup parameter name is not UTF-8",
+                )
+            })?;
+            let value = std::str::from_utf8(value).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "startup parameter value is not UTF-8",
+                )
+            })?;
+            match name {
+                "user" => parameters.user = Some(value.to_owned()),
+                "database" => parameters.database = Some(value.to_owned()),
+                _ => {
+                    parameters
+                        .extensions
+                        .insert(name.to_owned(), value.to_owned());
+                }
+            }
+        }
+        Ok(parameters)
+    }
+
     /// Overrides the database field.
     #[must_use]
     pub fn database(mut self, database: impl Into<String>) -> Self {
@@ -989,7 +1029,7 @@ pub struct ClientConnection<
     Handler = IdentityHandler,
 > {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
-    state: State,
+    state: Option<State>,
     handler: Handler,
     context: ClientConnectionContext<Evidence>,
 }
@@ -1006,7 +1046,56 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
     /// Returns the caller-owned connection state.
     #[must_use]
     pub const fn state(&self) -> &State {
-        &self.state
+        match &self.state {
+            Some(state) => state,
+            None => panic!("connection state is temporarily owned by its facade"),
+        }
+    }
+
+    /// Transfers state ownership to an intermediary facade.
+    pub(crate) fn take_state(&mut self) -> State {
+        self.state
+            .take()
+            .expect("connection state is already owned by its facade")
+    }
+
+    pub(crate) fn into_parts_external(
+        self,
+    ) -> (Transport, Handler, ClientConnectionContext<Evidence>) {
+        debug_assert!(self.state.is_none());
+        (
+            self.connection.into_transport().into_inner(),
+            self.handler,
+            self.context,
+        )
+    }
+
+    /// Receives through middleware using state temporarily owned by a facade.
+    pub(crate) async fn receive_wire_external(
+        &mut self,
+        state: &mut State,
+    ) -> io::Result<crate::codec::BackendMessage>
+    where
+        Transport: AsyncRead + Unpin,
+        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
+    {
+        let message = self.connection.receive_backend_wire().await?;
+        Ok(self.handler.backend(&self.context, state, message))
+    }
+
+    /// Sends through middleware using state temporarily owned by a facade.
+    pub(crate) async fn send_wire_external(
+        &mut self,
+        state: &mut State,
+        message: FrontendMessage,
+    ) -> io::Result<()>
+    where
+        Transport: AsyncWrite + Unpin,
+        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
+    {
+        let message = self.handler.frontend(&self.context, state, message);
+        self.connection.push_frame(message.to_frame()?)?;
+        self.connection.flush().await
     }
 
     /// Receives one backend message at the operational inspection boundary.
@@ -1020,16 +1109,19 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
         Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
     {
         let message = self.connection.receive_backend_wire().await?;
-        Ok(self
-            .handler
-            .backend(&self.context, &mut self.state, message))
+        let state = self
+            .state
+            .as_mut()
+            .expect("connection state is temporarily owned by its facade");
+        Ok(self.handler.backend(&self.context, state, message))
     }
 
     /// Recovers every owned connection part deliberately.
     pub fn into_parts(self) -> (Transport, State, Handler, ClientConnectionContext<Evidence>) {
         (
             self.connection.into_transport().into_inner(),
-            self.state,
+            self.state
+                .expect("connection state is temporarily owned by its facade"),
             self.handler,
             self.context,
         )
@@ -1563,10 +1655,11 @@ where
     > {
         let Self {
             connection,
-            mut state,
+            state,
             mut handler,
             context,
         } = self;
+        let mut state = state.expect("connection state is temporarily owned by its facade");
         let outbound = handler.frontend(
             &context,
             &mut state,
@@ -1618,7 +1711,7 @@ where
                     return Ok((
                         ClientConnection {
                             connection,
-                            state,
+                            state: Some(state),
                             handler,
                             context,
                         },
@@ -1790,7 +1883,7 @@ where
         };
         Ok(ClientConnection {
             connection: ready,
-            state,
+            state: Some(state),
             handler,
             context: {
                 context.identity = Some(identity);

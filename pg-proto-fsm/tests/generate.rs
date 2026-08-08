@@ -199,6 +199,13 @@ fn generated_typed_sessions_change_transport_without_changing_state() {
 #[test]
 fn railroad_svg_is_emitted_at_compile_time() {
     assert!(query::QUERY_RAILROAD_SVG.starts_with("<svg"));
+    assert_eq!(
+        query::QUERY_RAILROAD_SVG
+            .matches("v 20 m 10 -20 v 20 m -10 -10 h 20")
+            .count(),
+        1,
+        "the railroad diagram must be one graph rooted at the initial protocol phase"
+    );
     assert!(!query::QUERY_RAILROAD_SVG.contains('\n'));
     assert!(query::QUERY_RAILROAD_SVG.contains("width=\""));
     assert!(query::QUERY_RAILROAD_SVG.contains("height=\""));

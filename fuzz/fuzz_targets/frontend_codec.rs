@@ -1,11 +1,22 @@
 #![no_main]
 
-use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
-use pg_proto::codec::{Frontend, PgCodec};
-use tokio_util::codec::Decoder;
+use pg_proto::{DisabledServerTls, Server, TrustServerAuthentication};
+use tokio::io::{AsyncWriteExt as _, duplex};
 
 fuzz_target!(|data: &[u8]| {
-    let mut input = BytesMut::from(data);
-    let _ = PgCodec::<Frontend>::default().decode(&mut input);
+    let input = data.to_vec();
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async move {
+        let (server_io, mut peer) = duplex(input.len().saturating_add(4096));
+        tokio::spawn(async move {
+            let _ = peer.write_all(&input).await;
+            let _ = peer.shutdown().await;
+        });
+        let server = Server::builder()
+            .tls(DisabledServerTls)
+            .authentication(TrustServerAuthentication)
+            .build()
+            .unwrap();
+        let _ = server.accept(server_io, (), ()).await;
+    });
 });

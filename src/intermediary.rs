@@ -5,7 +5,7 @@ use std::future::Future;
 use crate::pipeline::{NoPipeline, Pipeline, PipelinePolicy};
 
 /// Result of changing one side while preserving the complete intermediary on rejection.
-pub type IntermediaryTransition<Current, Next, Output, Error> =
+pub(crate) type IntermediaryTransition<Current, Next, Output, Error> =
     Result<(Next, Output), (Current, Error)>;
 
 /// Owns two independently typed sides and optional pipeline orchestration.
@@ -17,7 +17,7 @@ pub type IntermediaryTransition<Current, Next, Output, Error> =
 /// bounded pipelining without changing either session type.
 #[must_use = "dropping an intermediary abandons both PostgreSQL sessions"]
 #[derive(Debug)]
-pub struct SessionPair<Downstream, Upstream, Policy = NoPipeline> {
+pub(crate) struct SessionPair<Downstream, Upstream, Policy = NoPipeline> {
     downstream: Downstream,
     upstream: Upstream,
     pipeline: Pipeline<Policy>,
@@ -25,7 +25,7 @@ pub struct SessionPair<Downstream, Upstream, Policy = NoPipeline> {
 
 impl<Downstream, Upstream> SessionPair<Downstream, Upstream, NoPipeline> {
     /// Pairs two independently established protocol sessions.
-    pub fn new(downstream: Downstream, upstream: Upstream) -> Self {
+    pub(crate) fn new(downstream: Downstream, upstream: Upstream) -> Self {
         Self {
             downstream,
             upstream,
@@ -40,7 +40,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     /// # Panics
     ///
     /// Panics if operations were accepted before replacing the policy.
-    pub fn with_pipeline<Next: PipelinePolicy>(
+    pub(crate) fn with_pipeline<Next: PipelinePolicy>(
         self,
         policy: Next,
     ) -> SessionPair<Downstream, Upstream, Next> {
@@ -61,32 +61,32 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     }
 
     /// Returns the reusable request/response pipeline component.
-    pub const fn pipeline(&self) -> &Pipeline<Policy> {
+    pub(crate) const fn pipeline(&self) -> &Pipeline<Policy> {
         &self.pipeline
     }
 
     /// Returns mutable access to bounded pipeline orchestration.
-    pub const fn pipeline_mut(&mut self) -> &mut Pipeline<Policy> {
+    pub(crate) const fn pipeline_mut(&mut self) -> &mut Pipeline<Policy> {
         &mut self.pipeline
     }
 
     /// Borrows the client-facing side without weakening its typestate.
-    pub const fn downstream(&self) -> &Downstream {
+    pub(crate) const fn downstream(&self) -> &Downstream {
         &self.downstream
     }
 
     /// Borrows the upstream-facing side without weakening its typestate.
-    pub const fn upstream(&self) -> &Upstream {
+    pub(crate) const fn upstream(&self) -> &Upstream {
         &self.upstream
     }
 
     /// Mutably borrows both sides for transport-level orchestration.
-    pub const fn sides_mut(&mut self) -> (&mut Downstream, &mut Upstream) {
+    pub(crate) const fn sides_mut(&mut self) -> (&mut Downstream, &mut Upstream) {
         (&mut self.downstream, &mut self.upstream)
     }
 
     /// Deliberately separates the independently typed sessions.
-    pub fn into_parts(self) -> (Downstream, Upstream) {
+    pub(crate) fn into_parts(self) -> (Downstream, Upstream) {
         (self.downstream, self.upstream)
     }
 
@@ -100,7 +100,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     ///
     /// Returns the reconstructed intermediary and transition error when the
     /// downstream side rejects the transition.
-    pub fn transition_downstream<Next, Output, Error>(
+    pub(crate) fn transition_downstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Downstream) -> Result<(Next, Output), (Downstream, Error)>,
     ) -> IntermediaryTransition<Self, SessionPair<Next, Upstream, Policy>, Output, Error> {
@@ -136,7 +136,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     ///
     /// Returns the reconstructed intermediary and transition error when the
     /// upstream side rejects the transition.
-    pub fn transition_upstream<Next, Output, Error>(
+    pub(crate) fn transition_upstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Upstream) -> Result<(Next, Output), (Upstream, Error)>,
     ) -> IntermediaryTransition<Self, SessionPair<Downstream, Next, Policy>, Output, Error> {
@@ -176,7 +176,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     /// # Errors
     ///
     /// Returns any error produced by the inspection policy.
-    pub fn inspect<Message, Output, Error>(
+    pub(crate) fn inspect<Message, Output, Error>(
         &mut self,
         message: Message,
         inspect: impl FnOnce(&mut Downstream, &mut Upstream, Message) -> Result<Output, Error>,
@@ -189,7 +189,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
     /// # Errors
     ///
     /// Returns any error produced by the asynchronous inspection policy.
-    pub async fn inspect_async<Message, Output, Error, Work>(
+    pub(crate) async fn inspect_async<Message, Output, Error, Work>(
         &mut self,
         message: Message,
         inspect: impl FnOnce(&mut Downstream, &mut Upstream, Message) -> Work,

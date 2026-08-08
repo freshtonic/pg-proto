@@ -152,19 +152,18 @@ async fn tls_material_is_resolved_per_connection_and_establishes_encrypted_sessi
     );
     let resolutions = Arc::new(AtomicUsize::new(0));
     let server_config_for_connector = Arc::clone(&server_config);
-    let certificate_for_connector = certificate.clone();
     let client = Client::builder()
         .connector(move |_| {
             let (client, mut server) = tokio::io::duplex(16 * 1024);
             let config = Arc::clone(&server_config_for_connector);
-            let certificate = certificate_for_connector.clone();
             tokio::spawn(async move {
                 let mut request = [0; 8];
                 server.read_exact(&mut request).await.unwrap();
                 assert_eq!(request, [0, 0, 0, 8, 4, 210, 22, 47]);
                 server.write_all(b"S").await.unwrap();
                 server.flush().await.unwrap();
-                let mut server = pg_proto::tls::accept(server, config, &certificate)
+                let mut server = tokio_rustls::TlsAcceptor::from(config)
+                    .accept(server)
                     .await
                     .unwrap();
                 let length = server.read_u32().await.unwrap();
@@ -256,14 +255,12 @@ async fn sslmode_allow_reconnects_with_tls_after_plaintext_establishment_fails()
     let attempts = Arc::new(AtomicUsize::new(0));
     let attempts_for_connector = Arc::clone(&attempts);
     let server_config_for_connector = Arc::clone(&server_config);
-    let certificate_for_connector = certificate.clone();
     let resolutions = Arc::new(AtomicUsize::new(0));
     let client = Client::builder()
         .connector(move |_| {
             let attempt = attempts_for_connector.fetch_add(1, Ordering::SeqCst);
             let (client, mut server) = tokio::io::duplex(16 * 1024);
             let config = Arc::clone(&server_config_for_connector);
-            let certificate = certificate_for_connector.clone();
             tokio::spawn(async move {
                 if attempt == 0 {
                     let length = server.read_u32().await.unwrap();
@@ -275,7 +272,8 @@ async fn sslmode_allow_reconnects_with_tls_after_plaintext_establishment_fails()
                 server.read_exact(&mut request).await.unwrap();
                 server.write_all(b"S").await.unwrap();
                 server.flush().await.unwrap();
-                let mut server = pg_proto::tls::accept(server, config, &certificate)
+                let mut server = tokio_rustls::TlsAcceptor::from(config)
+                    .accept(server)
                     .await
                     .unwrap();
                 let length = server.read_u32().await.unwrap();

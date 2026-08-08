@@ -1,0 +1,26 @@
+error[E0308]: mismatched types
+  --> tests/ui/facade/middleware_state_mismatch.rs:33:13
+   |
+30 |         .connect(
+   |          ------- arguments to this method are incorrect
+...
+33 |             WrongState,
+   |             ^^^^^^^^^^ expected `ExpectedState`, found `WrongState`
+   |
+help: the return type of this call is `WrongState` due to the type of the argument passed
+  --> tests/ui/facade/middleware_state_mismatch.rs:29:13
+   |
+29 |       let _ = client
+   |  _____________^
+30 | |         .connect(
+31 | |             ConnectTarget::new("test"),
+32 | |             StartupParameters::new("test"),
+33 | |             WrongState,
+   | |             ---------- this argument influences the return type of `connect`
+34 | |         )
+   | |_________^
+note: method defined here
+  --> src/client_component.rs
+   |
+   |     pub async fn connect<State>(
+   |                  ^^^^^^^

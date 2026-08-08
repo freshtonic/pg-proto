@@ -19,65 +19,65 @@ use crate::{
 
 #[derive(Debug)]
 /// A simple-query command is awaiting backend results and readiness.
-pub enum SimpleQuery {}
+pub(crate) enum SimpleQuery {}
 
 #[derive(Debug)]
 /// A legacy function call is awaiting its result.
-pub enum FunctionCalling {}
+pub(crate) enum FunctionCalling {}
 
 #[derive(Debug)]
 /// An extended-query pipeline is being built but has no bound portal yet.
-pub enum Building {}
+pub(crate) enum Building {}
 
 #[derive(Debug)]
 /// An extended-query pipeline contains a bound, executable portal.
-pub enum BoundBuilding {}
+pub(crate) enum BoundBuilding {}
 
 #[derive(Debug)]
 /// Command results are complete and `ReadyForQuery` is required.
-pub enum AwaitingReady {}
+pub(crate) enum AwaitingReady {}
 
 #[derive(Debug)]
 /// The client may stream COPY data to the backend.
-pub enum CopyIn {}
+pub(crate) enum CopyIn {}
 
 #[derive(Debug)]
 /// The backend may stream COPY data to the client.
-pub enum CopyOut {}
+pub(crate) enum CopyOut {}
 
 #[derive(Debug)]
 /// Both peers may stream COPY data.
-pub enum CopyBoth {}
+pub(crate) enum CopyBoth {}
 
 #[derive(Debug)]
 /// The client half of a COPY BOTH session is closed.
-pub enum CopyBothClientDone {}
+pub(crate) enum CopyBothClientDone {}
 
 #[derive(Debug)]
 /// The backend half of a COPY BOTH session is closed.
-pub enum CopyBothServerDone {}
+pub(crate) enum CopyBothServerDone {}
 
 #[derive(Debug)]
 /// An errored command is being drained until `ReadyForQuery`.
-pub enum Draining {}
+pub(crate) enum Draining {}
 
 #[derive(Debug)]
 /// A pool-reset query is executing on a dirty connection.
-pub enum Resetting {}
+pub(crate) enum Resetting {}
 
 #[derive(Debug)]
 /// Reset command completion was observed and readiness is required.
-pub enum ResetComplete {}
+pub(crate) enum ResetComplete {}
 
 /// Structured backend error used by session transitions.
-pub type ErrorResponse = DiagnosticResponse;
+pub(crate) type ErrorResponse = DiagnosticResponse;
 
 /// A successful transition or a backend error that enters [`Draining`].
-pub type Fallible<T, S, C = Pristine> = Result<T, (Conn<S, Draining, C>, ErrorResponse)>;
+pub(crate) type Fallible<T, S, C = Pristine> = Result<T, (Conn<S, Draining, C>, ErrorResponse)>;
 
 /// Backend branch available while a simple query is active.
 #[derive(Debug)]
-pub enum SimpleTransition<S, C> {
+pub(crate) enum SimpleTransition<S, C> {
     /// A result item was consumed and more results may follow.
     Continue(Conn<S, SimpleQuery, C>, SessionItem),
     /// The command entered COPY IN.
@@ -94,7 +94,7 @@ pub enum SimpleTransition<S, C> {
 
 /// Backend branch available after a result completes.
 #[derive(Debug)]
-pub enum AwaitingReadyTransition<S, C> {
+pub(crate) enum AwaitingReadyTransition<S, C> {
     /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, AwaitingReady, C>, SessionItem),
     /// Readiness completed the command cycle.
@@ -105,7 +105,7 @@ pub enum AwaitingReadyTransition<S, C> {
 
 /// Backend branch available for the legacy function-call protocol.
 #[derive(Debug)]
-pub enum FunctionCallTransition<S, C> {
+pub(crate) enum FunctionCallTransition<S, C> {
     /// The backend returned the function value.
     Response(Conn<S, AwaitingReady, C>, Bytes),
     /// The backend rejected the call.
@@ -114,7 +114,7 @@ pub enum FunctionCallTransition<S, C> {
 
 /// Backend branch while discarding messages after an error.
 #[derive(Debug)]
-pub enum DrainingTransition<S, C> {
+pub(crate) enum DrainingTransition<S, C> {
     /// A non-terminal item was discarded; continue draining.
     Continue(Conn<S, Draining, C>, SessionItem),
     /// Readiness completed recovery.
@@ -123,7 +123,7 @@ pub enum DrainingTransition<S, C> {
 
 /// Backend branch during COPY OUT.
 #[derive(Debug)]
-pub enum CopyOutTransition<S, C> {
+pub(crate) enum CopyOutTransition<S, C> {
     /// One chunk of copy data was received.
     Data(Conn<S, CopyOut, C>, Bytes),
     /// The backend closed the copy stream.
@@ -134,14 +134,14 @@ pub enum CopyOutTransition<S, C> {
 
 /// Asynchronous backend branch available while sending COPY IN data.
 #[derive(Debug)]
-pub enum CopyInTransition<S, C> {
+pub(crate) enum CopyInTransition<S, C> {
     /// COPY failed and entered drain-until-ready recovery.
     Error(Conn<S, Draining, C>, ErrorResponse),
 }
 
 /// Backend branch while both COPY directions remain open.
 #[derive(Debug)]
-pub enum CopyBothReceive<S, C> {
+pub(crate) enum CopyBothReceive<S, C> {
     /// One opaque backend data chunk was received.
     Data(Conn<S, CopyBoth, C>, Bytes),
     /// The backend closed its half of the stream.
@@ -152,7 +152,7 @@ pub enum CopyBothReceive<S, C> {
 
 /// Backend branch after the client closes its COPY BOTH half.
 #[derive(Debug)]
-pub enum CopyBothClientDoneReceive<S, C> {
+pub(crate) enum CopyBothClientDoneReceive<S, C> {
     /// One final opaque backend data chunk was received.
     Data(Conn<S, CopyBothClientDone, C>, Bytes),
     /// The backend closed its half of the stream.
@@ -163,7 +163,7 @@ pub enum CopyBothClientDoneReceive<S, C> {
 
 /// Typed walsender branch while both replication directions remain open.
 #[derive(Debug)]
-pub enum ReplicationReceive<S, C> {
+pub(crate) enum ReplicationReceive<S, C> {
     /// One decoded backend replication message was received.
     Message(Conn<S, CopyBoth, C>, BackendReplication),
     /// The backend closed its half of the stream.
@@ -174,7 +174,7 @@ pub enum ReplicationReceive<S, C> {
 
 /// Typed walsender branch after the standby closes its sending half.
 #[derive(Debug)]
-pub enum ReplicationClientDoneReceive<S, C> {
+pub(crate) enum ReplicationClientDoneReceive<S, C> {
     /// One decoded backend replication message was received.
     Message(Conn<S, CopyBothClientDone, C>, BackendReplication),
     /// The backend closed its half of the stream.
@@ -184,15 +184,15 @@ pub enum ReplicationClientDoneReceive<S, C> {
 }
 
 /// Replication projection preserving the connection when decoding fails.
-pub type ReplicationProjection<S, C> =
+pub(crate) type ReplicationProjection<S, C> =
     Result<ReplicationReceive<S, C>, (Conn<S, CopyBoth, C>, io::Error)>;
 /// Replication projection after client half-close, preserving decode failures.
-pub type ReplicationClientDoneProjection<S, C> =
+pub(crate) type ReplicationClientDoneProjection<S, C> =
     Result<ReplicationClientDoneReceive<S, C>, (Conn<S, CopyBothClientDone, C>, io::Error)>;
 
 /// Readiness classified by pooling cleanliness evidence.
 #[derive(Debug)]
-pub enum ReadyState<S, C> {
+pub(crate) enum ReadyState<S, C> {
     /// The connection retained its existing cleanliness index.
     Clean(Conn<S, Ready, C>),
     /// Transaction or parameter evidence made the connection dirty.
@@ -208,7 +208,7 @@ pub enum ReadyState<S, C> {
 
 /// Backend branch while a reset command is executing.
 #[derive(Debug)]
-pub enum ResettingTransition<S> {
+pub(crate) enum ResettingTransition<S> {
     /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, Resetting, Dirty>, SessionItem),
     /// Reset command completion was observed.
@@ -219,7 +219,7 @@ pub enum ResettingTransition<S> {
 
 /// Backend branch after reset command completion.
 #[derive(Debug)]
-pub enum ResetCompleteTransition<S> {
+pub(crate) enum ResetCompleteTransition<S> {
     /// A non-terminal item was consumed; continue waiting.
     Continue(Conn<S, ResetComplete, Dirty>, SessionItem),
     /// Idle readiness with restored parameters proved the connection pristine.
@@ -239,7 +239,7 @@ pub enum ResetCompleteTransition<S> {
 
 impl<S, C> Conn<S, Ready, C> {
     /// Gracefully terminates a ready session without waiting for a backend reply.
-    pub fn push_terminate(self) -> (Conn<S, Terminated, C>, Frame) {
+    pub(crate) fn push_terminate(self) -> (Conn<S, Terminated, C>, Frame) {
         (self.transition(), empty_frame(b'X'))
     }
 
@@ -253,7 +253,10 @@ impl<S, C> Conn<S, Ready, C> {
     /// # Errors
     ///
     /// Returns an error if the query contains a NUL byte.
-    pub fn push_query(self, query: &[u8]) -> io::Result<(Conn<S, SimpleQuery, Dirty>, Frame)> {
+    pub(crate) fn push_query(
+        self,
+        query: &[u8],
+    ) -> io::Result<(Conn<S, SimpleQuery, Dirty>, Frame)> {
         Ok((self.transition(), cstr_frame(b'Q', query)?))
     }
 
@@ -262,7 +265,7 @@ impl<S, C> Conn<S, Ready, C> {
     /// # Errors
     ///
     /// Returns an error if the query contains a NUL byte.
-    pub fn push_stateless_query(
+    pub(crate) fn push_stateless_query(
         self,
         query: &[u8],
     ) -> io::Result<(Conn<S, SimpleQuery, C>, Frame)> {
@@ -274,7 +277,7 @@ impl<S, C> Conn<S, Ready, C> {
     /// # Errors
     ///
     /// Returns an error if a count or argument length exceeds its wire field.
-    pub fn push_function_call(
+    pub(crate) fn push_function_call(
         self,
         message: &FunctionCall,
     ) -> io::Result<(Conn<S, FunctionCalling, Dirty>, Frame)> {
@@ -286,7 +289,7 @@ impl<S, C> Conn<S, Ready, C> {
     /// # Errors
     ///
     /// Returns an error if a count or argument length exceeds its wire field.
-    pub fn push_stateless_function_call(
+    pub(crate) fn push_stateless_function_call(
         self,
         message: &FunctionCall,
     ) -> io::Result<(Conn<S, FunctionCalling, C>, Frame)> {
@@ -302,7 +305,7 @@ impl<S, C> Conn<S, Ready, C> {
     ///     let _again = conn.begin_extended();
     /// }
     /// ```
-    pub fn begin_extended(self) -> Conn<S, Building, C> {
+    pub(crate) fn begin_extended(self) -> Conn<S, Building, C> {
         self.transition()
     }
 }
@@ -314,7 +317,7 @@ impl<S, C> Conn<S, FunctionCalling, C> {
     /// # Errors
     ///
     /// Returns the unchanged connection and message for an illegal response.
-    pub fn offer(
+    pub(crate) fn offer(
         self,
         message: BackendMessage,
     ) -> Result<FunctionCallTransition<S, C>, (Self, BackendMessage)> {
@@ -343,7 +346,7 @@ impl<S> Conn<S, Ready, Pristine> {
     ///     let _transport = conn.release();
     /// }
     /// ```
-    pub fn release(self) -> S {
+    pub(crate) fn release(self) -> S {
         self.into_transport()
     }
 }
@@ -357,7 +360,7 @@ impl<S> Conn<S, Ready, Dirty> {
     /// # Errors
     ///
     /// Returns an error only if the fixed reset query cannot be encoded.
-    pub fn begin_reset(self) -> io::Result<(Conn<S, Resetting, Dirty>, Frame)> {
+    pub(crate) fn begin_reset(self) -> io::Result<(Conn<S, Resetting, Dirty>, Frame)> {
         Ok((
             self.transition(),
             cstr_frame(b'Q', b"ROLLBACK; DISCARD ALL")?,
@@ -371,7 +374,10 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_parse(self, message: &Parse) -> io::Result<(Conn<S, Building, Dirty>, Frame)> {
+    pub(crate) fn push_parse(
+        self,
+        message: &Parse,
+    ) -> io::Result<(Conn<S, Building, Dirty>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }
 
@@ -380,7 +386,7 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
+    pub(crate) fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
         Ok((self, message.to_frame()?))
     }
 
@@ -398,7 +404,10 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
+    pub(crate) fn push_bind(
+        self,
+        message: &Bind,
+    ) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }
 
@@ -406,17 +415,17 @@ impl<S, C> Conn<S, Building, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
+    pub(crate) fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
         Ok((self, message.to_frame()?))
     }
 
     /// Requests delivery of buffered extended-query responses without ending the cycle.
-    pub fn push_flush(self) -> (Self, Frame) {
+    pub(crate) fn push_flush(self) -> (Self, Frame) {
         (self, empty_frame(b'H'))
     }
 
     /// Ends the extended-query pipeline and waits for readiness.
-    pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+    pub(crate) fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'S'))
     }
 }
@@ -425,21 +434,27 @@ impl<S, C> Conn<S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_parse(self, message: &Parse) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
+    pub(crate) fn push_parse(
+        self,
+        message: &Parse,
+    ) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }
 
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_bind(self, message: &Bind) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
+    pub(crate) fn push_bind(
+        self,
+        message: &Bind,
+    ) -> io::Result<(Conn<S, BoundBuilding, Dirty>, Frame)> {
         Ok((self.transition(), message.to_frame()?))
     }
 
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
+    pub(crate) fn push_describe(self, message: &Describe) -> io::Result<(Self, Frame)> {
         Ok((self, message.to_frame()?))
     }
 
@@ -448,24 +463,24 @@ impl<S, C> Conn<S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_execute(self, message: &Execute) -> io::Result<(Self, Frame)> {
+    pub(crate) fn push_execute(self, message: &Execute) -> io::Result<(Self, Frame)> {
         Ok((self, message.to_frame()?))
     }
 
     /// # Errors
     ///
     /// Returns an error if the structured message cannot be reconstructed.
-    pub fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
+    pub(crate) fn push_close(self, message: &Close) -> io::Result<(Self, Frame)> {
         Ok((self, message.to_frame()?))
     }
 
     /// Requests delivery of buffered extended-query responses without ending the cycle.
-    pub fn push_flush(self) -> (Self, Frame) {
+    pub(crate) fn push_flush(self) -> (Self, Frame) {
         (self, empty_frame(b'H'))
     }
 
     /// Ends the extended-query pipeline and waits for readiness.
-    pub fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+    pub(crate) fn push_sync(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'S'))
     }
 }
@@ -476,7 +491,10 @@ impl<S, C> Conn<S, SimpleQuery, C> {
     /// # Errors
     ///
     /// Returns the unchanged connection and item if it is illegal in this phase.
-    pub fn offer(self, item: SessionItem) -> Result<SimpleTransition<S, C>, (Self, SessionItem)> {
+    pub(crate) fn offer(
+        self,
+        item: SessionItem,
+    ) -> Result<SimpleTransition<S, C>, (Self, SessionItem)> {
         match (
             project_session_item(frontend::RuntimeState::Simple, &item),
             item,
@@ -531,7 +549,7 @@ impl<S, C> Conn<S, CopyIn, C> {
     ///     let _ = conn.push_query(b"select 1");
     /// }
     /// ```
-    pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
+    pub(crate) fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
         (
             self,
             Frame {
@@ -542,7 +560,7 @@ impl<S, C> Conn<S, CopyIn, C> {
     }
 
     /// Closes the client-to-backend copy stream and waits for command completion.
-    pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+    pub(crate) fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
 
@@ -551,7 +569,10 @@ impl<S, C> Conn<S, CopyIn, C> {
     /// # Errors
     ///
     /// Returns an error if the message contains a NUL byte.
-    pub fn push_copy_fail(self, message: &[u8]) -> io::Result<(Conn<S, AwaitingReady, C>, Frame)> {
+    pub(crate) fn push_copy_fail(
+        self,
+        message: &[u8],
+    ) -> io::Result<(Conn<S, AwaitingReady, C>, Frame)> {
         Ok((self.transition(), cstr_frame(b'f', message)?))
     }
 
@@ -563,7 +584,10 @@ impl<S, C> Conn<S, CopyIn, C> {
     /// # Errors
     ///
     /// Returns the live connection and item when it is not an error response.
-    pub fn offer(self, item: SessionItem) -> Result<CopyInTransition<S, C>, (Self, SessionItem)> {
+    pub(crate) fn offer(
+        self,
+        item: SessionItem,
+    ) -> Result<CopyInTransition<S, C>, (Self, SessionItem)> {
         match (
             project_session_item(frontend::RuntimeState::CopyIn, &item),
             item,
@@ -583,7 +607,7 @@ impl<S, C> Conn<S, CopyBothClientDone, C> {
     /// # Errors
     ///
     /// Returns the unchanged connection and item for an illegal response.
-    pub fn offer(
+    pub(crate) fn offer(
         self,
         item: SessionItem,
     ) -> Result<CopyBothClientDoneReceive<S, C>, (Self, SessionItem)> {
@@ -614,7 +638,7 @@ impl<S, C> CopyBothClientDoneReceive<S, C> {
     /// # Errors
     ///
     /// Returns the connection with a decoding error for malformed known payloads.
-    pub fn decode_replication(self) -> ReplicationClientDoneProjection<S, C> {
+    pub(crate) fn decode_replication(self) -> ReplicationClientDoneProjection<S, C> {
         match self {
             Self::Data(conn, data) => match BackendReplication::decode(data) {
                 Ok(message) => Ok(ReplicationClientDoneReceive::Message(conn, message)),
@@ -628,7 +652,7 @@ impl<S, C> CopyBothClientDoneReceive<S, C> {
 
 impl<S, C> Conn<S, CopyBothServerDone, C> {
     /// Continues sending after the backend half has closed.
-    pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
+    pub(crate) fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
         (
             self,
             Frame {
@@ -639,12 +663,12 @@ impl<S, C> Conn<S, CopyBothServerDone, C> {
     }
 
     /// Sends a structured standby message after the backend half-close.
-    pub fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
+    pub(crate) fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
         self.push_copy_data(message.encode())
     }
 
     /// Closes the remaining frontend half and begins readiness processing.
-    pub fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
+    pub(crate) fn push_copy_done(self) -> (Conn<S, AwaitingReady, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
 }
@@ -655,7 +679,10 @@ impl<S, C> Conn<S, CopyOut, C> {
     /// # Errors
     ///
     /// Returns the unchanged connection and item when it is illegal in COPY OUT.
-    pub fn offer(self, item: SessionItem) -> Result<CopyOutTransition<S, C>, (Self, SessionItem)> {
+    pub(crate) fn offer(
+        self,
+        item: SessionItem,
+    ) -> Result<CopyOutTransition<S, C>, (Self, SessionItem)> {
         match (
             project_session_item(frontend::RuntimeState::CopyOut, &item),
             item,
@@ -678,7 +705,7 @@ impl<S, C> Conn<S, CopyOut, C> {
 
 impl<S, C> Conn<S, CopyBoth, C> {
     /// Sends one opaque data chunk while retaining both COPY directions.
-    pub fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
+    pub(crate) fn push_copy_data(self, data: Bytes) -> (Self, Frame) {
         (
             self,
             Frame {
@@ -689,12 +716,12 @@ impl<S, C> Conn<S, CopyBoth, C> {
     }
 
     /// Sends a structured standby message in the walsender stream.
-    pub fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
+    pub(crate) fn push_replication(self, message: &FrontendReplication) -> (Self, Frame) {
         self.push_copy_data(message.encode())
     }
 
     /// Closes the client half while leaving the backend half readable.
-    pub fn push_copy_done(self) -> (Conn<S, CopyBothClientDone, C>, Frame) {
+    pub(crate) fn push_copy_done(self) -> (Conn<S, CopyBothClientDone, C>, Frame) {
         (self.transition(), empty_frame(b'c'))
     }
 
@@ -703,7 +730,10 @@ impl<S, C> Conn<S, CopyBoth, C> {
     /// # Errors
     ///
     /// Returns the unchanged connection and item when it is illegal in COPY BOTH.
-    pub fn offer(self, item: SessionItem) -> Result<CopyBothReceive<S, C>, (Self, SessionItem)> {
+    pub(crate) fn offer(
+        self,
+        item: SessionItem,
+    ) -> Result<CopyBothReceive<S, C>, (Self, SessionItem)> {
         match (
             project_session_item(frontend::RuntimeState::CopyBoth, &item),
             item,
@@ -731,7 +761,7 @@ impl<S, C> CopyBothReceive<S, C> {
     /// # Errors
     ///
     /// Returns the connection with a decoding error for malformed known payloads.
-    pub fn decode_replication(self) -> ReplicationProjection<S, C> {
+    pub(crate) fn decode_replication(self) -> ReplicationProjection<S, C> {
         match self {
             Self::Data(conn, data) => match BackendReplication::decode(data) {
                 Ok(message) => Ok(ReplicationReceive::Message(conn, message)),
@@ -745,7 +775,7 @@ impl<S, C> CopyBothReceive<S, C> {
 
 impl<S, C> Conn<S, Draining, C> {
     /// `ReadyForQuery` is the sole exit from error draining.
-    pub fn offer(self, item: SessionItem) -> DrainingTransition<S, C> {
+    pub(crate) fn offer(self, item: SessionItem) -> DrainingTransition<S, C> {
         match (
             project_session_item(frontend::RuntimeState::Draining, &item),
             item,
@@ -764,7 +794,7 @@ impl<S, C> Conn<S, Draining, C> {
 
 impl<S, C> Conn<S, AwaitingReady, C> {
     /// Consumes responses after Sync until `ReadyForQuery` proves readiness.
-    pub fn offer(self, item: SessionItem) -> AwaitingReadyTransition<S, C> {
+    pub(crate) fn offer(self, item: SessionItem) -> AwaitingReadyTransition<S, C> {
         match (
             project_session_item(frontend::RuntimeState::AwaitingReady, &item),
             item,
@@ -788,7 +818,7 @@ impl<S, C> Conn<S, AwaitingReady, C> {
 impl<S> Conn<S, Resetting, Dirty> {
     /// Waits for evidence that `DISCARD ALL` itself completed.
     #[must_use]
-    pub fn offer(self, item: SessionItem) -> ResettingTransition<S> {
+    pub(crate) fn offer(self, item: SessionItem) -> ResettingTransition<S> {
         match (
             project_session_item(frontend::RuntimeState::Resetting, &item),
             item,
@@ -810,7 +840,7 @@ impl<S> Conn<S, Resetting, Dirty> {
 impl<S> Conn<S, ResetComplete, Dirty> {
     /// Restores `Pristine` only from idle readiness and the startup parameter baseline.
     #[must_use]
-    pub fn offer(self, item: SessionItem) -> ResetCompleteTransition<S> {
+    pub(crate) fn offer(self, item: SessionItem) -> ResetCompleteTransition<S> {
         match (
             project_session_item(frontend::RuntimeState::ResetComplete, &item),
             item,
@@ -844,7 +874,7 @@ impl<S> Conn<S, ResetComplete, Dirty> {
 
 impl<S, P> Conn<S, P, Pristine> {
     /// Conservatively records session-local state without changing protocol phase.
-    pub fn mark_dirty(self) -> Conn<S, P, Dirty> {
+    pub(crate) fn mark_dirty(self) -> Conn<S, P, Dirty> {
         self.transition()
     }
 }

@@ -8,11 +8,11 @@ use std::{
 
 use bytes::Bytes;
 use pg_proto::{
-    Client, ClientAuthentication, ClientAuthenticationChallenge, ClientAuthenticationFuture,
-    ClientAuthenticationResponse, ClientAuthenticationSession, ClientConnectionContext,
-    ClientInitialContext, ClientMiddleware, ClientTlsPolicy, ClientTlsStatus, ConnectTarget,
-    MiddlewareFactory, StartupParameters, TrustClientAuthentication,
-    codec::{BackendMessage, FrontendMessage},
+    BackendMessage, Client, ClientAuthentication, ClientAuthenticationChallenge,
+    ClientAuthenticationFuture, ClientAuthenticationResponse, ClientAuthenticationSession,
+    ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
+    ClientTlsStatus, ConnectTarget, FrontendMessage, MiddlewareFactory, StartupParameters,
+    TrustClientAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
@@ -76,8 +76,8 @@ impl<Evidence> ClientMiddleware<Vec<String>, ClientConnectionContext<Evidence>> 
         &mut self,
         context: &ClientConnectionContext<Evidence>,
         state: &mut Vec<String>,
-        mut message: pg_proto::startup::StartupMessage,
-    ) -> pg_proto::startup::StartupMessage {
+        mut message: pg_proto::StartupMessage,
+    ) -> pg_proto::StartupMessage {
         assert_eq!(context.tls(), Some(pg_proto::ClientTlsStatus::Plaintext));
         assert!(context.identity_if_known().is_none());
         state.push(format!("{}:startup", self.id));
@@ -130,7 +130,7 @@ async fn peer(mut io: DuplexStream, expected_application_name: &'static [u8]) {
     let length = io.read_u32().await.unwrap();
     let mut body = vec![0; length as usize - 4];
     io.read_exact(&mut body).await.unwrap();
-    let startup = pg_proto::startup::StartupMessage::decode(
+    let startup = pg_proto::StartupMessage::decode(
         [length.to_be_bytes().as_slice(), body.as_slice()]
             .concat()
             .into(),

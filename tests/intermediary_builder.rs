@@ -4,13 +4,12 @@ use std::convert::Infallible;
 
 use bytes::Bytes;
 use pg_proto::{
-    AuthenticatedRouteContext, AuthenticatedRoutePolicy, BoundedPipeline, CancellationPolicy,
-    Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
-    ConnectTarget, InitialServerContext, Intermediary, IntermediaryBuildError,
-    IntermediaryMiddleware, Server, ServerConnectionContext, ServerMiddleware, ServerTlsPolicy,
-    StartupParameters, StartupRouteResolver, TrustClientAuthentication, TrustIdentity,
-    TrustServerAuthentication,
-    codec::{BackendMessage, Bind, CopyResponse, Execute, FrontendMessage, Parse},
+    AuthenticatedRouteContext, AuthenticatedRoutePolicy, BackendMessage, Bind, BoundedPipeline,
+    CancellationPolicy, Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware,
+    ClientTlsPolicy, ConnectTarget, CopyResponse, Execute, FrontendMessage, InitialServerContext,
+    Intermediary, IntermediaryBuildError, IntermediaryMiddleware, Parse, Server,
+    ServerConnectionContext, ServerMiddleware, ServerTlsPolicy, StartupParameters,
+    StartupRouteResolver, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -49,12 +48,99 @@ impl AuthenticatedRoutePolicy<String, TrustIdentity> for RefineRoute {
     }
 }
 
-fn tagged_bytes(frame: pg_proto::codec::Frame) -> Vec<u8> {
-    let pg_proto::codec::Frame { tag, body } = frame;
+fn tagged_bytes(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut bytes = vec![tag];
     bytes.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
-    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(body);
     bytes
+}
+
+fn frontend_bytes(message: &FrontendMessage) -> Vec<u8> {
+    let (tag, body) = match message {
+        FrontendMessage::Query(query) => (b'Q', [query.as_ref(), b"\0"].concat()),
+        FrontendMessage::CopyData(data) => (b'd', data.to_vec()),
+        FrontendMessage::Parse(parse) => {
+            let mut body = [parse.statement.as_ref(), b"\0", parse.query.as_ref(), b"\0"].concat();
+            body.extend_from_slice(
+                &u16::try_from(parse.parameter_types.len())
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            for oid in &parse.parameter_types {
+                body.extend_from_slice(&oid.to_be_bytes());
+            }
+            (b'P', body)
+        }
+        FrontendMessage::Bind(bind) => {
+            let mut body = [bind.portal.as_ref(), b"\0", bind.statement.as_ref(), b"\0"].concat();
+            body.extend_from_slice(
+                &u16::try_from(bind.parameter_formats.len())
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            for format in &bind.parameter_formats {
+                body.extend_from_slice(&format.to_be_bytes());
+            }
+            body.extend_from_slice(&u16::try_from(bind.parameters.len()).unwrap().to_be_bytes());
+            for parameter in &bind.parameters {
+                match parameter {
+                    None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
+                    Some(value) => {
+                        body.extend_from_slice(&i32::try_from(value.len()).unwrap().to_be_bytes());
+                        body.extend_from_slice(value);
+                    }
+                }
+            }
+            body.extend_from_slice(
+                &u16::try_from(bind.result_formats.len())
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            for format in &bind.result_formats {
+                body.extend_from_slice(&format.to_be_bytes());
+            }
+            (b'B', body)
+        }
+        FrontendMessage::Execute(execute) => {
+            let mut body = [execute.portal.as_ref(), b"\0"].concat();
+            body.extend_from_slice(&execute.max_rows.to_be_bytes());
+            (b'E', body)
+        }
+        FrontendMessage::Sync => (b'S', Vec::new()),
+        _ => panic!("test encoder does not support {message:?}"),
+    };
+    tagged_bytes(tag, &body)
+}
+
+fn backend_bytes(message: &BackendMessage) -> Vec<u8> {
+    let (tag, body) = match message {
+        BackendMessage::ParseComplete => (b'1', Vec::new()),
+        BackendMessage::BindComplete => (b'2', Vec::new()),
+        BackendMessage::CommandComplete(command) => (b'C', [command.as_ref(), b"\0"].concat()),
+        BackendMessage::ReadyForQuery(status) => (
+            b'Z',
+            vec![match status {
+                pg_proto::TransactionStatus::Idle => b'I',
+                pg_proto::TransactionStatus::InTransaction => b'T',
+                pg_proto::TransactionStatus::FailedTransaction => b'E',
+            }],
+        ),
+        BackendMessage::CopyBothResponse(response) => {
+            let mut body = vec![response.overall_format];
+            body.extend_from_slice(
+                &u16::try_from(response.column_formats.len())
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            for format in &response.column_formats {
+                body.extend_from_slice(&format.to_be_bytes());
+            }
+            (b'W', body)
+        }
+        BackendMessage::CopyData(data) => (b'd', data.to_vec()),
+        _ => panic!("test encoder does not support {message:?}"),
+    };
+    tagged_bytes(tag, &body)
 }
 
 async fn read_tagged(stream: &mut tokio::io::DuplexStream) -> (u8, Vec<u8>) {
@@ -201,8 +287,8 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         .unwrap();
 
     let downstream = tokio::spawn(async move {
-        let startup = pg_proto::startup::StartupMessage {
-            version: pg_proto::startup::ProtocolVersion::V3_2,
+        let startup = pg_proto::StartupMessage {
+            version: pg_proto::ProtocolVersion::V3_2,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),
@@ -263,7 +349,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         ];
         for message in extended {
             downstream_peer
-                .write_all(&tagged_bytes(message.to_frame().unwrap()))
+                .write_all(&frontend_bytes(&message))
                 .await
                 .unwrap();
         }
@@ -271,22 +357,18 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
             assert_eq!(read_tagged(&mut downstream_peer).await.0, expected);
         }
         downstream_peer
-            .write_all(&tagged_bytes(
-                FrontendMessage::Query(Bytes::from_static(b"START_REPLICATION"))
-                    .to_frame()
-                    .unwrap(),
-            ))
+            .write_all(&frontend_bytes(&FrontendMessage::Query(
+                Bytes::from_static(b"START_REPLICATION"),
+            )))
             .await
             .unwrap();
         assert_eq!(read_tagged(&mut downstream_peer).await.0, b'W');
         let (tag, body) = read_tagged(&mut downstream_peer).await;
         assert_eq!((tag, body.as_slice()), (b'd', b"w-replication".as_slice()));
         downstream_peer
-            .write_all(&tagged_bytes(
-                FrontendMessage::CopyData(Bytes::from_static(b"r-standby-status"))
-                    .to_frame()
-                    .unwrap(),
-            ))
+            .write_all(&frontend_bytes(&FrontendMessage::CopyData(
+                Bytes::from_static(b"r-standby-status"),
+            )))
             .await
             .unwrap();
     });
@@ -294,7 +376,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         let length = upstream_peer.read_u32().await.unwrap();
         let mut body = vec![0; usize::try_from(length).unwrap() - 4];
         upstream_peer.read_exact(&mut body).await.unwrap();
-        let startup = pg_proto::startup::StartupMessage::decode(
+        let startup = pg_proto::StartupMessage::decode(
             [length.to_be_bytes().as_slice(), body.as_slice()]
                 .concat()
                 .into(),
@@ -335,33 +417,29 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
             ),
             (
                 b'S',
-                BackendMessage::ReadyForQuery(pg_proto::codec::TransactionStatus::Idle),
+                BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
             ),
         ] {
             assert_eq!(read_tagged(&mut upstream_peer).await.0, expected);
             upstream_peer
-                .write_all(&tagged_bytes(response.to_frame().unwrap()))
+                .write_all(&backend_bytes(&response))
                 .await
                 .unwrap();
         }
         assert_eq!(read_tagged(&mut upstream_peer).await.0, b'Q');
         upstream_peer
-            .write_all(&tagged_bytes(
-                BackendMessage::CopyBothResponse(CopyResponse {
+            .write_all(&backend_bytes(&BackendMessage::CopyBothResponse(
+                CopyResponse {
                     overall_format: 0,
                     column_formats: vec![],
-                })
-                .to_frame()
-                .unwrap(),
-            ))
+                },
+            )))
             .await
             .unwrap();
         upstream_peer
-            .write_all(&tagged_bytes(
-                BackendMessage::CopyData(Bytes::from_static(b"w-replication"))
-                    .to_frame()
-                    .unwrap(),
-            ))
+            .write_all(&backend_bytes(&BackendMessage::CopyData(
+                Bytes::from_static(b"w-replication"),
+            )))
             .await
             .unwrap();
         let (tag, body) = read_tagged(&mut upstream_peer).await;
@@ -402,7 +480,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     assert!(matches!(
         session.forward_frontend().await,
         Err(pg_proto::ForwardError::Frontend(
-            pg_proto::pipeline::FrontendProjectionError::Capacity(_)
+            pg_proto::FrontendProjectionError::Capacity(_)
         ))
     ));
     assert!(matches!(
@@ -425,23 +503,11 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     ));
     for (frontend, backend) in [(b'P', b'1'), (b'B', b'2'), (b'E', b'C'), (b'S', b'Z')] {
         assert_eq!(
-            session
-                .forward_frontend()
-                .await
-                .unwrap()
-                .to_frame()
-                .unwrap()
-                .tag,
+            frontend_bytes(&session.forward_frontend().await.unwrap())[0],
             frontend
         );
         assert_eq!(
-            session
-                .forward_backend()
-                .await
-                .unwrap()
-                .to_frame()
-                .unwrap()
-                .tag,
+            backend_bytes(&session.forward_backend().await.unwrap())[0],
             backend
         );
     }

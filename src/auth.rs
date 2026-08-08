@@ -11,50 +11,50 @@ use crate::{
 
 #[derive(Debug)]
 /// The backend's initial authentication choice.
-pub enum Auth {}
+pub(crate) enum Auth {}
 
 #[derive(Debug)]
 /// A cleartext or MD5 password response is required.
-pub enum PasswordResponse {}
+pub(crate) enum PasswordResponse {}
 
 #[derive(Debug)]
 /// A SASL mechanism and optional initial response must be selected.
-pub enum SaslInitial {}
+pub(crate) enum SaslInitial {}
 
 #[derive(Debug)]
 /// The backend must provide the next SASL continuation or final message.
-pub enum Sasl {}
+pub(crate) enum Sasl {}
 
 #[derive(Debug)]
 /// A client response to a SASL challenge is required.
-pub enum SaslChallenge {}
+pub(crate) enum SaslChallenge {}
 
 #[derive(Debug)]
 /// The received SASL final message must be verified by authentication policy.
-pub enum SaslFinal {}
+pub(crate) enum SaslFinal {}
 
 #[derive(Debug)]
 /// A client token for GSS, SSPI, or Kerberos authentication is required.
-pub enum TokenResponse {}
+pub(crate) enum TokenResponse {}
 
 #[derive(Debug)]
 /// The backend must continue or complete token-based authentication.
-pub enum TokenChallenge {}
+pub(crate) enum TokenChallenge {}
 
 #[derive(Debug)]
 /// The selected mechanism has completed and `AuthenticationOk` is required.
-pub enum AwaitingAuthOk {}
+pub(crate) enum AwaitingAuthOk {}
 
 #[derive(Debug)]
 /// Authentication and startup have completed and commands may be issued.
-pub enum Ready {}
+pub(crate) enum Ready {}
 
 #[derive(Debug)]
 /// Authentication succeeded and startup messages are being consumed until ready.
-pub enum AwaitingStartupReady {}
+pub(crate) enum AwaitingStartupReady {}
 
 /// TLS transports expose the RFC 5929 `tls-server-end-point` binding.
-pub trait TlsServerEndPoint {
+pub(crate) trait TlsServerEndPoint {
     /// Returns the RFC 5929 channel-binding bytes derived from the peer certificate.
     fn tls_server_end_point(&self) -> &[u8];
 }
@@ -62,14 +62,14 @@ pub trait TlsServerEndPoint {
 impl<S: TlsServerEndPoint, Phase, Cleanliness> Conn<S, Phase, Cleanliness> {
     /// Returns the peer-certificate binding for custom authentication policy.
     #[must_use]
-    pub fn tls_server_end_point(&self) -> &[u8] {
+    pub(crate) fn tls_server_end_point(&self) -> &[u8] {
         self.transport().tls_server_end_point()
     }
 }
 
 /// External choice offered by the backend during authentication.
 #[derive(Debug)]
-pub enum AuthOffer<S> {
+pub(crate) enum AuthOffer<S> {
     /// Authentication completed without a credential exchange.
     Ok(Conn<S, AwaitingStartupReady>),
     /// The backend requested a cleartext password.
@@ -98,7 +98,7 @@ pub enum AuthOffer<S> {
 
 /// A startup message that advances or terminates authentication.
 #[derive(Debug)]
-pub enum AuthEvent<S> {
+pub(crate) enum AuthEvent<S> {
     /// An authentication request or successful completion.
     Authentication(AuthOffer<S>),
     /// A protocol-version negotiation message that leaves authentication active.
@@ -119,7 +119,7 @@ pub enum AuthEvent<S> {
 
 /// An external choice received during a SASL exchange.
 #[derive(Debug)]
-pub enum SaslEvent<S> {
+pub(crate) enum SaslEvent<S> {
     /// The backend supplied another challenge.
     Continue {
         /// Connection waiting for the corresponding client response.
@@ -145,7 +145,7 @@ pub enum SaslEvent<S> {
 
 /// Completion or failure after a credential mechanism finishes.
 #[derive(Debug)]
-pub enum AuthCompletion<S> {
+pub(crate) enum AuthCompletion<S> {
     /// The backend confirmed authentication.
     Ok(Conn<S, AwaitingStartupReady>),
     /// The backend rejected authentication.
@@ -159,7 +159,7 @@ pub enum AuthCompletion<S> {
 
 /// An external choice during GSS, SSPI, or Kerberos token exchange.
 #[derive(Debug)]
-pub enum TokenAuthEvent<S> {
+pub(crate) enum TokenAuthEvent<S> {
     /// The backend supplied another token.
     Continue {
         /// Connection waiting for the next client token.
@@ -180,7 +180,7 @@ pub enum TokenAuthEvent<S> {
 
 impl<S> Conn<S, Startup, Pristine> {
     /// Enters backend-driven authentication after sending the startup message.
-    pub fn authentication(self) -> Conn<S, Auth> {
+    pub(crate) fn authentication(self) -> Conn<S, Auth> {
         self.transition()
     }
 }
@@ -197,7 +197,7 @@ impl<S> Conn<S, Auth, Pristine> {
     ///
     /// Panics only if the exhaustive continuation guard above the internal
     /// projection becomes inconsistent with [`Self::offer`].
-    pub fn offer_backend(
+    pub(crate) fn offer_backend(
         self,
         message: codec::BackendMessage,
     ) -> Result<AuthEvent<S>, (Self, codec::BackendMessage, Option<std::io::Error>)> {
@@ -235,7 +235,10 @@ impl<S> Conn<S, Auth, Pristine> {
     /// # Errors
     ///
     /// SASL continuation/final messages are rejected before SASL is selected.
-    pub fn offer(self, authentication: codec::Authentication) -> std::io::Result<AuthOffer<S>> {
+    pub(crate) fn offer(
+        self,
+        authentication: codec::Authentication,
+    ) -> std::io::Result<AuthOffer<S>> {
         match (
             project_authentication(auth_grammar::RuntimeState::Auth, &authentication),
             authentication,
@@ -277,7 +280,7 @@ impl<S> Conn<S, Auth, Pristine> {
 
 impl<S> Conn<S, TokenResponse, Pristine> {
     /// Sends a GSS, SSPI, or Kerberos token and waits for continuation or success.
-    pub fn respond(self, token: Bytes) -> (Conn<S, TokenChallenge>, codec::Frame) {
+    pub(crate) fn respond(self, token: Bytes) -> (Conn<S, TokenChallenge>, codec::Frame) {
         (
             self.transition(),
             codec::Frame {
@@ -294,7 +297,7 @@ impl<S> Conn<S, TokenChallenge, Pristine> {
     /// # Errors
     ///
     /// Returns the live connection and message for an illegal response.
-    pub fn offer(
+    pub(crate) fn offer(
         self,
         message: codec::BackendMessage,
     ) -> Result<TokenAuthEvent<S>, (Self, codec::BackendMessage)> {
@@ -330,7 +333,7 @@ impl<S> Conn<S, PasswordResponse, Pristine> {
     /// # Errors
     ///
     /// Returns an error if the response contains a NUL byte or is too large.
-    pub fn password(
+    pub(crate) fn password(
         self,
         password: &[u8],
     ) -> std::io::Result<(Conn<S, AwaitingAuthOk>, codec::Frame)> {
@@ -359,7 +362,7 @@ impl<S> Conn<S, SaslInitial, Pristine> {
     /// # Errors
     ///
     /// Returns an error if the mechanism contains a NUL byte or either value is too large.
-    pub fn sasl(
+    pub(crate) fn sasl(
         self,
         mechanism: &[u8],
         initial: &[u8],
@@ -372,7 +375,10 @@ impl<S> Conn<S, SaslInitial, Pristine> {
     /// # Errors
     ///
     /// Returns an error if the initial response is too large.
-    pub fn scram_sha_256(self, initial: &[u8]) -> std::io::Result<(Conn<S, Sasl>, codec::Frame)> {
+    pub(crate) fn scram_sha_256(
+        self,
+        initial: &[u8],
+    ) -> std::io::Result<(Conn<S, Sasl>, codec::Frame)> {
         sasl_initial(self, b"SCRAM-SHA-256", initial)
     }
 }
@@ -384,7 +390,7 @@ impl<S: TlsServerEndPoint> Conn<S, SaslInitial, Pristine> {
     /// # Errors
     ///
     /// Returns an error if the initial response is too large.
-    pub fn scram_sha_256_plus(
+    pub(crate) fn scram_sha_256_plus(
         self,
         initial: &[u8],
     ) -> std::io::Result<(Conn<S, Sasl>, codec::Frame)> {
@@ -398,7 +404,7 @@ impl<S> Conn<S, Sasl, Pristine> {
     /// # Errors
     ///
     /// Returns the live connection and authentication message for an illegal branch.
-    pub fn offer(
+    pub(crate) fn offer(
         self,
         authentication: codec::Authentication,
     ) -> Result<SaslEvent<S>, (Self, codec::Authentication)> {
@@ -428,7 +434,7 @@ impl<S> Conn<S, Sasl, Pristine> {
     /// # Errors
     ///
     /// Returns the live connection and message for an illegal response.
-    pub fn offer_backend(
+    pub(crate) fn offer_backend(
         self,
         message: codec::BackendMessage,
     ) -> Result<SaslEvent<S>, (Self, codec::BackendMessage)> {
@@ -449,7 +455,7 @@ impl<S> Conn<S, Sasl, Pristine> {
 
 impl<S> Conn<S, SaslChallenge, Pristine> {
     /// Sends the response to one received challenge and re-enters the SASL loop.
-    pub fn respond(self, response: Bytes) -> (Conn<S, Sasl>, codec::Frame) {
+    pub(crate) fn respond(self, response: Bytes) -> (Conn<S, Sasl>, codec::Frame) {
         (
             self.transition(),
             codec::Frame {
@@ -462,7 +468,7 @@ impl<S> Conn<S, SaslChallenge, Pristine> {
 
 impl<S> Conn<S, SaslFinal, Pristine> {
     /// Records that custom SCRAM logic verified the received server-final value.
-    pub fn verified(self) -> Conn<S, AwaitingAuthOk> {
+    pub(crate) fn verified(self) -> Conn<S, AwaitingAuthOk> {
         self.transition()
     }
 }
@@ -473,7 +479,7 @@ impl<S> Conn<S, AwaitingAuthOk, Pristine> {
     /// # Errors
     ///
     /// Returns the live connection and message for an illegal response.
-    pub fn offer(
+    pub(crate) fn offer(
         self,
         message: codec::BackendMessage,
     ) -> Result<AuthCompletion<S>, (Self, codec::BackendMessage)> {
@@ -512,7 +518,10 @@ impl<S> Conn<S, AwaitingStartupReady, Pristine> {
     /// # Errors
     ///
     /// Returns the unchanged connection and item when it is not `ReadyForQuery`.
-    pub fn offer_ready(self, item: SessionItem) -> Result<Conn<S, Ready>, (Self, SessionItem)> {
+    pub(crate) fn offer_ready(
+        self,
+        item: SessionItem,
+    ) -> Result<Conn<S, Ready>, (Self, SessionItem)> {
         if matches!(
             item,
             SessionItem::ReadyForQuery {

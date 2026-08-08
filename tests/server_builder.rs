@@ -11,20 +11,18 @@ use std::{
 
 use bytes::Bytes;
 use pg_proto::{
-    BuildServerError, DisabledServerTls, NegotiatedServerTls, Server, ServerAccept,
-    ServerAuthentication, ServerAuthenticationAction, ServerAuthenticationFuture,
-    ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
-    ServerIdentity, ServerIdentityProvider, ServerProtocolLimits, ServerTlsPolicy,
-    TrustServerAuthentication,
-    codec::FrontendMessage,
-    pre_startup::PreStartupMessage,
-    startup::{ProtocolVersion, StartupMessage},
+    BuildServerError, DisabledServerTls, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
+    ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
+    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
+    ServerAuthenticationResponse, ServerIdentity, ServerIdentityProvider, ServerProtocolLimits,
+    ServerTlsPolicy, StartupMessage, TrustServerAuthentication,
 };
 use rcgen::generate_simple_self_signed;
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
 };
+use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[test]
@@ -298,7 +296,7 @@ async fn required_tls_and_async_authentication_enrich_connection_context() {
         resolutions: resolutions.clone(),
         identity: ServerIdentity::new(server_config, certificate.clone()),
     };
-    let expected_binding = Bytes::from(pg_proto::tls::channel_binding(&certificate).unwrap());
+    let expected_binding = Bytes::copy_from_slice(&Sha256::digest(certificate.as_ref()));
     let server = Server::builder()
         .tls(ServerTlsPolicy::Required(provider))
         .authentication(AuthenticationFactory {

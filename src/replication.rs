@@ -6,7 +6,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A typed payload sent by a walsender inside backend `CopyData`.
-pub enum BackendReplication {
+pub(crate) enum BackendReplication {
     /// A range of write-ahead log data.
     XLogData {
         /// WAL position of the first byte in `data`.
@@ -38,7 +38,7 @@ pub enum BackendReplication {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A typed payload sent by a standby inside frontend `CopyData`.
-pub enum FrontendReplication {
+pub(crate) enum FrontendReplication {
     /// The standby's WAL receipt, flush, and replay positions.
     StandbyStatus {
         /// Last WAL position written locally.
@@ -80,7 +80,7 @@ impl BackendReplication {
     /// # Errors
     ///
     /// Returns an error for a truncated known message or an invalid Boolean byte.
-    pub fn decode(mut payload: Bytes) -> io::Result<Self> {
+    pub(crate) fn decode(mut payload: Bytes) -> io::Result<Self> {
         let tag = take_tag(&mut payload)?;
         match tag {
             b'w' => {
@@ -109,7 +109,7 @@ impl BackendReplication {
 
     #[must_use]
     /// Encodes this value as a backend replication sub-message.
-    pub fn encode(&self) -> Bytes {
+    pub(crate) fn encode(&self) -> Bytes {
         let mut output = BytesMut::new();
         match self {
             Self::XLogData {
@@ -149,7 +149,7 @@ impl FrontendReplication {
     /// # Errors
     ///
     /// Returns an error for a truncated known message or an invalid Boolean byte.
-    pub fn decode(mut payload: Bytes) -> io::Result<Self> {
+    pub(crate) fn decode(mut payload: Bytes) -> io::Result<Self> {
         let tag = take_tag(&mut payload)?;
         match tag {
             b'r' => {
@@ -183,7 +183,7 @@ impl FrontendReplication {
 
     #[must_use]
     /// Encodes this value as a frontend replication sub-message.
-    pub fn encode(&self) -> Bytes {
+    pub(crate) fn encode(&self) -> Bytes {
         let mut output = BytesMut::new();
         match self {
             Self::StandbyStatus {

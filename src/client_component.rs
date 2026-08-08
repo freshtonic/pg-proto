@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 use crate::ClientMiddleware as _;
 use crate::{
-    Conn, Dirty, Pristine,
+    Conn, Pristine,
     auth::{AuthEvent, AuthOffer, Ready},
     codec::{Backend, FrontendMessage},
     demux::SessionItem,
@@ -1053,11 +1053,19 @@ where
     }
 }
 
+/// Evidence that a connection has not performed a state-changing operation.
+#[derive(Debug)]
+pub enum ConnectionClean {}
+
+/// Evidence that an operation may have changed session-local state.
+#[derive(Debug)]
+pub enum ConnectionChanged {}
+
 /// Operational client-role connection.
 pub struct ClientConnection<
     Transport,
     State,
-    Cleanliness = Pristine,
+    Cleanliness = ConnectionClean,
     Evidence = (),
     Handler = IdentityHandler,
 > {
@@ -1065,7 +1073,7 @@ pub struct ClientConnection<
     state: State,
 }
 
-pub struct ClientConnectionCore<Transport, Cleanliness, Evidence, Handler> {
+pub(crate) struct ClientConnectionCore<Transport, Cleanliness, Evidence, Handler> {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
     handler: Handler,
     context: ClientConnectionContext<Evidence>,
@@ -1700,7 +1708,7 @@ where
         query: &[u8],
     ) -> Result<
         (
-            ClientConnection<Transport, State, Dirty, Evidence, Handler>,
+            ClientConnection<Transport, State, ConnectionChanged, Evidence, Handler>,
             Vec<crate::codec::BackendMessage>,
         ),
         QueryError,
@@ -1765,7 +1773,7 @@ where
                     return Ok((
                         ClientConnection {
                             core: ClientConnectionCore {
-                                connection,
+                                connection: connection.transition(),
                                 handler,
                                 context,
                             },
@@ -1835,7 +1843,7 @@ where
         ClientConnection<
             ClientTransport<Transport>,
             State,
-            Pristine,
+            ConnectionClean,
             Authentication::Evidence,
             <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler,
         >,
@@ -1850,7 +1858,14 @@ where
             crate::ClientMiddleware<State, ClientConnectionContext<Authentication::Evidence>>,
     {
         let core = self.connect_core(target, overrides, &mut state).await?;
-        Ok(ClientConnection { core, state })
+        Ok(ClientConnection {
+            core: ClientConnectionCore {
+                connection: core.connection.transition(),
+                handler: core.handler,
+                context: core.context,
+            },
+            state,
+        })
     }
 
     /// Establishes a client role while borrowing facade-owned state, ensuring

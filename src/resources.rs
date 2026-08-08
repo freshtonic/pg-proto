@@ -19,13 +19,13 @@ use crate::{
 };
 
 /// Runs an operation with a fresh resource brand which cannot escape the closure.
-pub fn with_resources<R>(operation: impl for<'id> FnOnce(ResourceScope<'id>) -> R) -> R {
+pub(crate) fn with_resources<R>(operation: impl for<'id> FnOnce(ResourceScope<'id>) -> R) -> R {
     operation(ResourceScope::new())
 }
 
 /// Runs an extended-query operation with one brand shared by its connection
 /// and resource namespace.
-pub fn with_connection_resources<S, P, C, R>(
+pub(crate) fn with_connection_resources<S, P, C, R>(
     conn: Conn<S, P, C>,
     operation: impl for<'id> FnOnce(ResourceConnection<'id, S, P, C>) -> R,
 ) -> R {
@@ -40,7 +40,7 @@ pub fn with_connection_resources<S, P, C, R>(
 ///
 /// The boxed future may retain branded tokens across await points, while its
 /// output cannot contain the generative lifetime.
-pub async fn with_connection_resources_async<S, P, C, R>(
+pub(crate) async fn with_connection_resources_async<S, P, C, R>(
     conn: Conn<S, P, C>,
     operation: impl for<'id> FnOnce(
         ResourceConnection<'id, S, P, C>,
@@ -55,7 +55,7 @@ pub async fn with_connection_resources_async<S, P, C, R>(
 
 /// A connection paired with its generative statement and portal namespace.
 #[derive(Debug)]
-pub struct ResourceConnection<'id, S, P, C> {
+pub(crate) struct ResourceConnection<'id, S, P, C> {
     conn: Conn<S, P, C>,
     resources: ResourceScope<'id>,
 }
@@ -63,38 +63,38 @@ pub struct ResourceConnection<'id, S, P, C> {
 impl<'id, S, P, C> ResourceConnection<'id, S, P, C> {
     /// Borrows the typed connection for transport-only operations such as
     /// buffering a frame returned by this wrapper.
-    pub const fn connection(&self) -> &Conn<S, P, C> {
+    pub(crate) const fn connection(&self) -> &Conn<S, P, C> {
         &self.conn
     }
 
     /// Mutably borrows the typed connection for transport-only operations such
     /// as buffering and flushing returned frames.
-    pub const fn connection_mut(&mut self) -> &mut Conn<S, P, C> {
+    pub(crate) const fn connection_mut(&mut self) -> &mut Conn<S, P, C> {
         &mut self.conn
     }
 
     /// Reports whether a prepared-statement token is still live in this
     /// connection's namespace.
     #[must_use]
-    pub fn statement_is_live(&self, statement: &PreparedStatement<'id>) -> bool {
+    pub(crate) fn statement_is_live(&self, statement: &PreparedStatement<'id>) -> bool {
         self.resources.statements.get(&statement.upstream_name) == Some(&statement.generation)
     }
 
     /// Reports whether a portal token is still live in this connection's
     /// namespace.
     #[must_use]
-    pub fn portal_is_live(&self, portal: &Portal<'id>) -> bool {
+    pub(crate) fn portal_is_live(&self, portal: &Portal<'id>) -> bool {
         self.resources.portals.get(&portal.upstream_name) == Some(&portal.generation)
     }
 
     /// Deliberately leaves resource-aware handling while retaining typestate.
-    pub fn into_connection(self) -> Conn<S, P, C> {
+    pub(crate) fn into_connection(self) -> Conn<S, P, C> {
         self.conn
     }
 }
 
 /// Result of preparing a statement while building an extended-query pipeline.
-pub type PrepareResult<'id, S> = Result<
+pub(crate) type PrepareResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, Building, Dirty>,
         PreparedStatement<'id>,
@@ -104,7 +104,7 @@ pub type PrepareResult<'id, S> = Result<
 >;
 
 /// Result of binding a portal for the first time in a pipeline.
-pub type BindResult<'id, S> = Result<
+pub(crate) type BindResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
         Portal<'id>,
@@ -114,7 +114,7 @@ pub type BindResult<'id, S> = Result<
 >;
 
 /// Result of preparing another statement after a portal has been bound.
-pub type BoundPrepareResult<'id, S> = Result<
+pub(crate) type BoundPrepareResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
         PreparedStatement<'id>,
@@ -124,7 +124,7 @@ pub type BoundPrepareResult<'id, S> = Result<
 >;
 
 /// Result of binding another portal after the pipeline has become executable.
-pub type RebindResult<'id, S> = Result<
+pub(crate) type RebindResult<'id, S> = Result<
     (
         ResourceConnection<'id, S, BoundBuilding, Dirty>,
         Portal<'id>,
@@ -135,7 +135,7 @@ pub type RebindResult<'id, S> = Result<
 
 #[derive(Debug)]
 /// Readiness projected while retaining the connection's resource brand.
-pub enum ResourceReadyState<'id, S, C> {
+pub(crate) enum ResourceReadyState<'id, S, C> {
     /// The connection retained its existing cleanliness index.
     Clean(ResourceConnection<'id, S, Ready, C>),
     /// Transaction or parameter evidence made the connection dirty.
@@ -151,7 +151,7 @@ pub enum ResourceReadyState<'id, S, C> {
 
 #[derive(Debug)]
 /// Projection while awaiting readiness after an extended-query result.
-pub enum ResourceAwaitingTransition<'id, S, C> {
+pub(crate) enum ResourceAwaitingTransition<'id, S, C> {
     /// A non-terminal item was consumed; continue waiting.
     Continue(ResourceConnection<'id, S, AwaitingReady, C>, SessionItem),
     /// `ReadyForQuery` completed the cycle.
@@ -162,7 +162,7 @@ pub enum ResourceAwaitingTransition<'id, S, C> {
 
 #[derive(Debug)]
 /// Projection while draining an errored resource-aware pipeline.
-pub enum ResourceDrainingTransition<'id, S, C> {
+pub(crate) enum ResourceDrainingTransition<'id, S, C> {
     /// A non-terminal item was consumed; continue draining.
     Continue(ResourceConnection<'id, S, Draining, C>, SessionItem),
     /// `ReadyForQuery` completed recovery.
@@ -171,7 +171,7 @@ pub enum ResourceDrainingTransition<'id, S, C> {
 
 /// Connection-local statement and portal namespaces.
 #[derive(Debug)]
-pub struct ResourceScope<'id> {
+pub(crate) struct ResourceScope<'id> {
     statements: HashMap<Bytes, u64>,
     client_statements: HashMap<Bytes, (Bytes, u64)>,
     portals: HashMap<Bytes, u64>,
@@ -182,7 +182,7 @@ pub struct ResourceScope<'id> {
 
 /// A prepared statement tied to one generative connection brand.
 #[derive(Debug)]
-pub struct PreparedStatement<'id> {
+pub(crate) struct PreparedStatement<'id> {
     client_name: Bytes,
     upstream_name: Bytes,
     generation: u64,
@@ -191,7 +191,7 @@ pub struct PreparedStatement<'id> {
 
 /// A bound portal tied to the same brand as its statement.
 #[derive(Debug)]
-pub struct Portal<'id> {
+pub(crate) struct Portal<'id> {
     client_name: Bytes,
     upstream_name: Bytes,
     generation: u64,
@@ -200,7 +200,7 @@ pub struct Portal<'id> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Failure to resolve or allocate a branded protocol resource.
-pub enum ResourceError {
+pub(crate) enum ResourceError {
     /// A live prepared statement already uses the requested name.
     StatementNameCollision,
     /// A live portal already uses the requested name.
@@ -226,7 +226,7 @@ impl Error for ResourceError {}
 
 #[derive(Debug)]
 /// A resource-namespace or wire-encoding failure.
-pub enum ResourceProtocolError {
+pub(crate) enum ResourceProtocolError {
     /// Resource identity or lifetime validation failed.
     Resource(ResourceError),
     /// Reconstruction of the wire message failed.
@@ -276,14 +276,14 @@ impl<'id> ResourceScope<'id> {
     }
 
     /// Records a simple-query boundary, which destroys the unnamed statement.
-    pub fn simple_query_boundary(&mut self) {
+    pub(crate) fn simple_query_boundary(&mut self) {
         self.statements.remove(b"".as_slice());
         self.client_statements
             .retain(|_, (upstream, _)| !upstream.is_empty());
     }
 
     /// Records transaction end, which destroys the unnamed portal.
-    pub fn transaction_ended(&mut self) {
+    pub(crate) fn transaction_ended(&mut self) {
         self.portals.remove(b"".as_slice());
         self.client_portals
             .retain(|_, (upstream, _)| !upstream.is_empty());
@@ -294,7 +294,7 @@ impl<'id> ResourceScope<'id> {
     /// # Errors
     ///
     /// Rejects duplicate upstream statement names.
-    pub fn prepare(
+    pub(crate) fn prepare(
         &mut self,
         client_name: Bytes,
         upstream_name: Bytes,
@@ -331,7 +331,7 @@ impl<'id> ResourceScope<'id> {
     /// # Errors
     ///
     /// Rejects statements not present in this scope and duplicate portal names.
-    pub fn bind(
+    pub(crate) fn bind(
         &mut self,
         statement: &PreparedStatement<'id>,
         client_name: Bytes,
@@ -375,7 +375,7 @@ impl<'id> ResourceScope<'id> {
     /// # Errors
     ///
     /// Rejects a token which has already been closed.
-    pub fn close_statement(
+    pub(crate) fn close_statement(
         &mut self,
         statement: PreparedStatement<'id>,
     ) -> Result<Close, ResourceError> {
@@ -397,7 +397,7 @@ impl<'id> ResourceScope<'id> {
     /// # Errors
     ///
     /// Rejects a token which has already been closed.
-    pub fn close_portal(&mut self, portal: Portal<'id>) -> Result<Close, ResourceError> {
+    pub(crate) fn close_portal(&mut self, portal: Portal<'id>) -> Result<Close, ResourceError> {
         if self.portals.get(&portal.upstream_name) != Some(&portal.generation) {
             return Err(ResourceError::UnknownPortal);
         }
@@ -437,7 +437,7 @@ impl<'id> ResourceScope<'id> {
 
     /// Resolves a client-visible statement name to its branded upstream token.
     #[must_use]
-    pub fn statement(&self, client_name: &[u8]) -> Option<PreparedStatement<'id>> {
+    pub(crate) fn statement(&self, client_name: &[u8]) -> Option<PreparedStatement<'id>> {
         let (upstream_name, generation) = self.client_statements.get(client_name)?;
         Some(PreparedStatement {
             client_name: Bytes::copy_from_slice(client_name),
@@ -449,7 +449,7 @@ impl<'id> ResourceScope<'id> {
 
     /// Resolves a client-visible portal name to its branded upstream token.
     #[must_use]
-    pub fn portal(&self, client_name: &[u8]) -> Option<Portal<'id>> {
+    pub(crate) fn portal(&self, client_name: &[u8]) -> Option<Portal<'id>> {
         let (upstream_name, generation) = self.client_portals.get(client_name)?;
         Some(Portal {
             client_name: Bytes::copy_from_slice(client_name),
@@ -466,7 +466,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
     /// # Errors
     ///
     /// Returns namespace or wire reconstruction errors.
-    pub fn prepare(
+    pub(crate) fn prepare(
         self,
         client_name: Bytes,
         upstream_name: Bytes,
@@ -489,7 +489,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
     ///
     /// Returns namespace or wire reconstruction errors.
     #[allow(clippy::too_many_arguments)]
-    pub fn bind(
+    pub(crate) fn bind(
         self,
         statement: &PreparedStatement<'id>,
         client_name: Bytes,
@@ -519,7 +519,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
     /// # Errors
     ///
     /// Returns an error for a stale statement or invalid wire value.
-    pub fn describe_statement(
+    pub(crate) fn describe_statement(
         self,
         statement: &PreparedStatement<'id>,
     ) -> Result<(Self, Frame), ResourceProtocolError> {
@@ -534,7 +534,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
     /// # Errors
     ///
     /// Returns an error for a stale statement or invalid wire value.
-    pub fn close_statement(
+    pub(crate) fn close_statement(
         self,
         statement: PreparedStatement<'id>,
     ) -> Result<(Self, Frame), ResourceProtocolError> {
@@ -552,7 +552,10 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
     /// # Errors
     ///
     /// Returns an error for a stale portal or invalid wire value.
-    pub fn close_portal(self, portal: Portal<'id>) -> Result<(Self, Frame), ResourceProtocolError> {
+    pub(crate) fn close_portal(
+        self,
+        portal: Portal<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
         let Self {
             conn,
             mut resources,
@@ -564,7 +567,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
 
     /// Emits Flush without changing resource or phase evidence.
     #[must_use]
-    pub fn flush(self) -> (Self, Frame) {
+    pub(crate) fn flush(self) -> (Self, Frame) {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_flush();
         (Self { conn, resources }, frame)
@@ -572,7 +575,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
 
     /// Emits Sync while retaining the namespace through response consumption.
     #[must_use]
-    pub fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
+    pub(crate) fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_sync();
         (ResourceConnection { conn, resources }, frame)
@@ -582,7 +585,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Building, C> {
 impl<'id, S, C> ResourceConnection<'id, S, Ready, C> {
     /// Begins another extended-query cycle with the same resource namespace.
     #[must_use]
-    pub fn begin_extended(self) -> ResourceConnection<'id, S, Building, C> {
+    pub(crate) fn begin_extended(self) -> ResourceConnection<'id, S, Building, C> {
         let Self { conn, resources } = self;
         ResourceConnection {
             conn: conn.begin_extended(),
@@ -595,7 +598,7 @@ impl<'id, S, C> ResourceConnection<'id, S, Ready, C> {
     /// # Errors
     ///
     /// Returns an error if the query cannot be reconstructed on the wire.
-    pub fn query(
+    pub(crate) fn query(
         self,
         query: &[u8],
     ) -> Result<(ResourceConnection<'id, S, SimpleQuery, Dirty>, Frame), ResourceProtocolError>
@@ -616,7 +619,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns namespace or wire reconstruction errors.
-    pub fn prepare(
+    pub(crate) fn prepare(
         self,
         client_name: Bytes,
         upstream_name: Bytes,
@@ -639,7 +642,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     ///
     /// Returns namespace or wire reconstruction errors.
     #[allow(clippy::too_many_arguments)]
-    pub fn bind(
+    pub(crate) fn bind(
         self,
         statement: &PreparedStatement<'id>,
         client_name: Bytes,
@@ -669,7 +672,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error for a stale statement or invalid wire value.
-    pub fn describe_statement(
+    pub(crate) fn describe_statement(
         self,
         statement: &PreparedStatement<'id>,
     ) -> Result<(Self, Frame), ResourceProtocolError> {
@@ -684,7 +687,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error for a stale portal or invalid wire value.
-    pub fn describe_portal(
+    pub(crate) fn describe_portal(
         self,
         portal: &Portal<'id>,
     ) -> Result<(Self, Frame), ResourceProtocolError> {
@@ -699,7 +702,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error for a stale portal or invalid wire value.
-    pub fn execute(
+    pub(crate) fn execute(
         self,
         portal: &Portal<'id>,
         max_rows: i32,
@@ -715,7 +718,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error for a stale statement or invalid wire value.
-    pub fn close_statement(
+    pub(crate) fn close_statement(
         self,
         statement: PreparedStatement<'id>,
     ) -> Result<(Self, Frame), ResourceProtocolError> {
@@ -733,7 +736,10 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
     /// # Errors
     ///
     /// Returns an error for a stale portal or invalid wire value.
-    pub fn close_portal(self, portal: Portal<'id>) -> Result<(Self, Frame), ResourceProtocolError> {
+    pub(crate) fn close_portal(
+        self,
+        portal: Portal<'id>,
+    ) -> Result<(Self, Frame), ResourceProtocolError> {
         let Self {
             conn,
             mut resources,
@@ -745,7 +751,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
 
     /// Emits Flush without changing resource or phase evidence.
     #[must_use]
-    pub fn flush(self) -> (Self, Frame) {
+    pub(crate) fn flush(self) -> (Self, Frame) {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_flush();
         (Self { conn, resources }, frame)
@@ -753,7 +759,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
 
     /// Emits Sync while retaining the namespace through response consumption.
     #[must_use]
-    pub fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
+    pub(crate) fn sync(self) -> (ResourceConnection<'id, S, AwaitingReady, C>, Frame) {
         let Self { conn, resources } = self;
         let (conn, frame) = conn.push_sync();
         (ResourceConnection { conn, resources }, frame)
@@ -763,7 +769,7 @@ impl<'id, S, C> ResourceConnection<'id, S, BoundBuilding, C> {
 impl<'id, S, C> ResourceConnection<'id, S, AwaitingReady, C> {
     /// Consumes one backend response while retaining the branded namespace.
     #[must_use]
-    pub fn offer(self, item: SessionItem) -> ResourceAwaitingTransition<'id, S, C> {
+    pub(crate) fn offer(self, item: SessionItem) -> ResourceAwaitingTransition<'id, S, C> {
         let Self { conn, resources } = self;
         match conn.offer(item) {
             AwaitingReadyTransition::Continue(conn, item) => {
@@ -782,7 +788,7 @@ impl<'id, S, C> ResourceConnection<'id, S, AwaitingReady, C> {
 impl<'id, S, C> ResourceConnection<'id, S, Draining, C> {
     /// Drains one backend response after an error while retaining resources.
     #[must_use]
-    pub fn offer(self, item: SessionItem) -> ResourceDrainingTransition<'id, S, C> {
+    pub(crate) fn offer(self, item: SessionItem) -> ResourceDrainingTransition<'id, S, C> {
         let Self { conn, resources } = self;
         match conn.offer(item) {
             DrainingTransition::Continue(conn, item) => {
@@ -851,19 +857,19 @@ impl ResourceScope<'_> {
 impl PreparedStatement<'_> {
     /// Returns the statement name presented by the client.
     #[must_use]
-    pub fn client_name(&self) -> &[u8] {
+    pub(crate) fn client_name(&self) -> &[u8] {
         &self.client_name
     }
 
     /// Returns the rewritten statement name sent upstream.
     #[must_use]
-    pub fn upstream_name(&self) -> &[u8] {
+    pub(crate) fn upstream_name(&self) -> &[u8] {
         &self.upstream_name
     }
 
     /// Constructs a `Describe` message using the rewritten statement name.
     #[must_use]
-    pub fn describe(&self) -> Describe {
+    pub(crate) fn describe(&self) -> Describe {
         Describe {
             target: DescribeTarget::Statement,
             name: self.upstream_name.clone(),
@@ -874,19 +880,19 @@ impl PreparedStatement<'_> {
 impl Portal<'_> {
     /// Returns the portal name presented by the client.
     #[must_use]
-    pub fn client_name(&self) -> &[u8] {
+    pub(crate) fn client_name(&self) -> &[u8] {
         &self.client_name
     }
 
     /// Returns the rewritten portal name sent upstream.
     #[must_use]
-    pub fn upstream_name(&self) -> &[u8] {
+    pub(crate) fn upstream_name(&self) -> &[u8] {
         &self.upstream_name
     }
 
     /// Constructs a `Describe` message using the rewritten portal name.
     #[must_use]
-    pub fn describe(&self) -> Describe {
+    pub(crate) fn describe(&self) -> Describe {
         Describe {
             target: DescribeTarget::Portal,
             name: self.upstream_name.clone(),
@@ -895,7 +901,7 @@ impl Portal<'_> {
 
     /// Constructs an `Execute` message using the rewritten portal name.
     #[must_use]
-    pub fn execute(&self, max_rows: i32) -> Execute {
+    pub(crate) fn execute(&self, max_rows: i32) -> Execute {
         Execute {
             portal: self.upstream_name.clone(),
             max_rows,

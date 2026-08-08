@@ -4,13 +4,11 @@ use std::{collections::BTreeMap, convert::Infallible};
 
 use bytes::Bytes;
 use pg_proto::{
-    CancellationRequest, NegotiatedServerTls, Server, ServerAccept, ServerAuthentication,
-    ServerAuthenticationAction, ServerAuthenticationFuture, ServerAuthenticationProvider,
-    ServerAuthenticationRequest, ServerAuthenticationResponse, ServerConnectionContext,
-    ServerMiddleware, ServerTlsPolicy, TrustIdentity, TrustServerAuthentication,
-    codec::{BackendMessage, FrontendMessage},
-    pre_startup::PreStartupMessage,
-    startup::{ProtocolVersion, StartupMessage},
+    BackendMessage, CancellationRequest, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
+    ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
+    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
+    ServerAuthenticationResponse, ServerConnectionContext, ServerMiddleware, ServerTlsPolicy,
+    StartupMessage, TrustIdentity, TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

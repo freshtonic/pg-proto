@@ -1,7 +1,9 @@
 # Migration guide
 
-This guide is for proxy implementations moving from a runtime connection-state
-enum to `pg-proto`'s generated and transport-integrated typestate APIs.
+This guide is for proxy implementations moving to `pg-proto`'s builder-only
+root facade. Implementation modules and the low-level `Conn` typestates are no
+longer public; applications configure and operate `Client`, `Server`, or
+`Intermediary` values instead.
 
 ## Adopt reusable server construction
 
@@ -38,55 +40,19 @@ mutable caller-owned state. Narrow handlers may override only the message
 families they use; the default handler remains identity middleware. Teardown
 returns the handler and state for explicit recovery.
 
-## Replace state mutation with ownership transitions
+## Replace direct protocol access
 
-Instead of storing `state: ConnectionState` and checking it before every send or
-receive, store `Conn<Transport, Phase, Cleanliness>` at the boundary where its
-phase is known. Each legal operation consumes that value and returns the next
-phase. Illegal operations are absent from the type, and a rejected incoming
-message returns the unchanged connection.
-
-At heterogeneous storage boundaries, call `erase()` and later `try_reenter()`.
-This preserves exact phase and cleanliness identities without spreading a large
-generic type through the pool implementation.
-
-## Split transport work from application policy
-
-Decode first, inspect or replace the typed message, and only then offer it to the
-session. `Intermediary<Downstream, Upstream>` owns the two independent roles and
-provides synchronous and asynchronous callbacks with access to both. It does not
-route, forward, authorise, or rewrite implicitly.
-
-Use:
-
-- `Buffered::push_frame` followed by cancellation-safe `flush` for batching;
-- `Demux::pop_async_event` for cross-kind ordered asynchronous forwarding;
-- `with_connection_resources` for branded statement/portal namespaces;
-- `CancelKeyMint` and `CancelKeyRegistry` for application-owned cancellation;
-- `CleanlinessPolicy` for application-owned pool release decisions; and
-- `GssEncUpgrade` or `TokenAuthEngine` for platform credential adapters.
-
-## Replace direct phase-association bounds
-
-Code which names middleware's phase-association traits directly should replace
-`TypedPhase<Role, Wire>` with `PhaseAssociation<Inbound, Role, Wire>` and
-`TypedOutboundPhase<Role, Wire>` with
-`PhaseAssociation<Outbound, Role, Wire>`. The generated protocol grammars now
-own these implementations; application code cannot implement the sealed trait.
-
-Most callers need no explicit bound. Typed receive and outbound interception
-methods infer the association from the connection phase, direction, sender role,
-and wire message type.
+Replace imports from `codec`, `transport`, `grammar`, `session`, `auth`, and
+other implementation modules with the root facade vocabulary. Message values
+used by middleware and forwarding are available at the crate root. Establish
+connections only through `Client::connect`, `Server::accept`, or
+`Intermediary::accept`; recover caller-owned parts through their teardown APIs.
 
 ## Replace proxy message queues with a bounded pipeline ledger
 
-Opt in with `Intermediary::with_pipeline(BoundedPipeline::new(limit)?)`. Feed
-each decoded frontend message to `pipeline_mut().accept_frontend(...)`. A
-`Forward` action returns the original owned message for upstream encoding; a
-`Discard` action identifies a locally handled operation. `FrontendAdmission`
-wraps either action as `Immediate` or `Waiting`. Capacity and protocol illegality
-return the original message in `FrontendProjectionError`, so the proxy can pause
-downstream reads and retry without cloning a payload.
+Supply `BoundedPipeline::new(limit)?` through `Intermediary::builder()`. The
+operational intermediary applies admission, ordering, and backpressure while
+`forward_next`, `forward_frontend`, and `forward_backend` drive traffic.
 
 The pre-1.0 overlapping entry points have been removed. Replace
 `project_frontend` and `frontend_action` with `accept_frontend`, and replace their
@@ -143,9 +109,7 @@ context exposes immutable negotiated-TLS and typed-identity facts.
 
 ## Intermediary composition
 
-The old low-level `intermediary::Intermediary::new(downstream, upstream)` pair
-is now named `intermediary::SessionPair::new(...)`. New proxy code should use
-the root `Intermediary::builder()` facade, supplying complete `Server` and
+Use the root `Intermediary::builder()` facade, supplying complete `Server` and
 `Client` components, a `StartupRouteResolver`, an explicit cancellation policy,
 and optional authenticated routing and boundary-middleware factories. The
 operational connection owns one caller state and provides `forward_next()` for
@@ -174,5 +138,3 @@ idle readiness evidence and an application cleanliness policy that permits it.
   modifies reconstructable extended-query and result messages.
 - [`examples/intermediary_pipeline.rs`](examples/intermediary_pipeline.rs)
   combines forwarding, local rejection, backpressure, and ordered emission.
-- [`tests/intermediary_harness.rs`](tests/intermediary_harness.rs) is the neutral
-  capability acceptance harness.

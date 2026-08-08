@@ -11,47 +11,47 @@ const GSSENC_REQUEST_CODE: u32 = 80_877_104;
 const CANCEL_REQUEST_CODE: u32 = 80_877_102;
 
 /// `PostgreSQL`'s maximum accepted untagged startup packet size.
-pub const DEFAULT_MAX_PRE_STARTUP_PACKET_LEN: usize = 10_000;
+pub(crate) const DEFAULT_MAX_PRE_STARTUP_PACKET_LEN: usize = 10_000;
 
 /// Connection awaits the client's first untagged startup-family packet.
 #[derive(Debug)]
-pub enum PreStartup {}
+pub(crate) enum PreStartup {}
 
 /// A decoded `StartupMessage` is ready for protocol validation.
 #[derive(Debug)]
-pub enum Startup {}
+pub(crate) enum Startup {}
 
 /// Client role awaits the server's raw SSL decision byte.
 #[derive(Debug)]
-pub enum AwaitingSslReply {}
+pub(crate) enum AwaitingSslReply {}
 
 /// Client role awaits the server's raw GSS encryption decision byte.
 #[derive(Debug)]
-pub enum AwaitingGssReply {}
+pub(crate) enum AwaitingGssReply {}
 
 /// SSL was accepted and the transport must complete a TLS handshake.
 #[derive(Debug)]
-pub enum TlsHandshake {}
+pub(crate) enum TlsHandshake {}
 
 /// GSS encryption was accepted and the transport must complete its handshake.
 #[derive(Debug)]
-pub enum GssHandshake {}
+pub(crate) enum GssHandshake {}
 
 /// Pre-startup processing terminated without entering a normal session.
 #[derive(Debug)]
-pub enum Terminated {}
+pub(crate) enum Terminated {}
 
 /// Server role must accept or reject a client's `SSLRequest`.
 #[derive(Debug)]
-pub enum ServerSslDecision {}
+pub(crate) enum ServerSslDecision {}
 
 /// Server role must accept or reject a client's `GSSENCRequest`.
 #[derive(Debug)]
-pub enum ServerGssDecision {}
+pub(crate) enum ServerGssDecision {}
 
 /// Server-role projection of the client's first-packet external choice.
 #[derive(Debug)]
-pub enum PreStartupOffer<S, C = Pristine> {
+pub(crate) enum PreStartupOffer<S, C = Pristine> {
     /// Client requested TLS negotiation.
     Ssl(Conn<S, ServerSslDecision, C>),
     /// Client requested GSS encryption negotiation.
@@ -76,7 +76,7 @@ pub enum PreStartupOffer<S, C = Pristine> {
 
 /// The server's single-byte answer to an SSL request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EncryptionReply {
+pub(crate) enum EncryptionReply {
     /// Server sent `S` and requires an in-place encryption handshake.
     Accepted,
     /// Server sent `N` and declined encryption.
@@ -88,7 +88,7 @@ pub enum EncryptionReply {
 impl EncryptionReply {
     /// Returns `PostgreSQL`'s raw one-byte wire representation.
     #[must_use]
-    pub const fn as_byte(self) -> u8 {
+    pub(crate) const fn as_byte(self) -> u8 {
         match self {
             Self::Accepted => b'S',
             Self::Rejected => b'N',
@@ -139,7 +139,9 @@ impl PreStartupMessage {
 /// # Errors
 ///
 /// Returns an error for invalid lengths, special-request shapes, or startup data.
-pub fn decode_pre_startup(input: &mut BytesMut) -> std::io::Result<Option<PreStartupMessage>> {
+pub(crate) fn decode_pre_startup(
+    input: &mut BytesMut,
+) -> std::io::Result<Option<PreStartupMessage>> {
     decode_pre_startup_with_limit(input, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN)
 }
 
@@ -152,7 +154,7 @@ pub fn decode_pre_startup(input: &mut BytesMut) -> std::io::Result<Option<PreSta
 ///
 /// Returns an error for an invalid limit, an oversized packet, invalid lengths,
 /// special-request shapes, or startup data.
-pub fn decode_pre_startup_with_limit(
+pub(crate) fn decode_pre_startup_with_limit(
     input: &mut BytesMut,
     max_packet_len: usize,
 ) -> std::io::Result<Option<PreStartupMessage>> {
@@ -217,7 +219,7 @@ impl TryFrom<u8> for EncryptionReply {
 
 /// A raw encryption decision byte other than `S`, `N`, or legacy `E`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InvalidEncryptionReply(
+pub(crate) struct InvalidEncryptionReply(
     /// Invalid byte received from the server.
     pub u8,
 );
@@ -310,7 +312,7 @@ impl SslMode {
 
 /// A reply whose branches deliberately have different typestates.
 #[derive(Debug)]
-pub enum Negotiation<S, Handshake, C = Pristine> {
+pub(crate) enum Negotiation<S, Handshake, C = Pristine> {
     /// Encryption accepted; complete the transport handshake next.
     Accepted(Conn<S, Handshake, C>),
     /// Encryption rejected; plaintext pre-startup choice resumes.
@@ -321,7 +323,7 @@ pub enum Negotiation<S, Handshake, C = Pristine> {
 
 /// SSL negotiation after applying plaintext-fallback policy.
 #[derive(Debug)]
-pub enum SslModeNegotiation<S, C = Pristine> {
+pub(crate) enum SslModeNegotiation<S, C = Pristine> {
     /// TLS was accepted and must be handshaken.
     Accepted(Conn<S, TlsHandshake, C>),
     /// Mode permits continuation in plaintext.
@@ -339,12 +341,12 @@ pub enum SslModeNegotiation<S, C = Pristine> {
 
 impl<S> Conn<S, PreStartup, Pristine> {
     /// Encodes `SSLRequest` and enters the raw-reply phase.
-    pub fn ssl_request(self) -> (Conn<S, AwaitingSslReply>, [u8; 8]) {
+    pub(crate) fn ssl_request(self) -> (Conn<S, AwaitingSslReply>, [u8; 8]) {
         (self.transition(), ssl_request_packet())
     }
 
     /// Encodes `GSSENCRequest` and enters the raw-reply phase.
-    pub fn gssenc_request(self) -> (Conn<S, AwaitingGssReply>, [u8; 8]) {
+    pub(crate) fn gssenc_request(self) -> (Conn<S, AwaitingGssReply>, [u8; 8]) {
         (self.transition(), gssenc_request_packet())
     }
 
@@ -353,7 +355,7 @@ impl<S> Conn<S, PreStartup, Pristine> {
     /// # Errors
     ///
     /// Returns an error when the startup parameters cannot be encoded.
-    pub fn startup(
+    pub(crate) fn startup(
         self,
         message: &StartupMessage,
     ) -> std::io::Result<(Conn<S, Startup>, bytes::Bytes)> {
@@ -365,7 +367,7 @@ impl<S> Conn<S, PreStartup, Pristine> {
     /// # Errors
     ///
     /// Returns an error unless the cancellation key is between 4 and 256 bytes.
-    pub fn cancel_request(
+    pub(crate) fn cancel_request(
         self,
         process_id: u32,
         secret_key: &[u8],
@@ -382,7 +384,7 @@ impl<S> Conn<S, PreStartup, Pristine> {
 
 impl<S, C> Conn<S, PreStartup, C> {
     /// Projects an inspected client pre-startup packet into the server role.
-    pub fn offer_pre_startup(self, message: PreStartupMessage) -> PreStartupOffer<S, C> {
+    pub(crate) fn offer_pre_startup(self, message: PreStartupMessage) -> PreStartupOffer<S, C> {
         match message {
             PreStartupMessage::SslRequest => PreStartupOffer::Ssl(self.transition()),
             PreStartupMessage::GssEncRequest => PreStartupOffer::Gss(self.transition()),
@@ -404,34 +406,34 @@ impl<S, C> Conn<S, PreStartup, C> {
 
 impl<S, C> Conn<S, ServerSslDecision, C> {
     /// Rejects SSL and returns to the pre-startup choice on the same transport.
-    pub fn reject_ssl(self) -> (Conn<S, PreStartup, C>, u8) {
+    pub(crate) fn reject_ssl(self) -> (Conn<S, PreStartup, C>, u8) {
         (self.transition(), EncryptionReply::Rejected.as_byte())
     }
 
     /// Accepts SSL and requires the transport handshake before startup is legal.
-    pub fn accept_ssl(self) -> (Conn<S, TlsHandshake, C>, u8) {
+    pub(crate) fn accept_ssl(self) -> (Conn<S, TlsHandshake, C>, u8) {
         (self.transition(), EncryptionReply::Accepted.as_byte())
     }
 
     /// Emits the historical raw `E` response and terminates negotiation.
-    pub fn legacy_ssl_error(self) -> (Conn<S, Terminated, C>, u8) {
+    pub(crate) fn legacy_ssl_error(self) -> (Conn<S, Terminated, C>, u8) {
         (self.transition(), EncryptionReply::LegacyError.as_byte())
     }
 }
 
 impl<S, C> Conn<S, ServerGssDecision, C> {
     /// Sends `N` and returns to plaintext pre-startup choice.
-    pub fn reject_gss(self) -> (Conn<S, PreStartup, C>, u8) {
+    pub(crate) fn reject_gss(self) -> (Conn<S, PreStartup, C>, u8) {
         (self.transition(), EncryptionReply::Rejected.as_byte())
     }
 
     /// Sends `S` and requires a server-side GSS transport handshake.
-    pub fn accept_gss(self) -> (Conn<S, GssHandshake, C>, u8) {
+    pub(crate) fn accept_gss(self) -> (Conn<S, GssHandshake, C>, u8) {
         (self.transition(), EncryptionReply::Accepted.as_byte())
     }
 
     /// Emits the historical raw `E` response and terminates negotiation.
-    pub fn legacy_gss_error(self) -> (Conn<S, Terminated, C>, u8) {
+    pub(crate) fn legacy_gss_error(self) -> (Conn<S, Terminated, C>, u8) {
         (self.transition(), EncryptionReply::LegacyError.as_byte())
     }
 }
@@ -446,7 +448,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
     /// let (pending, _) = Conn::new(()).ssl_request();
     /// let _ = pending.startup();
     /// ```
-    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, TlsHandshake, C> {
+    pub(crate) fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, TlsHandshake, C> {
         match reply {
             EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
             EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
@@ -455,7 +457,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
     }
 
     /// Resolves the SSL response while enforcing an [`SslMode`]'s fallback rule.
-    pub fn apply_ssl_reply(
+    pub(crate) fn apply_ssl_reply(
         self,
         reply: EncryptionReply,
         mode: SslMode,
@@ -476,7 +478,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
 
 impl<S, C> Conn<S, AwaitingGssReply, C> {
     /// Applies the server's GSS encryption decision byte.
-    pub fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, GssHandshake, C> {
+    pub(crate) fn receive_reply(self, reply: EncryptionReply) -> Negotiation<S, GssHandshake, C> {
         match reply {
             EncryptionReply::Accepted => Negotiation::Accepted(self.transition()),
             EncryptionReply::Rejected => Negotiation::Rejected(self.transition()),
@@ -487,14 +489,17 @@ impl<S, C> Conn<S, AwaitingGssReply, C> {
 
 impl<S, C> Conn<S, TlsHandshake, C> {
     /// Records a completed in-place TLS upgrade, changing the transport type.
-    pub fn finish_tls<Tls>(self, upgrade: impl FnOnce(S) -> Tls) -> Conn<Tls, PreStartup, C> {
+    pub(crate) fn finish_tls<Tls>(
+        self,
+        upgrade: impl FnOnce(S) -> Tls,
+    ) -> Conn<Tls, PreStartup, C> {
         self.map_transport(upgrade).transition()
     }
 }
 
 impl<S, C> Conn<S, TlsHandshake, C> {
     /// Records a server-side TLS upgrade while preserving cleanliness.
-    pub fn finish_server_tls<Tls>(
+    pub(crate) fn finish_server_tls<Tls>(
         self,
         upgrade: impl FnOnce(S) -> Tls,
     ) -> Conn<Tls, PreStartup, C> {
@@ -504,14 +509,14 @@ impl<S, C> Conn<S, TlsHandshake, C> {
 
 impl<S> Conn<S, GssHandshake, Pristine> {
     /// Records a completed in-place GSS encryption upgrade.
-    pub fn finish_gss<Gss>(self, upgrade: impl FnOnce(S) -> Gss) -> Conn<Gss, PreStartup> {
+    pub(crate) fn finish_gss<Gss>(self, upgrade: impl FnOnce(S) -> Gss) -> Conn<Gss, PreStartup> {
         Conn::new(upgrade(self.into_transport()))
     }
 }
 
 impl<S, C> Conn<S, GssHandshake, C> {
     /// Completes a server-side GSS upgrade and returns to encrypted pre-startup.
-    pub fn finish_server_gss<Gss>(
+    pub(crate) fn finish_server_gss<Gss>(
         self,
         upgrade: impl FnOnce(S) -> Gss,
     ) -> Conn<Gss, PreStartup, C> {

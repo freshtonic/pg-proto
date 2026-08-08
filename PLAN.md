@@ -1,7 +1,8 @@
 # PostgreSQL session-typed protocol implementation plan
 
-Current integration: issue #37 migrates every shipped example to the operational
-builder facade and verifies the examples without legacy protocol entry points.
+Current integration: issue #38 makes the root builder facade the crate's only
+public API, migrates all external consumers, and retains low-level protocol
+coverage as crate-internal tests.
 
 This plan tracks the route from the current protocol library to a production
 implementation suitable for `cipherstash/proxy`. A checked item is implemented
@@ -208,6 +209,8 @@ neutral composition harnesses and examples.
 - [x] Configure release-plz with crates.io trusted publishing through GitHub OIDC,
   grouped workspace versions, release PRs, changelog updates, and GitHub releases.
 - [x] Add CI, docs.rs, and crates.io status badges to the README.
+- [x] Cut over to a builder-only root facade, make implementation modules and
+  connection typestates crate-private, and freeze the reviewed public surface.
 
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
   `width-limiter` cap without changing the width of ordinary documentation pages.

@@ -96,7 +96,7 @@ impl ServerCertVerifier for CertificateVerifier {
 /// `require`, `prefer`, and `allow` encrypt without checking the certificate chain;
 /// `verify-ca` checks the chain without checking the host; `verify-full` checks both.
 #[must_use]
-pub fn client_config(mode: SslMode, roots: RootCertStore) -> ClientConfig {
+pub(crate) fn client_config(mode: SslMode, roots: RootCertStore) -> ClientConfig {
     let verification = mode.strategy().verification;
     if verification == CertificateVerification::CertificateAuthorityAndHost {
         return ClientConfig::builder()
@@ -190,7 +190,7 @@ delegate_io!(ServerTls);
 /// # Errors
 ///
 /// Returns a TLS handshake, certificate, or channel-binding error.
-pub async fn connect<S>(
+pub(crate) async fn connect<S>(
     stream: S,
     server_name: ServerName<'static>,
     config: Arc<ClientConfig>,
@@ -221,7 +221,7 @@ where
 /// # Errors
 ///
 /// Returns a TLS handshake or invalid-certificate error.
-pub async fn accept<S>(
+pub(crate) async fn accept<S>(
     stream: S,
     config: Arc<ServerConfig>,
     leaf_certificate: &CertificateDer<'_>,
@@ -242,7 +242,7 @@ where
 /// # Errors
 ///
 /// Returns an error if the certificate is not valid DER.
-pub fn channel_binding(certificate: &CertificateDer<'_>) -> io::Result<Vec<u8>> {
+pub(crate) fn channel_binding(certificate: &CertificateDer<'_>) -> io::Result<Vec<u8>> {
     let (_, parsed) = X509Certificate::from_der(certificate.as_ref()).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,

@@ -61,7 +61,7 @@ async fn client_establishes_an_operational_session_and_tears_down_all_parts() {
         let length = peer_io.read_u32().await.unwrap();
         let mut body = vec![0; usize::try_from(length).unwrap() - 4];
         peer_io.read_exact(&mut body).await.unwrap();
-        let startup = pg_proto::startup::StartupMessage::decode(
+        let startup = pg_proto::StartupMessage::decode(
             [length.to_be_bytes().as_slice(), body.as_slice()]
                 .concat()
                 .into(),
@@ -137,15 +137,15 @@ async fn client_establishes_an_operational_session_and_tears_down_all_parts() {
         .unwrap();
     assert!(matches!(
         connection.receive_wire().await.unwrap(),
-        pg_proto::codec::BackendMessage::ParameterStatus { name, value }
+        pg_proto::BackendMessage::ParameterStatus { name, value }
             if name == "server_version" && value == "test"
     ));
     let (connection, responses) = connection.simple_query(b"SELECT 1").await.unwrap();
     assert!(matches!(
         responses.as_slice(),
         [
-            pg_proto::codec::BackendMessage::CommandComplete(tag),
-            pg_proto::codec::BackendMessage::ReadyForQuery(_)
+            pg_proto::BackendMessage::CommandComplete(tag),
+            pg_proto::BackendMessage::ReadyForQuery(_)
         ] if tag == "SELECT 1"
     ));
     let (_transport, state, handler, context) = connection.into_parts();

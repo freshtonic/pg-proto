@@ -19,66 +19,66 @@ use crate::{
 
 #[derive(Debug)]
 /// A client simple query is being served.
-pub enum ServerSimpleQuery {}
+pub(crate) enum ServerSimpleQuery {}
 
 #[derive(Debug)]
 /// A simple-query error was sent and readiness must follow.
-pub enum ServerSimpleError {}
+pub(crate) enum ServerSimpleError {}
 
 #[derive(Debug)]
 /// A legacy function call is being served.
-pub enum ServerFunctionCall {}
+pub(crate) enum ServerFunctionCall {}
 
 #[derive(Debug)]
 /// A function result was sent and readiness must follow.
-pub enum ServerFunctionCallDone {}
+pub(crate) enum ServerFunctionCallDone {}
 
 #[derive(Debug)]
 /// A function-call error was sent and readiness must follow.
-pub enum ServerFunctionCallError {}
+pub(crate) enum ServerFunctionCallError {}
 
 #[derive(Debug)]
 /// The server is accepting an extended-query pipeline.
-pub enum ServerBuilding {}
+pub(crate) enum ServerBuilding {}
 
 #[derive(Debug)]
 /// An inspected `Parse` awaits its response.
-pub enum ServerParse {}
+pub(crate) enum ServerParse {}
 
 #[derive(Debug)]
 /// An inspected `Bind` awaits its response.
-pub enum ServerBind {}
+pub(crate) enum ServerBind {}
 
 #[derive(Debug)]
 /// An inspected `Describe` awaits its response.
-pub enum ServerDescribe {}
+pub(crate) enum ServerDescribe {}
 
 #[derive(Debug)]
 /// An inspected `Execute` is being served.
-pub enum ServerExecute {}
+pub(crate) enum ServerExecute {}
 
 #[derive(Debug)]
 /// An inspected `Close` awaits its response.
-pub enum ServerClose {}
+pub(crate) enum ServerClose {}
 
 #[derive(Debug)]
 /// A client `Sync` awaits `ReadyForQuery`.
-pub enum ServerSync {}
+pub(crate) enum ServerSync {}
 
 #[derive(Debug)]
 /// A failed extended pipeline is discarded until `Sync`.
-pub enum ServerExtendedError {}
+pub(crate) enum ServerExtendedError {}
 
 #[derive(Debug)]
 /// COPY resumes in a simple-query session.
-pub enum CopySimple {}
+pub(crate) enum CopySimple {}
 
 #[derive(Debug)]
 /// COPY resumes in an extended-query session.
-pub enum CopyExtended {}
+pub(crate) enum CopyExtended {}
 
 /// Maps a COPY resumption marker to its generated nested-session states.
-pub trait CopyResume {
+pub(crate) trait CopyResume {
     /// Generated state while both COPY directions remain open.
     const BOTH_OPEN_STATE: backend::RuntimeState;
     /// Generated state after the server closes its COPY direction.
@@ -99,51 +99,51 @@ impl CopyResume for CopyExtended {
 
 #[derive(Debug)]
 /// Server-role COPY IN stream, resumed according to `Resume`.
-pub struct ServerCopyIn<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyIn<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
 /// Client completed a server-role COPY IN stream.
-pub struct ServerCopyInDone<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyInDone<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
 /// Client failed a server-role COPY IN stream.
-pub struct ServerCopyInFailed<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyInFailed<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
 /// Server-role COPY OUT stream, resumed according to `Resume`.
-pub struct ServerCopyOut<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyOut<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
 /// Server completed a server-role COPY OUT stream.
-pub struct ServerCopyOutDone<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyOutDone<Resume>(PhantomData<Resume>);
 
 #[derive(Debug)]
 /// Both halves of a COPY BOTH stream remain open.
-pub enum BothOpen {}
+pub(crate) enum BothOpen {}
 
 #[derive(Debug)]
 /// The client half of a COPY BOTH stream is closed.
-pub enum BothClientDone {}
+pub(crate) enum BothClientDone {}
 
 #[derive(Debug)]
 /// The server half of a COPY BOTH stream is closed.
-pub enum BothServerDone {}
+pub(crate) enum BothServerDone {}
 
 #[derive(Debug)]
 /// Both halves of a COPY BOTH stream are closed.
-pub enum BothDone {}
+pub(crate) enum BothDone {}
 
 #[derive(Debug)]
 /// Server-role COPY BOTH stream parameterised by resumption and half-close state.
-pub struct ServerCopyBoth<Resume, Ends>(PhantomData<(Resume, Ends)>);
+pub(crate) struct ServerCopyBoth<Resume, Ends>(PhantomData<(Resume, Ends)>);
 
 #[derive(Debug)]
 /// Client failed a server-role COPY BOTH stream.
-pub struct ServerCopyBothFailed<Resume>(PhantomData<Resume>);
+pub(crate) struct ServerCopyBothFailed<Resume>(PhantomData<Resume>);
 
 /// Client choice while both COPY BOTH directions remain open.
 #[derive(Debug)]
-pub enum ServerCopyBothOpenOffer<S, C, Resume> {
+pub(crate) enum ServerCopyBothOpenOffer<S, C, Resume> {
     /// The client sent one opaque data chunk.
     Data {
         /// Connection remaining in COPY BOTH.
@@ -164,7 +164,7 @@ pub enum ServerCopyBothOpenOffer<S, C, Resume> {
 
 /// Client choice after the server closes its COPY BOTH direction.
 #[derive(Debug)]
-pub enum ServerCopyBothServerDoneOffer<S, C, Resume> {
+pub(crate) enum ServerCopyBothServerDoneOffer<S, C, Resume> {
     /// The client sent one final opaque data chunk.
     Data {
         /// Connection with only the client direction open.
@@ -185,7 +185,7 @@ pub enum ServerCopyBothServerDoneOffer<S, C, Resume> {
 
 /// Typed standby choice while both replication directions remain open.
 #[derive(Debug)]
-pub enum ServerReplicationOpenOffer<S, C, Resume> {
+pub(crate) enum ServerReplicationOpenOffer<S, C, Resume> {
     /// The standby sent one decoded replication message.
     Message {
         /// Connection remaining in COPY BOTH.
@@ -206,7 +206,7 @@ pub enum ServerReplicationOpenOffer<S, C, Resume> {
 
 /// Typed standby choice after the walsender closes its direction.
 #[derive(Debug)]
-pub enum ServerReplicationServerDoneOffer<S, C, Resume> {
+pub(crate) enum ServerReplicationServerDoneOffer<S, C, Resume> {
     /// The standby sent one final decoded replication message.
     Message {
         /// Connection with only the standby direction open.
@@ -226,12 +226,12 @@ pub enum ServerReplicationServerDoneOffer<S, C, Resume> {
 }
 
 /// Replication projection preserving the open connection when decoding fails.
-pub type ServerReplicationOpenProjection<S, C, Resume> = Result<
+pub(crate) type ServerReplicationOpenProjection<S, C, Resume> = Result<
     ServerReplicationOpenOffer<S, C, Resume>,
     (Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, io::Error),
 >;
 /// Replication projection after server half-close, preserving decode failures.
-pub type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
+pub(crate) type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
     ServerReplicationServerDoneOffer<S, C, Resume>,
     (
         Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
@@ -241,7 +241,7 @@ pub type ServerReplicationServerDoneProjection<S, C, Resume> = Result<
 
 /// Client choice inside a server-role COPY IN sub-session.
 #[derive(Debug)]
-pub enum ServerCopyInOffer<S, C, Resume> {
+pub(crate) enum ServerCopyInOffer<S, C, Resume> {
     /// The client sent one data chunk.
     Data {
         /// Connection remaining in COPY IN.
@@ -261,22 +261,22 @@ pub enum ServerCopyInOffer<S, C, Resume> {
 }
 
 /// COPY IN projection preserving the connection and message on mismatch.
-pub type CopyInProjection<S, C, Resume> = Result<
+pub(crate) type CopyInProjection<S, C, Resume> = Result<
     ServerCopyInOffer<S, C, Resume>,
     Box<(Conn<S, ServerCopyIn<Resume>, C>, FrontendMessage)>,
 >;
 /// Result of starting a server-role COPY IN stream.
-pub type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C>, Frame)>;
+pub(crate) type CopyInStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyIn<Resume>, C>, Frame)>;
 /// Result of starting a server-role COPY OUT stream.
-pub type CopyOutStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyOut<Resume>, C>, Frame)>;
+pub(crate) type CopyOutStart<S, C, Resume> = io::Result<(Conn<S, ServerCopyOut<Resume>, C>, Frame)>;
 /// Result of closing a server-role COPY OUT stream.
-pub type CopyOutCompletion<S, C, Resume> =
+pub(crate) type CopyOutCompletion<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyOutDone<Resume>, C>, Frame)>;
 /// Result of starting a server-role COPY BOTH stream.
-pub type CopyBothStart<S, C, Resume> =
+pub(crate) type CopyBothStart<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothOpen>, C>, Frame)>;
 /// COPY BOTH projection while both directions remain open.
-pub type CopyBothOpenProjection<S, C, Resume> = Result<
+pub(crate) type CopyBothOpenProjection<S, C, Resume> = Result<
     ServerCopyBothOpenOffer<S, C, Resume>,
     Box<(
         Conn<S, ServerCopyBoth<Resume, BothOpen>, C>,
@@ -284,7 +284,7 @@ pub type CopyBothOpenProjection<S, C, Resume> = Result<
     )>,
 >;
 /// COPY BOTH projection after the server direction closes.
-pub type CopyBothServerDoneProjection<S, C, Resume> = Result<
+pub(crate) type CopyBothServerDoneProjection<S, C, Resume> = Result<
     ServerCopyBothServerDoneOffer<S, C, Resume>,
     Box<(
         Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>,
@@ -292,15 +292,15 @@ pub type CopyBothServerDoneProjection<S, C, Resume> = Result<
     )>,
 >;
 /// Result of closing the server half of COPY BOTH.
-pub type CopyBothServerHalfClose<S, C, Resume> =
+pub(crate) type CopyBothServerHalfClose<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothServerDone>, C>, Frame)>;
 /// Result of completing COPY BOTH after both halves close.
-pub type CopyBothCompletion<S, C, Resume> =
+pub(crate) type CopyBothCompletion<S, C, Resume> =
     io::Result<(Conn<S, ServerCopyBoth<Resume, BothDone>, C>, Frame)>;
 
 /// External choice offered by a client while the server role is ready.
 #[derive(Debug)]
-pub enum ServerReadyOffer<S, C> {
+pub(crate) enum ServerReadyOffer<S, C> {
     /// A simple query, conservatively marking the session dirty.
     Query {
         /// Connection serving the query.
@@ -323,7 +323,7 @@ pub enum ServerReadyOffer<S, C> {
 
 /// A response-specific branch of the extended-query building loop.
 #[derive(Debug)]
-pub enum ServerExtendedOffer<S, C> {
+pub(crate) enum ServerExtendedOffer<S, C> {
     /// An inspected and reconstructable `Parse` request.
     Parse {
         /// Connection awaiting a parse response.
@@ -367,7 +367,7 @@ pub enum ServerExtendedOffer<S, C> {
 
 /// Projection while discarding a failed pipeline up to its synchronisation point.
 #[derive(Debug)]
-pub enum ServerDiscard<S, C> {
+pub(crate) enum ServerDiscard<S, C> {
     /// A pipeline message was discarded; continue until synchronisation.
     Continue(Conn<S, ServerExtendedError, C>),
     /// `Sync` ended the failed pipeline.
@@ -376,7 +376,7 @@ pub enum ServerDiscard<S, C> {
 
 /// Ready state produced from the status byte sent to the client.
 #[derive(Debug)]
-pub enum ServerReadyState<S, C> {
+pub(crate) enum ServerReadyState<S, C> {
     /// Idle readiness retained the existing cleanliness index.
     Ready(Conn<S, Ready, C>),
     /// Non-idle readiness made the connection dirty.
@@ -389,10 +389,10 @@ pub enum ServerReadyState<S, C> {
 }
 
 /// Projection of a client ready-state choice, preserving invalid input.
-pub type ReadyProjection<S, C> =
+pub(crate) type ReadyProjection<S, C> =
     Result<ServerReadyOffer<S, C>, Box<(Conn<S, Ready, C>, FrontendMessage)>>;
 /// Projection of an extended-query choice, preserving invalid input.
-pub type ExtendedProjection<S, Phase, C> =
+pub(crate) type ExtendedProjection<S, Phase, C> =
     Result<ServerExtendedOffer<S, C>, Box<(Conn<S, Phase, C>, FrontendMessage)>>;
 
 impl<S, C> Conn<S, Ready, C> {
@@ -402,7 +402,7 @@ impl<S, C> Conn<S, Ready, C> {
     ///
     /// Returns the unchanged connection and message for choices not yet legal in
     /// this simple-query projection.
-    pub fn offer_frontend(self, message: FrontendMessage) -> ReadyProjection<S, C> {
+    pub(crate) fn offer_frontend(self, message: FrontendMessage) -> ReadyProjection<S, C> {
         match (
             backend::project_external(backend::RuntimeState::Ready, &message),
             message,
@@ -429,12 +429,15 @@ impl<S, C> Conn<S, Ready, C> {
     }
 
     /// Accepts inspected query text which cannot retain client session state.
-    pub fn accept_stateless_query(self, query: Bytes) -> (Conn<S, ServerSimpleQuery, C>, Bytes) {
+    pub(crate) fn accept_stateless_query(
+        self,
+        query: Bytes,
+    ) -> (Conn<S, ServerSimpleQuery, C>, Bytes) {
         (self.transition(), query)
     }
 
     /// Accepts an allow-listed function call known not to retain session state.
-    pub fn accept_stateless_function_call(
+    pub(crate) fn accept_stateless_function_call(
         self,
         message: FunctionCall,
     ) -> (Conn<S, ServerFunctionCall, C>, FunctionCall) {
@@ -448,7 +451,10 @@ impl<S, C> Conn<S, ServerFunctionCall, C> {
     /// # Errors
     ///
     /// Returns an error if the result is too large for a wire frame.
-    pub fn respond(self, value: Bytes) -> io::Result<(Conn<S, ServerFunctionCallDone, C>, Frame)> {
+    pub(crate) fn respond(
+        self,
+        value: Bytes,
+    ) -> io::Result<(Conn<S, ServerFunctionCallDone, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::FunctionCallResponse(value).to_frame()?,
@@ -460,7 +466,7 @@ impl<S, C> Conn<S, ServerFunctionCall, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerFunctionCallError, C>, Frame)> {
@@ -477,7 +483,10 @@ impl<S, C> Conn<S, ServerFunctionCallDone, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed ready message cannot be encoded.
-    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+    pub(crate) fn ready(
+        self,
+        status: TransactionStatus,
+    ) -> io::Result<(ServerReadyState<S, C>, Frame)> {
         ready(self, status)
     }
 }
@@ -488,7 +497,10 @@ impl<S, C> Conn<S, ServerFunctionCallError, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed ready message cannot be encoded.
-    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+    pub(crate) fn ready(
+        self,
+        status: TransactionStatus,
+    ) -> io::Result<(ServerReadyState<S, C>, Frame)> {
         ready(self, status)
     }
 }
@@ -499,7 +511,7 @@ impl<S, C> Conn<S, ServerBuilding, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not legal before `Sync`.
-    pub fn offer_frontend(
+    pub(crate) fn offer_frontend(
         self,
         message: FrontendMessage,
     ) -> ExtendedProjection<S, ServerBuilding, C> {
@@ -514,7 +526,7 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     ///
     /// Returns an error if the message cannot be reconstructed, or if it would
     /// prematurely change the simple-query state.
-    pub fn send(self, message: &BackendMessage) -> io::Result<(Self, Frame)> {
+    pub(crate) fn send(self, message: &BackendMessage) -> io::Result<(Self, Frame)> {
         if matches!(
             message,
             BackendMessage::ErrorResponse(_)
@@ -536,7 +548,7 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerSimpleError, C>, Frame)> {
@@ -551,7 +563,7 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopySimple> {
+    pub(crate) fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopySimple> {
         Ok((
             self.transition(),
             BackendMessage::CopyInResponse(response).to_frame()?,
@@ -563,7 +575,7 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopySimple> {
+    pub(crate) fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopySimple> {
         Ok((
             self.transition(),
             BackendMessage::CopyOutResponse(response).to_frame()?,
@@ -575,7 +587,7 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopySimple> {
+    pub(crate) fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopySimple> {
         Ok((
             self.transition(),
             BackendMessage::CopyBothResponse(response).to_frame()?,
@@ -587,7 +599,10 @@ impl<S, C> Conn<S, ServerSimpleQuery, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed ready message cannot be encoded.
-    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+    pub(crate) fn ready(
+        self,
+        status: TransactionStatus,
+    ) -> io::Result<(ServerReadyState<S, C>, Frame)> {
         ready(self, status)
     }
 }
@@ -598,7 +613,10 @@ impl<S, C> Conn<S, ServerSimpleError, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed ready message cannot be encoded.
-    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+    pub(crate) fn ready(
+        self,
+        status: TransactionStatus,
+    ) -> io::Result<(ServerReadyState<S, C>, Frame)> {
         ready(self, status)
     }
 }
@@ -609,7 +627,7 @@ impl<S, C> Conn<S, ServerParse, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((self.transition(), BackendMessage::ParseComplete.to_frame()?))
     }
 
@@ -618,7 +636,7 @@ impl<S, C> Conn<S, ServerParse, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -632,7 +650,7 @@ impl<S, C> Conn<S, ServerBind, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((self.transition(), BackendMessage::BindComplete.to_frame()?))
     }
 
@@ -641,7 +659,7 @@ impl<S, C> Conn<S, ServerBind, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -655,7 +673,7 @@ impl<S, C> Conn<S, ServerClose, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn complete(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((self.transition(), BackendMessage::CloseComplete.to_frame()?))
     }
 
@@ -664,7 +682,7 @@ impl<S, C> Conn<S, ServerClose, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -678,7 +696,7 @@ impl<S, C> Conn<S, ServerDescribe, C> {
     /// # Errors
     ///
     /// Returns an error if the OID count overflows the protocol field.
-    pub fn parameter_description(self, oids: Vec<u32>) -> io::Result<(Self, Frame)> {
+    pub(crate) fn parameter_description(self, oids: Vec<u32>) -> io::Result<(Self, Frame)> {
         Ok((self, BackendMessage::ParameterDescription(oids).to_frame()?))
     }
 
@@ -687,7 +705,7 @@ impl<S, C> Conn<S, ServerDescribe, C> {
     /// # Errors
     ///
     /// Returns an error if field metadata is invalid.
-    pub fn row_description(
+    pub(crate) fn row_description(
         self,
         description: RowDescription,
     ) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
@@ -702,7 +720,7 @@ impl<S, C> Conn<S, ServerDescribe, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn no_data(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn no_data(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((self.transition(), BackendMessage::NoData.to_frame()?))
     }
 
@@ -711,7 +729,7 @@ impl<S, C> Conn<S, ServerDescribe, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -726,7 +744,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     ///
     /// Returns an error if the message cannot be reconstructed or requires a
     /// dedicated state transition.
-    pub fn send(self, message: &BackendMessage) -> io::Result<(Self, Frame)> {
+    pub(crate) fn send(self, message: &BackendMessage) -> io::Result<(Self, Frame)> {
         if matches!(
             message,
             BackendMessage::CommandComplete(_)
@@ -750,7 +768,10 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::CommandComplete(tag).to_frame()?,
@@ -762,7 +783,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn portal_suspended(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn portal_suspended(self) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::PortalSuspended.to_frame()?,
@@ -774,7 +795,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -786,7 +807,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopyExtended> {
+    pub(crate) fn copy_in(self, response: CopyResponse) -> CopyInStart<S, C, CopyExtended> {
         Ok((
             self.transition(),
             BackendMessage::CopyInResponse(response).to_frame()?,
@@ -798,7 +819,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopyExtended> {
+    pub(crate) fn copy_out(self, response: CopyResponse) -> CopyOutStart<S, C, CopyExtended> {
         Ok((
             self.transition(),
             BackendMessage::CopyOutResponse(response).to_frame()?,
@@ -810,7 +831,7 @@ impl<S, C> Conn<S, ServerExecute, C> {
     /// # Errors
     ///
     /// Returns an error if the format count overflows the protocol field.
-    pub fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopyExtended> {
+    pub(crate) fn copy_both(self, response: CopyResponse) -> CopyBothStart<S, C, CopyExtended> {
         Ok((
             self.transition(),
             BackendMessage::CopyBothResponse(response).to_frame()?,
@@ -825,7 +846,10 @@ impl<S, C> Conn<S, ServerCopyIn<CopySimple>, C> {
     ///
     /// Returns the unchanged state and message for anything other than COPY data,
     /// completion, or failure.
-    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, CopySimple> {
+    pub(crate) fn offer_frontend(
+        self,
+        message: FrontendMessage,
+    ) -> CopyInProjection<S, C, CopySimple> {
         project_copy_in(self, backend::RuntimeState::SimpleCopyIn, message)
     }
 }
@@ -837,7 +861,10 @@ impl<S, C> Conn<S, ServerCopyIn<CopyExtended>, C> {
     ///
     /// Returns the unchanged state and message for anything other than COPY data,
     /// completion, or failure.
-    pub fn offer_frontend(self, message: FrontendMessage) -> CopyInProjection<S, C, CopyExtended> {
+    pub(crate) fn offer_frontend(
+        self,
+        message: FrontendMessage,
+    ) -> CopyInProjection<S, C, CopyExtended> {
         project_copy_in(self, backend::RuntimeState::ExtendedCopyIn, message)
     }
 }
@@ -848,7 +875,7 @@ impl<S, C> Conn<S, ServerCopyInDone<CopySimple>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(
+    pub(crate) fn command_complete(
         self,
         tag: Bytes,
     ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
@@ -865,7 +892,10 @@ impl<S, C> Conn<S, ServerCopyInDone<CopyExtended>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::CommandComplete(tag).to_frame()?,
@@ -879,7 +909,7 @@ impl<S, C> Conn<S, ServerCopyInFailed<CopySimple>, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerSimpleError, C>, Frame)> {
@@ -896,7 +926,7 @@ impl<S, C> Conn<S, ServerCopyInFailed<CopyExtended>, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -910,7 +940,7 @@ impl<S, C, Resume> Conn<S, ServerCopyOut<Resume>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+    pub(crate) fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
     }
 
@@ -919,7 +949,7 @@ impl<S, C, Resume> Conn<S, ServerCopyOut<Resume>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+    pub(crate) fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
         self.data(message.encode())
     }
 
@@ -928,7 +958,7 @@ impl<S, C, Resume> Conn<S, ServerCopyOut<Resume>, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed response cannot be encoded.
-    pub fn done(self) -> CopyOutCompletion<S, C, Resume> {
+    pub(crate) fn done(self) -> CopyOutCompletion<S, C, Resume> {
         Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
     }
 }
@@ -939,7 +969,7 @@ impl<S, C> Conn<S, ServerCopyOutDone<CopySimple>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(
+    pub(crate) fn command_complete(
         self,
         tag: Bytes,
     ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
@@ -956,7 +986,10 @@ impl<S, C> Conn<S, ServerCopyOutDone<CopyExtended>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::CommandComplete(tag).to_frame()?,
@@ -970,7 +1003,10 @@ impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not COPY traffic.
-    pub fn offer_frontend(self, message: FrontendMessage) -> CopyBothOpenProjection<S, C, Resume> {
+    pub(crate) fn offer_frontend(
+        self,
+        message: FrontendMessage,
+    ) -> CopyBothOpenProjection<S, C, Resume> {
         match (
             backend::project_external(Resume::BOTH_OPEN_STATE, &message),
             message,
@@ -996,7 +1032,7 @@ impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+    pub(crate) fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
     }
 
@@ -1005,7 +1041,7 @@ impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+    pub(crate) fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
         self.data(message.encode())
     }
 
@@ -1014,7 +1050,7 @@ impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothOpen>, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed completion frame cannot be encoded.
-    pub fn done(self) -> CopyBothServerHalfClose<S, C, Resume> {
+    pub(crate) fn done(self) -> CopyBothServerHalfClose<S, C, Resume> {
         Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
     }
 }
@@ -1025,7 +1061,7 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
+    pub(crate) fn data(self, data: Bytes) -> io::Result<(Self, Frame)> {
         Ok((self, BackendMessage::CopyData(data).to_frame()?))
     }
 
@@ -1034,7 +1070,7 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
     /// # Errors
     ///
     /// Returns an error only if the data frame cannot be encoded.
-    pub fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
+    pub(crate) fn replication(self, message: &BackendReplication) -> io::Result<(Self, Frame)> {
         self.data(message.encode())
     }
 
@@ -1043,7 +1079,7 @@ impl<S, C, Resume> Conn<S, ServerCopyBoth<Resume, BothClientDone>, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed completion frame cannot be encoded.
-    pub fn done(self) -> CopyBothCompletion<S, C, Resume> {
+    pub(crate) fn done(self) -> CopyBothCompletion<S, C, Resume> {
         Ok((self.transition(), BackendMessage::CopyDone.to_frame()?))
     }
 }
@@ -1054,7 +1090,7 @@ impl<S, C, Resume: CopyResume> Conn<S, ServerCopyBoth<Resume, BothServerDone>, C
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not COPY traffic.
-    pub fn offer_frontend(
+    pub(crate) fn offer_frontend(
         self,
         message: FrontendMessage,
     ) -> CopyBothServerDoneProjection<S, C, Resume> {
@@ -1085,7 +1121,7 @@ impl<S, C, Resume> ServerCopyBothOpenOffer<S, C, Resume> {
     /// # Errors
     ///
     /// Returns the live connection with a decoding error for malformed known payloads.
-    pub fn decode_replication(self) -> ServerReplicationOpenProjection<S, C, Resume> {
+    pub(crate) fn decode_replication(self) -> ServerReplicationOpenProjection<S, C, Resume> {
         match self {
             Self::Data { conn, data } => match FrontendReplication::decode(data) {
                 Ok(message) => Ok(ServerReplicationOpenOffer::Message { conn, message }),
@@ -1103,7 +1139,7 @@ impl<S, C, Resume> ServerCopyBothServerDoneOffer<S, C, Resume> {
     /// # Errors
     ///
     /// Returns the live connection with a decoding error for malformed known payloads.
-    pub fn decode_replication(self) -> ServerReplicationServerDoneProjection<S, C, Resume> {
+    pub(crate) fn decode_replication(self) -> ServerReplicationServerDoneProjection<S, C, Resume> {
         match self {
             Self::Data { conn, data } => match FrontendReplication::decode(data) {
                 Ok(message) => Ok(ServerReplicationServerDoneOffer::Message { conn, message }),
@@ -1123,7 +1159,7 @@ impl<S, C> Conn<S, ServerCopyBoth<CopySimple, BothDone>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(
+    pub(crate) fn command_complete(
         self,
         tag: Bytes,
     ) -> io::Result<(Conn<S, ServerSimpleQuery, C>, Frame)> {
@@ -1140,7 +1176,10 @@ impl<S, C> Conn<S, ServerCopyBoth<CopyExtended, BothDone>, C> {
     /// # Errors
     ///
     /// Returns an error if the command tag contains a NUL byte.
-    pub fn command_complete(self, tag: Bytes) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
+    pub(crate) fn command_complete(
+        self,
+        tag: Bytes,
+    ) -> io::Result<(Conn<S, ServerBuilding, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::CommandComplete(tag).to_frame()?,
@@ -1154,7 +1193,7 @@ impl<S, C> Conn<S, ServerCopyBothFailed<CopySimple>, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerSimpleError, C>, Frame)> {
@@ -1171,7 +1210,7 @@ impl<S, C> Conn<S, ServerCopyBothFailed<CopyExtended>, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, ServerExtendedError, C>, Frame)> {
@@ -1182,7 +1221,7 @@ impl<S, C> Conn<S, ServerCopyBothFailed<CopyExtended>, C> {
 impl<S, C> Conn<S, ServerExtendedError, C> {
     /// Discards one pipelined message; only `Sync` exits error recovery.
     #[must_use]
-    pub fn discard(self, message: &FrontendMessage) -> ServerDiscard<S, C> {
+    pub(crate) fn discard(self, message: &FrontendMessage) -> ServerDiscard<S, C> {
         match backend::project_external(backend::RuntimeState::ExtendedError, message) {
             Some(backend::Event::Sync) => ServerDiscard::Sync(self.transition()),
             Some(backend::Event::Discard) | None => ServerDiscard::Continue(self),
@@ -1219,7 +1258,10 @@ impl<S, C> Conn<S, ServerSync, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed ready message cannot be encoded.
-    pub fn ready(self, status: TransactionStatus) -> io::Result<(ServerReadyState<S, C>, Frame)> {
+    pub(crate) fn ready(
+        self,
+        status: TransactionStatus,
+    ) -> io::Result<(ServerReadyState<S, C>, Frame)> {
         ready(self, status)
     }
 }

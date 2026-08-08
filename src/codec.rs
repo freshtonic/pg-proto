@@ -9,15 +9,15 @@ use crate::startup::ProtocolVersion;
 
 /// Messages sent by a `PostgreSQL` frontend.
 #[derive(Debug)]
-pub enum Frontend {}
+pub(crate) enum Frontend {}
 
 /// Messages sent by a `PostgreSQL` backend.
 #[derive(Debug)]
-pub enum Backend {}
+pub(crate) enum Backend {}
 
 /// A validated `PostgreSQL` tagged frame, including its tag but not its length.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Frame {
+pub(crate) struct Frame {
     /// Direction-scoped one-byte message tag.
     pub tag: u8,
     /// Message bytes after the tag and four-byte length field.
@@ -25,7 +25,7 @@ pub struct Frame {
 }
 
 /// Decoder direction. The same byte tag has different meanings in each direction.
-pub trait Direction {
+pub(crate) trait Direction {
     /// Typed message family produced for this direction.
     type Message;
 
@@ -37,14 +37,14 @@ pub trait Direction {
 
 /// A `PostgreSQL` codec which cannot confuse frontend and backend tag alphabets.
 #[derive(Debug)]
-pub struct PgCodec<D> {
+pub(crate) struct PgCodec<D> {
     max_frame_len: usize,
     _direction: PhantomData<fn() -> D>,
 }
 
 const MAX_PROTOCOL_FRAME_LEN: usize = i32::MAX as usize + 1;
 /// Default total tagged-frame limit, including tag and length.
-pub const DEFAULT_MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 impl<D> Default for PgCodec<D> {
     fn default() -> Self {
@@ -62,7 +62,7 @@ impl<D> PgCodec<D> {
     ///
     /// Rejects limits smaller than an empty frame or larger than `PostgreSQL`'s
     /// signed int32 length field can represent.
-    pub fn with_max_frame_len(max_frame_len: usize) -> io::Result<Self> {
+    pub(crate) fn with_max_frame_len(max_frame_len: usize) -> io::Result<Self> {
         if !(5..=MAX_PROTOCOL_FRAME_LEN).contains(&max_frame_len) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -225,7 +225,7 @@ impl FrontendMessage {
     /// # Errors
     ///
     /// Returns an error when a structured message contains invalid values.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         match self {
             Self::Parse(message) => message.to_frame(),
             Self::Bind(message) => message.to_frame(),
@@ -268,7 +268,7 @@ impl Parse {
     /// # Errors
     ///
     /// Returns an error for NUL-containing strings or too many parameter types.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         put_cstr(&self.statement, &mut body)?;
         put_cstr(&self.query, &mut body)?;
@@ -304,7 +304,7 @@ impl Bind {
     /// # Errors
     ///
     /// Returns an error for invalid names, excessive counts, or oversized values.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         put_cstr(&self.portal, &mut body)?;
         put_cstr(&self.statement, &mut body)?;
@@ -384,7 +384,7 @@ impl Describe {
     /// # Errors
     ///
     /// Returns an error if the name contains a NUL byte.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         body.put_u8(match self.target {
             DescribeTarget::Statement => b'S',
@@ -402,7 +402,7 @@ impl Close {
     /// # Errors
     ///
     /// Returns an error if the name contains a NUL byte.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         named_target_frame(b'C', self.target, &self.name)
     }
 }
@@ -411,7 +411,7 @@ impl Execute {
     /// # Errors
     ///
     /// Returns an error if the portal name contains a NUL byte.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         put_cstr(&self.portal, &mut body)?;
         body.put_i32(self.max_rows);
@@ -426,7 +426,7 @@ impl FunctionCall {
     /// # Errors
     ///
     /// Returns an error for excessive counts or oversized argument values.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         body.put_u32(self.function_oid);
         put_i16_vec(&self.argument_formats, &mut body)?;
@@ -498,7 +498,7 @@ impl RowDescription {
     /// # Errors
     ///
     /// Returns an error for excessive fields or NUL-containing field names.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         put_count(self.fields.len(), &mut body)?;
         for field in &self.fields {
@@ -676,7 +676,7 @@ impl BackendMessage {
     /// # Errors
     ///
     /// Returns an error when a structured message contains invalid values.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         match self {
             Self::RowDescription(message) => message.to_frame(),
             Self::Authentication(message) => authentication_frame(message),
@@ -776,7 +776,7 @@ impl NegotiateProtocolVersion {
     /// # Errors
     ///
     /// Returns an error for too many options or NUL-containing names.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         body.put_u32((u32::from(self.newest.major) << 16) | u32::from(self.newest.minor));
         let count = u32::try_from(self.unsupported_options.len())
@@ -796,7 +796,7 @@ impl DataRow {
     /// # Errors
     ///
     /// Returns an error for too many columns or oversized values.
-    pub fn to_frame(&self) -> io::Result<Frame> {
+    pub(crate) fn to_frame(&self) -> io::Result<Frame> {
         let mut body = BytesMut::new();
         put_count(self.columns.len(), &mut body)?;
         for column in &self.columns {

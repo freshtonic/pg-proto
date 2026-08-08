@@ -26,7 +26,7 @@ pub type ServerAuthenticationFuture<'a, Identity, Error> =
 
 /// Async startup routing hook used by the intermediary facade.
 #[allow(clippy::type_complexity)]
-pub trait StartupResolver<State, Peer, Identity> {
+pub(crate) trait StartupResolver<State, Peer, Identity> {
     type Route;
     type Error;
 
@@ -45,7 +45,7 @@ pub trait StartupResolver<State, Peer, Identity> {
 
 /// Failure from either server establishment or application startup routing.
 #[derive(Debug)]
-pub enum RoutedAcceptError<TlsError, AuthenticationError, RouteError> {
+pub(crate) enum RoutedAcceptError<TlsError, AuthenticationError, RouteError> {
     Accept(AcceptError<TlsError, AuthenticationError>),
     Route(RouteError),
 }
@@ -806,7 +806,7 @@ pub struct ServerConnection<
 }
 
 #[derive(Debug)]
-pub struct ServerConnectionCore<Transport, Peer, Identity, Handler> {
+pub(crate) struct ServerConnectionCore<Transport, Peer, Identity, Handler> {
     conn: ServerConnectionInner<Transport>,
     startup: StartupMessage,
     handler: Handler,

@@ -1,0 +1,16 @@
+error[E0382]: borrow of moved value: `connection`
+  --> tests/ui/facade/operation_owns_protocol_phase.rs:13:13
+   |
+ 7 |     mut connection: ClientConnection<T, S, ConnectionClean, E, H>,
+   |     -------------- move occurs because `connection` has type `ClientConnection<T, S, ConnectionClean, E, H>`, which does not implement the `Copy` trait
+...
+12 |     let query = connection.simple_query(b"select 1");
+   |                            ------------------------- `connection` moved due to this method call
+13 |     let _ = connection.receive_wire().await;
+   |             ^^^^^^^^^^ value borrowed here after move
+   |
+note: `ClientConnection::<Transport, State, Cleanliness, Evidence, Handler>::simple_query` takes ownership of the receiver `self`, which moves `connection`
+  --> src/client_component.rs
+   |
+   |         self,
+   |         ^^^^

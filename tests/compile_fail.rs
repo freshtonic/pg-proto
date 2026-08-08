@@ -1,7 +1,7 @@
-//! Compile-fail coverage for illegal protocol and resource transitions.
+//! Compile-fail coverage for the builder facade boundary and typestate.
 
 #[test]
-fn illegal_protocol_transitions_do_not_compile() {
+fn illegal_facade_usage_does_not_compile() {
     let tests = trybuild::TestCases::new();
-    tests.compile_fail("tests/ui/*.rs");
+    tests.compile_fail("tests/ui/facade/*.rs");
 }

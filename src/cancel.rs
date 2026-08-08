@@ -11,7 +11,7 @@ use crate::demux::CancelKey;
 /// Implementations may use cryptographic randomness, an external allocator, or
 /// another process-specific strategy. The protocol library does not prescribe
 /// key lifecycle or storage.
-pub trait CancelKeyMint {
+pub(crate) trait CancelKeyMint {
     /// Error returned when a client-facing key cannot be minted.
     type Error;
 
@@ -28,7 +28,7 @@ pub trait CancelKeyMint {
 /// A proxy can implement this over local memory, shared storage, or routing
 /// metadata. [`CancelKeyMap`] is deliberately only a small reference
 /// implementation.
-pub trait CancelKeyRegistry {
+pub(crate) trait CancelKeyRegistry {
     /// Error returned when a key association cannot be registered.
     type Error;
 
@@ -54,13 +54,13 @@ pub trait CancelKeyRegistry {
 
 /// Client-facing cancellation keys mapped to their current upstream keys.
 #[derive(Debug, Default)]
-pub struct CancelKeyMap {
+pub(crate) struct CancelKeyMap {
     mappings: HashMap<CancelKey, CancelKey>,
 }
 
 /// Validation or collision failure while registering a cancellation mapping.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RegisterError {
+pub(crate) enum RegisterError {
     /// Client-facing secret length was outside `PostgreSQL`'s accepted range.
     InvalidClientKeyLength(usize),
     /// Upstream secret length was outside `PostgreSQL`'s accepted range.
@@ -72,7 +72,7 @@ pub enum RegisterError {
 impl CancelKeyMap {
     /// Creates an empty in-memory cancellation-key registry.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -82,7 +82,7 @@ impl CancelKeyMap {
     ///
     /// Rejects keys outside the protocol's 4–256 byte range and client-key
     /// collisions. Existing mappings are never silently replaced.
-    pub fn register(
+    pub(crate) fn register(
         &mut self,
         client: CancelKey,
         upstream: CancelKey,
@@ -98,7 +98,7 @@ impl CancelKeyMap {
 
     /// Resolves an inspected client `CancelRequest` to its upstream key.
     #[must_use]
-    pub fn resolve(&self, process_id: u32, secret_key: &[u8]) -> Option<&CancelKey> {
+    pub(crate) fn resolve(&self, process_id: u32, secret_key: &[u8]) -> Option<&CancelKey> {
         self.mappings.get(&CancelKey {
             process_id,
             secret_key: Bytes::copy_from_slice(secret_key),
@@ -106,19 +106,19 @@ impl CancelKeyMap {
     }
 
     /// Detaches a client key when its upstream session is released or replaced.
-    pub fn remove(&mut self, client: &CancelKey) -> Option<CancelKey> {
+    pub(crate) fn remove(&mut self, client: &CancelKey) -> Option<CancelKey> {
         self.mappings.remove(client)
     }
 
     /// Returns the number of live client-to-upstream mappings.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.mappings.len()
     }
 
     /// Returns whether the registry contains no mappings.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.mappings.is_empty()
     }
 }

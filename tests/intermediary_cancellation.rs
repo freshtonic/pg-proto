@@ -10,11 +10,11 @@ use std::{
 
 use bytes::Bytes;
 use pg_proto::{
-    CancellationPolicy, CancellationRoute, Client, ClientTlsPolicy, ConnectTarget,
+    CancelKey, CancellationPolicy, CancellationRoute, Client, ClientTlsPolicy, ConnectTarget,
     EstablishmentFailurePolicy, InitialServerContext, Intermediary, IntermediaryAccept,
-    IntermediaryCancellationRegistry, Server, ServerConnectionContext, ServerMiddleware,
-    ServerTlsPolicy, StartupParameters, StartupRouteResolver, TrustClientAuthentication,
-    TrustServerAuthentication, demux::CancelKey, pre_startup::PreStartupMessage,
+    IntermediaryCancellationRegistry, PreStartupMessage, Server, ServerConnectionContext,
+    ServerMiddleware, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -119,13 +119,10 @@ impl pg_proto::ClientMiddleware<Vec<&'static str>, pg_proto::ClientConnectionCon
         &mut self,
         _: &pg_proto::ClientConnectionContext<()>,
         _: &mut Vec<&'static str>,
-        message: pg_proto::codec::BackendMessage,
-    ) -> pg_proto::codec::BackendMessage {
-        if matches!(
-            message,
-            pg_proto::codec::BackendMessage::BackendKeyData { .. }
-        ) {
-            pg_proto::codec::BackendMessage::BackendKeyData {
+        message: pg_proto::BackendMessage,
+    ) -> pg_proto::BackendMessage {
+        if matches!(message, pg_proto::BackendMessage::BackendKeyData { .. }) {
+            pg_proto::BackendMessage::BackendKeyData {
                 process_id: 999,
                 secret_key: Bytes::from_static(b"middleware-key"),
             }
@@ -190,8 +187,8 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     let downstream_task = tokio::spawn(async move {
         downstream
             .write_all(
-                &pg_proto::startup::StartupMessage {
-                    version: pg_proto::startup::ProtocolVersion::V3_2,
+                &pg_proto::StartupMessage {
+                    version: pg_proto::ProtocolVersion::V3_2,
                     parameters: std::iter::once((
                         Bytes::from_static(b"user"),
                         Bytes::from_static(b"alice"),
@@ -358,9 +355,9 @@ impl ServerMiddleware<(), ServerConnectionContext<(), pg_proto::TrustIdentity>>
         &mut self,
         _: &ServerConnectionContext<(), pg_proto::TrustIdentity>,
         (): &mut (),
-        message: pg_proto::codec::BackendMessage,
-    ) -> pg_proto::codec::BackendMessage {
-        if matches!(message, pg_proto::codec::BackendMessage::ErrorResponse(_)) {
+        message: pg_proto::BackendMessage,
+    ) -> pg_proto::BackendMessage {
+        if matches!(message, pg_proto::BackendMessage::ErrorResponse(_)) {
             *self.0.borrow_mut() += 1;
         }
         message
@@ -397,8 +394,8 @@ async fn safe_diagnostic_is_fixed_redacted_and_intercepted_once() {
         .build()
         .unwrap();
     peer.write_all(
-        &pg_proto::startup::StartupMessage {
-            version: pg_proto::startup::ProtocolVersion::V3_2,
+        &pg_proto::StartupMessage {
+            version: pg_proto::ProtocolVersion::V3_2,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),

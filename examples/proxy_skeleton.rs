@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_session();
     while !matches!(
         session.forward_next().await?,
-        pg_proto::ForwardedMessage::Frontend(pg_proto::codec::FrontendMessage::Terminate)
+        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
     ) {}
     Ok(())
 }

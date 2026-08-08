@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if matches!(
             session.forward_frontend().await?,
-            pg_proto::codec::FrontendMessage::Terminate
+            pg_proto::FrontendMessage::Terminate
         ) {
             return Ok(());
         }
@@ -66,14 +66,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))) => {
                 println!("capacity reached: the second owned request is retained");
             }
-            Ok(pg_proto::codec::FrontendMessage::Terminate) => return Ok(()),
+            Ok(pg_proto::FrontendMessage::Terminate) => return Ok(()),
             Ok(_) => unreachable!("capacity one must reject a second outstanding operation"),
             Err(error) => return Err(error.into()),
         }
         loop {
             if matches!(
                 session.forward_backend().await?,
-                pg_proto::codec::BackendMessage::ReadyForQuery(_)
+                pg_proto::BackendMessage::ReadyForQuery(_)
             ) {
                 break;
             }

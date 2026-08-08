@@ -89,7 +89,7 @@ where
 
 /// Transport wrapper which retains bytes until each write has completed.
 #[derive(Debug)]
-pub struct Buffered<S, D = Backend> {
+pub(crate) struct Buffered<S, D = Backend> {
     io: S,
     outbound: BytesMut,
     inbound: BytesMut,
@@ -100,7 +100,7 @@ pub struct Buffered<S, D = Backend> {
 
 impl<S> Buffered<S, Backend> {
     /// Wraps an upstream-facing transport which receives backend messages.
-    pub fn new(io: S) -> Self {
+    pub(crate) fn new(io: S) -> Self {
         Self {
             io,
             outbound: BytesMut::new(),
@@ -116,7 +116,7 @@ impl<S> Buffered<S, Backend> {
     /// # Errors
     ///
     /// Returns an error when the limit is outside `PostgreSQL`'s frame range.
-    pub fn with_max_frame_len(io: S, max_frame_len: usize) -> io::Result<Self> {
+    pub(crate) fn with_max_frame_len(io: S, max_frame_len: usize) -> io::Result<Self> {
         Ok(Self {
             io,
             outbound: BytesMut::new(),
@@ -130,7 +130,7 @@ impl<S> Buffered<S, Backend> {
 
 impl<S> Buffered<S, Frontend> {
     /// Wraps a client-facing transport which receives frontend messages.
-    pub fn new_frontend(io: S) -> Self {
+    pub(crate) fn new_frontend(io: S) -> Self {
         Self {
             io,
             outbound: BytesMut::new(),
@@ -146,7 +146,7 @@ impl<S> Buffered<S, Frontend> {
     /// # Errors
     ///
     /// Returns an error when the limit is outside `PostgreSQL`'s frame range.
-    pub fn with_max_frame_len_frontend(io: S, max_frame_len: usize) -> io::Result<Self> {
+    pub(crate) fn with_max_frame_len_frontend(io: S, max_frame_len: usize) -> io::Result<Self> {
         Self::with_limits_frontend(io, max_frame_len, DEFAULT_MAX_PRE_STARTUP_PACKET_LEN)
     }
 
@@ -155,7 +155,7 @@ impl<S> Buffered<S, Frontend> {
     /// # Errors
     ///
     /// Returns an error when either limit is outside `PostgreSQL`'s framing range.
-    pub fn with_limits_frontend(
+    pub(crate) fn with_limits_frontend(
         io: S,
         max_frame_len: usize,
         max_pre_startup_packet_len: usize,
@@ -183,28 +183,28 @@ impl<S, D> Buffered<S, D> {
     /// # Errors
     ///
     /// Returns an error when the frame is too large to encode.
-    pub fn push(&mut self, frame: Frame) -> io::Result<()> {
+    pub(crate) fn push(&mut self, frame: Frame) -> io::Result<()> {
         self.inbound_codec.encode(frame, &mut self.outbound)
     }
 
     #[must_use]
     /// Returns encoded bytes which have not yet been fully written.
-    pub fn pending(&self) -> &[u8] {
+    pub(crate) fn pending(&self) -> &[u8] {
         &self.outbound
     }
 
     /// Removes buffering and returns the underlying I/O transport.
-    pub fn into_inner(self) -> S {
+    pub(crate) fn into_inner(self) -> S {
         self.io
     }
 
     /// Borrows the underlying I/O transport without disturbing codec buffers.
-    pub const fn get_ref(&self) -> &S {
+    pub(crate) const fn get_ref(&self) -> &S {
         &self.io
     }
 
     /// Mutably borrows the underlying I/O transport without disturbing codec buffers.
-    pub const fn get_mut(&mut self) -> &mut S {
+    pub(crate) const fn get_mut(&mut self) -> &mut S {
         &mut self.io
     }
 
@@ -214,12 +214,12 @@ impl<S, D> Buffered<S, D> {
 
     #[must_use]
     /// Returns the backend asynchronous-message demultiplexer.
-    pub const fn demux(&self) -> &Demux {
+    pub(crate) const fn demux(&self) -> &Demux {
         &self.demux
     }
 
     /// Returns mutable access to the backend asynchronous-message demultiplexer.
-    pub const fn demux_mut(&mut self) -> &mut Demux {
+    pub(crate) const fn demux_mut(&mut self) -> &mut Demux {
         &mut self.demux
     }
 }
@@ -287,7 +287,7 @@ impl<S: AsyncWrite + Unpin, D> Buffered<S, D> {
     /// # Errors
     ///
     /// Returns the underlying transport's write error or `WriteZero`.
-    pub async fn flush(&mut self) -> io::Result<()> {
+    pub(crate) async fn flush(&mut self) -> io::Result<()> {
         while !self.outbound.is_empty() {
             let written = self.io.write(&self.outbound).await?;
             if written == 0 {
@@ -308,7 +308,7 @@ impl<S: AsyncRead + Unpin, D: Direction> Buffered<S, D> {
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive_wire(&mut self) -> io::Result<D::Message> {
+    pub(crate) async fn receive_wire(&mut self) -> io::Result<D::Message> {
         loop {
             if let Some(message) = self.inbound_codec.decode(&mut self.inbound)? {
                 return Ok(message);
@@ -337,7 +337,7 @@ impl<S: AsyncRead + Unpin> Buffered<S, Frontend> {
     /// # Errors
     ///
     /// Returns malformed pre-startup data and underlying transport read errors.
-    pub async fn receive_pre_startup(&mut self) -> io::Result<PreStartupMessage> {
+    pub(crate) async fn receive_pre_startup(&mut self) -> io::Result<PreStartupMessage> {
         loop {
             if let Some(message) =
                 decode_pre_startup_with_limit(&mut self.inbound, self.max_pre_startup_packet_len)?
@@ -360,7 +360,7 @@ impl<S: AsyncRead + Unpin> Buffered<S, Backend> {
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive_backend(&mut self) -> io::Result<BackendMessage> {
+    pub(crate) async fn receive_backend(&mut self) -> io::Result<BackendMessage> {
         self.receive_wire().await
     }
 
@@ -369,7 +369,7 @@ impl<S: AsyncRead + Unpin> Buffered<S, Backend> {
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive_session(&mut self) -> io::Result<SessionItem> {
+    pub(crate) async fn receive_session(&mut self) -> io::Result<SessionItem> {
         loop {
             let message = self.receive_backend().await?;
             if let Some(item) = self.project_backend(message) {
@@ -379,7 +379,7 @@ impl<S: AsyncRead + Unpin> Buffered<S, Backend> {
     }
 
     /// Projects an inspected or modified backend message into the session stream.
-    pub fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
+    pub(crate) fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
         self.demux.route(message)
     }
 }
@@ -390,26 +390,28 @@ impl<S, D, Phase, Cleanliness> Conn<Buffered<S, D>, Phase, Cleanliness> {
     /// # Errors
     ///
     /// Returns an error when the frame is too large to encode.
-    pub fn push_frame(&mut self, frame: Frame) -> io::Result<()> {
+    pub(crate) fn push_frame(&mut self, frame: Frame) -> io::Result<()> {
         self.transport_mut().push(frame)
     }
 
     #[must_use]
     /// Returns encoded output which has not yet been flushed.
-    pub fn pending_output(&self) -> &[u8] {
+    pub(crate) fn pending_output(&self) -> &[u8] {
         self.transport().pending()
     }
 }
 
 impl<S, Cleanliness> Conn<Buffered<S, Backend>, PreStartup, Cleanliness> {
     /// Buffers an `SSLRequest` and enters the raw single-byte reply phase.
-    pub fn request_ssl(mut self) -> Conn<Buffered<S, Backend>, AwaitingSslReply, Cleanliness> {
+    pub(crate) fn request_ssl(
+        mut self,
+    ) -> Conn<Buffered<S, Backend>, AwaitingSslReply, Cleanliness> {
         self.transport_mut().push_raw(&ssl_request_packet());
         self.transition()
     }
 
     /// Buffers a `GSSENCRequest` and enters the raw single-byte reply phase.
-    pub fn request_gss(
+    pub(crate) fn request_gss(
         mut self,
     ) -> Conn<Buffered<S, Backend>, crate::pre_startup::AwaitingGssReply, Cleanliness> {
         self.transport_mut().push_raw(&gssenc_request_packet());
@@ -419,19 +421,19 @@ impl<S, Cleanliness> Conn<Buffered<S, Backend>, PreStartup, Cleanliness> {
 
 impl<S, Cleanliness> Conn<Buffered<S, Frontend>, ServerSslDecision, Cleanliness> {
     /// Buffers the server's raw `S` response and enters the TLS handshake phase.
-    pub fn approve_ssl(mut self) -> Conn<Buffered<S, Frontend>, TlsHandshake, Cleanliness> {
+    pub(crate) fn approve_ssl(mut self) -> Conn<Buffered<S, Frontend>, TlsHandshake, Cleanliness> {
         self.transport_mut().push_raw(b"S");
         self.transition()
     }
 
     /// Buffers the server's raw `N` response and returns to pre-startup choice.
-    pub fn decline_ssl(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
+    pub(crate) fn decline_ssl(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
         self.transport_mut().push_raw(b"N");
         self.transition()
     }
 
     /// Buffers the historical raw `E` response and terminates negotiation.
-    pub fn reject_ssl_with_legacy_error(
+    pub(crate) fn reject_ssl_with_legacy_error(
         mut self,
     ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::Terminated, Cleanliness> {
         self.transport_mut().push_raw(b"E");
@@ -443,7 +445,7 @@ impl<S, Cleanliness>
     Conn<Buffered<S, Frontend>, crate::pre_startup::ServerGssDecision, Cleanliness>
 {
     /// Buffers the server's raw `S` response and enters the GSS handshake phase.
-    pub fn approve_gss(
+    pub(crate) fn approve_gss(
         mut self,
     ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::GssHandshake, Cleanliness> {
         self.transport_mut().push_raw(b"S");
@@ -451,13 +453,13 @@ impl<S, Cleanliness>
     }
 
     /// Buffers the server's raw `N` response and returns to pre-startup choice.
-    pub fn decline_gss(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
+    pub(crate) fn decline_gss(mut self) -> Conn<Buffered<S, Frontend>, PreStartup, Cleanliness> {
         self.transport_mut().push_raw(b"N");
         self.transition()
     }
 
     /// Buffers the historical raw `E` response and terminates negotiation.
-    pub fn reject_gss_with_legacy_error(
+    pub(crate) fn reject_gss_with_legacy_error(
         mut self,
     ) -> Conn<Buffered<S, Frontend>, crate::pre_startup::Terminated, Cleanliness> {
         self.transport_mut().push_raw(b"E");
@@ -471,7 +473,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslRe
     /// # Errors
     ///
     /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
-    pub async fn receive_ssl_reply(
+    pub(crate) async fn receive_ssl_reply(
         mut self,
     ) -> io::Result<Negotiation<Buffered<S, Backend>, TlsHandshake, Cleanliness>> {
         let reply = self.transport_mut().receive_encryption_reply().await?;
@@ -487,7 +489,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Backend>, AwaitingSslRe
     /// # Errors
     ///
     /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
-    pub async fn receive_ssl_reply_for_mode(
+    pub(crate) async fn receive_ssl_reply_for_mode(
         mut self,
         mode: SslMode,
     ) -> io::Result<SslModeNegotiation<Buffered<S, Backend>, Cleanliness>> {
@@ -504,7 +506,7 @@ impl<S: AsyncRead + Unpin, Cleanliness>
     /// # Errors
     ///
     /// Returns an I/O error or rejects a byte other than `S`, `N`, or `E`.
-    pub async fn receive_gss_reply(
+    pub(crate) async fn receive_gss_reply(
         mut self,
     ) -> io::Result<Negotiation<Buffered<S, Backend>, crate::pre_startup::GssHandshake, Cleanliness>>
     {
@@ -526,7 +528,7 @@ where
     /// # Errors
     ///
     /// Returns a TLS handshake, certificate, channel-binding, or buffer-state error.
-    pub async fn connect_tls(
+    pub(crate) async fn connect_tls(
         self,
         server_name: ServerName<'static>,
         config: Arc<ClientConfig>,
@@ -546,7 +548,7 @@ where
     /// # Errors
     ///
     /// Returns a TLS handshake, certificate, channel-binding, or buffer-state error.
-    pub async fn accept_tls(
+    pub(crate) async fn accept_tls(
         self,
         config: Arc<ServerConfig>,
         leaf_certificate: CertificateDer<'static>,
@@ -561,7 +563,7 @@ where
 
 impl<S, D, Cleanliness> Conn<Buffered<S, D>, crate::pre_startup::Startup, Cleanliness> {
     /// Buffers the raw, untagged startup packet before normal framing begins.
-    pub fn push_startup_packet(&mut self, packet: &[u8]) {
+    pub(crate) fn push_startup_packet(&mut self, packet: &[u8]) {
         self.transport_mut().outbound.extend_from_slice(packet);
     }
 }
@@ -572,7 +574,7 @@ impl<S: AsyncWrite + Unpin, D, Phase, Cleanliness> Conn<Buffered<S, D>, Phase, C
     /// # Errors
     ///
     /// Returns an error from the underlying transport.
-    pub async fn flush(&mut self) -> io::Result<()> {
+    pub(crate) async fn flush(&mut self) -> io::Result<()> {
         self.transport_mut().flush().await
     }
 }
@@ -584,7 +586,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive_backend_wire(&mut self) -> io::Result<BackendMessage> {
+    pub(crate) async fn receive_backend_wire(&mut self) -> io::Result<BackendMessage> {
         self.transport_mut().receive_backend().await
     }
 
@@ -598,7 +600,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     ///
     /// Returns an I/O or decoding error, an illegal peer message, a middleware
     /// policy error, or a phase-legal replacement with an invalid wire shape.
-    pub async fn receive_backend_typed<State, Handler>(
+    pub(crate) async fn receive_backend_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
@@ -629,7 +631,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// # Errors
     ///
     /// Returns the same failures as [`Self::receive_backend_typed`].
-    pub async fn receive_typed<State, Handler>(
+    pub(crate) async fn receive_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<SessionItem, TypedReceiveError<Handler::Error, BackendMessage>>
@@ -659,7 +661,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     ///
     /// Returns an I/O error, illegal decision, middleware policy error, or an
     /// invalid replacement wire shape.
-    pub async fn receive_encryption_reply_typed<State, Handler>(
+    pub(crate) async fn receive_encryption_reply_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
@@ -687,7 +689,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// # Errors
     ///
     /// Returns an I/O, decoding, middleware-policy, or state-validation error.
-    pub async fn receive_backend_wire_with_middleware<State, Handler, ProtocolState>(
+    pub(crate) async fn receive_backend_wire_with_middleware<State, Handler, ProtocolState>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         protocol_state: &ProtocolState,
@@ -700,7 +702,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     }
 
     /// Projects an inspected or modified message into the filtered session stream.
-    pub fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
+    pub(crate) fn project_backend(&mut self, message: BackendMessage) -> Option<SessionItem> {
         self.transport_mut().project_backend(message)
     }
 
@@ -709,7 +711,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive(&mut self) -> io::Result<SessionItem> {
+    pub(crate) async fn receive(&mut self) -> io::Result<SessionItem> {
         self.transport_mut().receive_session().await
     }
 
@@ -721,7 +723,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
     /// # Errors
     ///
     /// Returns an I/O, decoding, middleware-policy, or state-validation error.
-    pub async fn receive_with_middleware<State, Handler, ProtocolState>(
+    pub(crate) async fn receive_with_middleware<State, Handler, ProtocolState>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         protocol_state: &ProtocolState,
@@ -742,45 +744,45 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Backend>, Phase,
 
     #[must_use]
     /// Returns the latest upstream cancellation key observed during startup.
-    pub fn cancel_key(&self) -> Option<&CancelKey> {
+    pub(crate) fn cancel_key(&self) -> Option<&CancelKey> {
         self.transport().demux().cancel_key()
     }
 
     /// Returns the latest backend parameter values observed by the demux.
     #[must_use]
-    pub fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
+    pub(crate) fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
         self.transport().demux().parameters()
     }
 
     /// Returns whether current parameters differ from the startup baseline.
     #[must_use]
-    pub fn parameters_changed(&self) -> bool {
+    pub(crate) fn parameters_changed(&self) -> bool {
         self.transport().demux().parameters_changed()
     }
 
     /// Returns the latest transaction status observed in `ReadyForQuery`.
     #[must_use]
-    pub fn transaction_status(&self) -> Option<crate::codec::TransactionStatus> {
+    pub(crate) fn transaction_status(&self) -> Option<crate::codec::TransactionStatus> {
         self.transport().demux().transaction_status()
     }
 
     /// Removes the oldest queued asynchronous notification.
-    pub fn pop_notification(&mut self) -> Option<Notification> {
+    pub(crate) fn pop_notification(&mut self) -> Option<Notification> {
         self.transport_mut().demux_mut().pop_notification()
     }
 
     /// Removes the next tagged notice for prompt forwarding to the client.
-    pub fn pop_notice(&mut self) -> Option<TaggedNotice> {
+    pub(crate) fn pop_notice(&mut self) -> Option<TaggedNotice> {
         self.transport_mut().demux_mut().pop_notice()
     }
 
     /// Removes the next ordered parameter update for forwarding to the client.
-    pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
+    pub(crate) fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
         self.transport_mut().demux_mut().pop_parameter_status()
     }
 
     /// Removes the next independent backend event in original wire order.
-    pub fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
+    pub(crate) fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
         self.transport_mut().demux_mut().pop_async_event()
     }
 }
@@ -791,7 +793,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     /// # Errors
     ///
     /// Returns decoding and underlying transport read errors, or `UnexpectedEof`.
-    pub async fn receive_frontend_wire(&mut self) -> io::Result<FrontendMessage> {
+    pub(crate) async fn receive_frontend_wire(&mut self) -> io::Result<FrontendMessage> {
         self.transport_mut().receive_wire().await
     }
 
@@ -804,7 +806,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     ///
     /// Returns an I/O or decoding error, an illegal peer message, a middleware
     /// policy error, or a phase-legal replacement with an invalid wire shape.
-    pub async fn receive_frontend_typed<State, Handler>(
+    pub(crate) async fn receive_frontend_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
@@ -832,7 +834,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     /// # Errors
     ///
     /// Returns an I/O, decoding, middleware-policy, or state-validation error.
-    pub async fn receive_frontend_wire_with_middleware<State, Handler, ProtocolState>(
+    pub(crate) async fn receive_frontend_wire_with_middleware<State, Handler, ProtocolState>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         protocol_state: &ProtocolState,
@@ -851,7 +853,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
     /// # Errors
     ///
     /// Returns malformed pre-startup data and underlying transport read errors.
-    pub async fn receive_pre_startup_wire(&mut self) -> io::Result<PreStartupMessage> {
+    pub(crate) async fn receive_pre_startup_wire(&mut self) -> io::Result<PreStartupMessage> {
         self.transport_mut().receive_pre_startup().await
     }
 
@@ -861,7 +863,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
     ///
     /// Returns an I/O or decoding error, an illegal pre-startup packet, a
     /// middleware policy error, or an invalid replacement wire shape.
-    pub async fn receive_pre_startup_typed<State, Handler>(
+    pub(crate) async fn receive_pre_startup_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
     ) -> Result<
@@ -888,7 +890,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
     /// # Errors
     ///
     /// Returns an I/O, decoding, middleware-policy, or state-validation error.
-    pub async fn receive_pre_startup_wire_with_middleware<State, Handler, ProtocolState>(
+    pub(crate) async fn receive_pre_startup_wire_with_middleware<State, Handler, ProtocolState>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         protocol_state: &ProtocolState,

@@ -1,12 +1,11 @@
 use std::{convert::Infallible, error::Error, io, net::SocketAddr, sync::Arc};
 
 use pg_proto::{
-    CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy, ConnectTarget,
-    ForwardedMessage, InitialServerContext, Intermediary, IntermediaryMiddleware, Server,
-    ServerConnectionContext, ServerIdentity, ServerIdentityProvider, ServerTlsPolicy,
-    StartupParameters, StartupRouteResolver, TrustClientAuthentication, TrustIdentity,
-    TrustServerAuthentication,
-    codec::{BackendMessage, FrontendMessage},
+    BackendMessage, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
+    ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
+    IntermediaryMiddleware, Server, ServerConnectionContext, ServerIdentity,
+    ServerIdentityProvider, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use rcgen::generate_simple_self_signed;
 use rustls::{
@@ -66,7 +65,7 @@ impl
             message: format!("{message:?}"),
         });
         if let FrontendMessage::Query(sql)
-        | FrontendMessage::Parse(pg_proto::codec::Parse { query: sql, .. }) = &message
+        | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
         {
             (state.reporter)(Observation::Sql {
                 connection: state.connection,

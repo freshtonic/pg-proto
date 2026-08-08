@@ -4,11 +4,10 @@ use std::convert::Infallible;
 
 use bytes::Bytes;
 use pg_proto::{
-    CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy, ConnectTarget,
-    InitialServerContext, Intermediary, IntermediaryMiddleware, Server, ServerConnectionContext,
-    ServerTlsPolicy, StartupParameters, StartupRouteResolver, TrustClientAuthentication,
-    TrustIdentity, TrustServerAuthentication,
-    codec::{BackendMessage, FrontendMessage},
+    BackendMessage, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
+    ConnectTarget, FrontendMessage, InitialServerContext, Intermediary, IntermediaryMiddleware,
+    Server, ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 
 struct Route;

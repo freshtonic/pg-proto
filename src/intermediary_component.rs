@@ -783,12 +783,6 @@ where
     pub const fn state(&self) -> &State {
         &self.state
     }
-    /// Returns the request/response legality and backpressure ledger.
-    #[must_use]
-    pub const fn pipeline(&self) -> &Pipeline<Policy> {
-        &self.pipeline
-    }
-
     /// Returns the proxy-issued cancellation key for this live session.
     #[must_use]
     pub const fn cancellation_key(&self) -> Option<&crate::demux::CancelKey> {

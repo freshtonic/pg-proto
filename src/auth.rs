@@ -354,6 +354,19 @@ impl<S> Conn<S, PasswordResponse, Pristine> {
 }
 
 impl<S> Conn<S, SaslInitial, Pristine> {
+    /// Selects an application-defined SASL mechanism and initial response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mechanism contains a NUL byte or either value is too large.
+    pub fn sasl(
+        self,
+        mechanism: &[u8],
+        initial: &[u8],
+    ) -> std::io::Result<(Conn<S, Sasl>, codec::Frame)> {
+        sasl_initial(self, mechanism, initial)
+    }
+
     /// Selects SCRAM without channel binding.
     ///
     /// # Errors

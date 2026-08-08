@@ -1,9 +1,19 @@
 //! Builder-centred client-role component.
 
-use std::{collections::BTreeMap, fmt, future::Future, io};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    fmt,
+    future::Future,
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::ReadBuf;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 use crate::{
     Conn, Dirty, Pristine,
@@ -38,16 +48,401 @@ impl fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// Explicit client-role TLS policy available in the plaintext tracer slice.
+/// Explicit libpq-compatible TLS policy and its reloadable configuration provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTlsPolicy {
     /// Intentionally use plaintext transport.
     Disabled,
 }
 
+impl ClientTlsPolicy {
+    /// Configures a libpq-compatible SSL mode and reloadable provider.
+    #[must_use]
+    pub fn libpq<Provider>(
+        mode: crate::pre_startup::SslMode,
+        provider: Provider,
+    ) -> ReloadableClientTls<Provider> {
+        ReloadableClientTls { mode, provider }
+    }
+}
+
+/// A libpq-compatible policy backed by application-owned reloadable TLS material.
+#[derive(Clone)]
+pub struct ReloadableClientTls<Provider> {
+    mode: crate::pre_startup::SslMode,
+    provider: Provider,
+}
+
+impl<Provider> fmt::Debug for ReloadableClientTls<Provider> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Libpq")
+            .field("mode", &self.mode)
+            .field("provider", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Internal shape shared by disabled and reloadable TLS policies.
+pub trait ClientTlsConfiguration {
+    /// Reloadable provider type.
+    type Provider: ClientTlsProvider;
+
+    /// Returns the libpq mode and provider, or `None` for explicit plaintext.
+    fn configured(&self) -> Option<(crate::pre_startup::SslMode, &Self::Provider)>;
+}
+
+impl ClientTlsConfiguration for ClientTlsPolicy {
+    type Provider = ();
+
+    fn configured(&self) -> Option<(crate::pre_startup::SslMode, &Self::Provider)> {
+        None
+    }
+}
+
+impl<Provider: ClientTlsProvider> ClientTlsConfiguration for ReloadableClientTls<Provider> {
+    type Provider = Provider;
+
+    fn configured(&self) -> Option<(crate::pre_startup::SslMode, &Self::Provider)> {
+        Some((self.mode, &self.provider))
+    }
+}
+
+/// Application-owned TLS material resolved afresh for a connection attempt.
+///
+/// The application owns reload and rotation of destination names and trust
+/// anchors. `pg-proto` deliberately constructs the final rustls verifier from
+/// the selected [`SslMode`](crate::SslMode), so a provider cannot silently
+/// weaken `VerifyCa` or `VerifyFull`.
+#[derive(Clone)]
+pub struct ClientTlsConfig {
+    server_name: rustls::pki_types::ServerName<'static>,
+    roots: rustls::RootCertStore,
+}
+
+impl ClientTlsConfig {
+    /// Creates resolved TLS material.
+    #[must_use]
+    pub fn new(
+        server_name: rustls::pki_types::ServerName<'static>,
+        roots: rustls::RootCertStore,
+    ) -> Self {
+        Self { server_name, roots }
+    }
+}
+
+impl fmt::Debug for ClientTlsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ClientTlsConfig(<redacted>)")
+    }
+}
+
+/// Application-owned source of reloadable client TLS material.
+pub trait ClientTlsProvider {
+    /// Provider resolution failure.
+    type Error;
+
+    /// Resolves material for one connection attempt.
+    fn resolve<'a>(
+        &'a self,
+        target: &'a ConnectTarget,
+    ) -> Pin<Box<dyn Future<Output = Result<ClientTlsConfig, Self::Error>> + 'a>>;
+}
+
+/// Failure while resolving or establishing client TLS.
+#[derive(Debug)]
+pub enum ClientTlsError<ProviderError> {
+    /// The application-owned reloadable provider failed.
+    Provider(ProviderError),
+    /// PostgreSQL negotiation or the TLS handshake failed.
+    Handshake(io::Error),
+}
+
+impl<ProviderError: fmt::Display> fmt::Display for ClientTlsError<ProviderError> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Provider(error) => error.fmt(formatter),
+            Self::Handshake(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<ProviderError: std::error::Error + 'static> std::error::Error
+    for ClientTlsError<ProviderError>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Provider(error) => Some(error),
+            Self::Handshake(error) => Some(error),
+        }
+    }
+}
+
+impl ClientTlsProvider for () {
+    type Error = Infallible;
+
+    fn resolve<'a>(
+        &'a self,
+        _target: &'a ConnectTarget,
+    ) -> Pin<Box<dyn Future<Output = Result<ClientTlsConfig, Self::Error>> + 'a>> {
+        Box::pin(async { unreachable!("disabled TLS never resolves a provider") })
+    }
+}
+
+/// Transport selected by libpq-compatible negotiation.
+#[derive(Debug)]
+pub enum ClientTransport<Transport> {
+    /// Unencrypted PostgreSQL transport.
+    Plain(Transport),
+    /// TLS-protected PostgreSQL transport.
+    Tls(Box<crate::tls::ClientTls<Transport>>),
+}
+
+impl<Transport: AsyncRead + AsyncWrite + Unpin> AsyncRead for ClientTransport<Transport> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Plain(stream) => Pin::new(stream).poll_read(cx, buffer),
+            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buffer),
+        }
+    }
+}
+
+impl<Transport: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ClientTransport<Transport> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Plain(stream) => Pin::new(stream).poll_write(cx, buffer),
+            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buffer),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Plain(stream) => Pin::new(stream).poll_flush(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
+async fn negotiate_client_tls<Transport, Provider>(
+    mut transport: Transport,
+    mode: crate::pre_startup::SslMode,
+    provider: &Provider,
+    target: &ConnectTarget,
+) -> Result<ClientTransport<Transport>, ClientTlsError<Provider::Error>>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Provider: ClientTlsProvider,
+{
+    if !mode.strategy().request_on_first_connection {
+        return Ok(ClientTransport::Plain(transport));
+    }
+    transport
+        .write_all(&[0, 0, 0, 8, 4, 210, 22, 47])
+        .await
+        .map_err(ClientTlsError::Handshake)?;
+    transport.flush().await.map_err(ClientTlsError::Handshake)?;
+    match transport
+        .read_u8()
+        .await
+        .map_err(ClientTlsError::Handshake)?
+    {
+        b'S' => {
+            let resolved = provider
+                .resolve(target)
+                .await
+                .map_err(ClientTlsError::Provider)?;
+            let config = Arc::new(crate::tls::client_config(mode, resolved.roots));
+            let stream = crate::tls::connect(transport, resolved.server_name, config)
+                .await
+                .map_err(ClientTlsError::Handshake)?;
+            Ok(ClientTransport::Tls(Box::new(stream)))
+        }
+        b'N' if mode.strategy().allow_server_rejection => Ok(ClientTransport::Plain(transport)),
+        b'N' => Err(ClientTlsError::Handshake(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "server rejected required TLS",
+        ))),
+        b'E' => Err(ClientTlsError::Handshake(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "server terminated TLS negotiation",
+        ))),
+        _ => Err(ClientTlsError::Handshake(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid TLS negotiation response",
+        ))),
+    }
+}
+
 /// Explicit client authentication policy which accepts only `AuthenticationOk`.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub struct TrustClientAuthentication;
+
+/// An authentication request offered by a PostgreSQL server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ClientAuthenticationChallenge {
+    /// The server requested a cleartext password response.
+    CleartextPassword,
+    /// The server requested a PostgreSQL MD5 password response.
+    Md5Password([u8; 4]),
+    /// The server offered SASL mechanisms.
+    Sasl(Vec<Bytes>),
+    /// The server supplied another SASL challenge.
+    SaslContinue(Bytes),
+    /// The server supplied the SASL verifier.
+    SaslFinal(Bytes),
+    /// The server requested an opaque GSS token.
+    Gss,
+    /// The server requested an opaque SSPI token.
+    Sspi,
+    /// The server requested Kerberos V5 authentication.
+    KerberosV5,
+    /// The server supplied another opaque token challenge.
+    TokenContinue(Bytes),
+}
+
+/// An application authentication policy's wire response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ClientAuthenticationResponse {
+    /// Send a cleartext or precomputed MD5 password.
+    Password(Bytes),
+    /// Begin SASL using the named mechanism and initial response.
+    SaslInitial {
+        /// Selected SASL mechanism name.
+        mechanism: Bytes,
+        /// Mechanism-specific initial response.
+        response: Bytes,
+    },
+    /// Continue a SASL exchange.
+    Sasl(Bytes),
+    /// Send an opaque GSS, SSPI, or Kerberos token.
+    Token(Bytes),
+    /// Accept a verified SASL final message without sending another frame.
+    Verified,
+}
+
+/// Factory for asynchronous, fallible per-connection authentication sessions.
+pub trait ClientAuthentication {
+    /// Typed identity evidence produced after server confirmation.
+    type Evidence;
+    /// Per-connection mutable authentication state.
+    type Session: ClientAuthenticationSession<Evidence = Self::Evidence, Error = Self::Error>;
+    /// Application authentication failure.
+    type Error;
+
+    /// Creates fresh authentication state using the selected route.
+    fn begin<'a>(
+        &'a self,
+        target: &'a ConnectTarget,
+    ) -> ClientAuthenticationFuture<'a, Self::Session, Self::Error>;
+}
+
+/// Boxed future used by application-defined authentication policies.
+pub type ClientAuthenticationFuture<'a, Output, Error> =
+    Pin<Box<dyn Future<Output = Result<Output, Error>> + 'a>>;
+
+/// Mutable authentication policy state owned by one connection attempt.
+pub trait ClientAuthenticationSession {
+    /// Typed identity evidence produced after server confirmation.
+    type Evidence;
+    /// Application authentication failure.
+    type Error;
+
+    /// Answers one server authentication challenge.
+    fn respond(
+        &mut self,
+        challenge: ClientAuthenticationChallenge,
+    ) -> ClientAuthenticationFuture<'_, ClientAuthenticationResponse, Self::Error>;
+
+    /// Produces identity evidence after `AuthenticationOk` was received.
+    fn authenticated(self) -> ClientAuthenticationFuture<'static, Self::Evidence, Self::Error>;
+}
+
+/// Failure while running an application authentication policy.
+#[derive(Debug)]
+pub enum ClientAuthenticationError<PolicyError> {
+    /// Application policy creation or evaluation failed.
+    Policy(PolicyError),
+    /// The PostgreSQL server rejected authentication.
+    Rejected,
+    /// The policy returned a response illegal for the active challenge.
+    InvalidResponse,
+}
+
+impl<PolicyError: fmt::Display> fmt::Display for ClientAuthenticationError<PolicyError> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Policy(error) => error.fmt(formatter),
+            Self::Rejected => formatter.write_str("server rejected authentication"),
+            Self::InvalidResponse => {
+                formatter.write_str("authentication policy rejected the credential challenge")
+            }
+        }
+    }
+}
+
+impl<PolicyError: std::error::Error + 'static> std::error::Error
+    for ClientAuthenticationError<PolicyError>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Policy(error) => Some(error),
+            Self::Rejected | Self::InvalidResponse => None,
+        }
+    }
+}
+
+enum AuthenticationDriveError<PolicyError> {
+    Policy(PolicyError),
+    Rejected,
+    InvalidResponse,
+    Protocol(io::Error),
+}
+
+impl ClientAuthentication for TrustClientAuthentication {
+    type Evidence = ();
+    type Session = Self;
+    type Error = Infallible;
+
+    fn begin<'a>(
+        &'a self,
+        _target: &'a ConnectTarget,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Session, Self::Error>> + 'a>> {
+        Box::pin(async { Ok(Self) })
+    }
+}
+
+impl ClientAuthenticationSession for TrustClientAuthentication {
+    type Evidence = ();
+    type Error = Infallible;
+
+    fn respond(
+        &mut self,
+        _challenge: ClientAuthenticationChallenge,
+    ) -> ClientAuthenticationFuture<'_, ClientAuthenticationResponse, Self::Error> {
+        Box::pin(async { Ok(ClientAuthenticationResponse::Verified) })
+    }
+
+    fn authenticated(self) -> Pin<Box<dyn Future<Output = Result<Self::Evidence, Self::Error>>>> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 impl fmt::Debug for TrustClientAuthentication {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -86,9 +481,15 @@ impl ConnectTarget {
 
     /// Adds routing metadata retained in the connection context.
     #[must_use]
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
+    }
+
+    /// Returns application-owned routing metadata.
+    #[must_use]
+    pub const fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
     }
 }
 
@@ -256,15 +657,22 @@ impl std::error::Error for ProtocolLimitError {}
 
 /// Immutable facts retained by a client-role connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClientConnectionContext {
+pub struct ClientConnectionContext<Evidence = ()> {
     target: ConnectTarget,
+    identity: Evidence,
 }
 
-impl ClientConnectionContext {
+impl<Evidence> ClientConnectionContext<Evidence> {
     /// Returns the destination used for this connection.
     #[must_use]
     pub const fn target(&self) -> &ConnectTarget {
         &self.target
+    }
+
+    /// Returns application-defined evidence from the authentication policy.
+    #[must_use]
+    pub const fn identity(&self) -> &Evidence {
+        &self.identity
     }
 }
 
@@ -273,20 +681,23 @@ impl ClientConnectionContext {
 pub struct IdentityHandler;
 
 /// Reusable client-role component.
-pub struct Client<Connector = ()> {
+pub struct Client<Connector = (), Tls = ClientTlsPolicy, Authentication = TrustClientAuthentication>
+{
     connector: Connector,
-    tls: ClientTlsPolicy,
-    authentication: TrustClientAuthentication,
+    tls: Tls,
+    authentication: Authentication,
     defaults: StartupParameters,
     limits: ProtocolLimits,
 }
 
-impl<Connector: Clone> Clone for Client<Connector> {
+impl<Connector: Clone, Tls: Clone, Authentication: Clone> Clone
+    for Client<Connector, Tls, Authentication>
+{
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
-            tls: self.tls,
-            authentication: self.authentication,
+            tls: self.tls.clone(),
+            authentication: self.authentication.clone(),
             defaults: self.defaults.clone(),
             limits: self.limits,
         }
@@ -301,7 +712,9 @@ impl Client<()> {
     }
 }
 
-impl<Connector> fmt::Debug for Client<Connector> {
+impl<Connector, Tls: fmt::Debug, Authentication: fmt::Debug> fmt::Debug
+    for Client<Connector, Tls, Authentication>
+{
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Client")
@@ -312,10 +725,10 @@ impl<Connector> fmt::Debug for Client<Connector> {
 }
 
 /// Ordinary generic builder for a reusable client-role component.
-pub struct ClientBuilder<Connector = ()> {
+pub struct ClientBuilder<Connector = (), Tls = (), Authentication = ()> {
     connector: Option<Connector>,
-    tls: Option<ClientTlsPolicy>,
-    authentication: Option<TrustClientAuthentication>,
+    tls: Option<Tls>,
+    authentication: Option<Authentication>,
     defaults: StartupParameters,
     limits: ProtocolLimits,
 }
@@ -335,7 +748,10 @@ impl Default for ClientBuilder<()> {
 impl ClientBuilder<()> {
     /// Configures the reusable application-supplied connector.
     #[must_use]
-    pub fn connector<Next, Work, Transport, Error>(self, connector: Next) -> ClientBuilder<Next>
+    pub fn connector<Next, Work, Transport, Error>(
+        self,
+        connector: Next,
+    ) -> ClientBuilder<Next, (), ()>
     where
         Next: Fn(&ConnectTarget) -> Work,
         Work: Future<Output = Result<Transport, Error>>,
@@ -350,19 +766,29 @@ impl ClientBuilder<()> {
     }
 }
 
-impl<Connector> ClientBuilder<Connector> {
+impl<Connector, Tls, Authentication> ClientBuilder<Connector, Tls, Authentication> {
     /// Selects an explicit TLS policy.
     #[must_use]
-    pub fn tls(mut self, tls: ClientTlsPolicy) -> Self {
-        self.tls = Some(tls);
-        self
+    pub fn tls<Next>(self, tls: Next) -> ClientBuilder<Connector, Next, Authentication> {
+        ClientBuilder {
+            connector: self.connector,
+            tls: Some(tls),
+            authentication: self.authentication,
+            defaults: self.defaults,
+            limits: self.limits,
+        }
     }
 
     /// Selects explicit trust authentication.
     #[must_use]
-    pub fn authentication(mut self, authentication: TrustClientAuthentication) -> Self {
-        self.authentication = Some(authentication);
-        self
+    pub fn authentication<Next>(self, authentication: Next) -> ClientBuilder<Connector, Tls, Next> {
+        ClientBuilder {
+            connector: self.connector,
+            tls: self.tls,
+            authentication: Some(authentication),
+            defaults: self.defaults,
+            limits: self.limits,
+        }
     }
 
     /// Sets reusable startup defaults which per-call values override explicitly.
@@ -384,7 +810,7 @@ impl<Connector> ClientBuilder<Connector> {
     /// # Errors
     ///
     /// Returns the first missing mandatory configuration category.
-    pub fn build(self) -> Result<Client<Connector>, BuildError> {
+    pub fn build(self) -> Result<Client<Connector, Tls, Authentication>, BuildError> {
         Ok(Client {
             connector: self.connector.ok_or(BuildError::MissingConnector)?,
             tls: self.tls.ok_or(BuildError::MissingTls)?,
@@ -399,30 +825,44 @@ impl<Connector> ClientBuilder<Connector> {
 
 /// Failure while establishing a client-role connection, distinct from [`BuildError`].
 #[derive(Debug)]
-pub enum ConnectError<ConnectorError> {
+pub enum ConnectError<ConnectorError, TlsError = Infallible, AuthenticationError = Infallible> {
     /// The application-supplied connector failed.
     Connector(ConnectorError),
+    /// The reloadable TLS provider or handshake failed.
+    Tls(TlsError),
+    /// The application authentication policy failed.
+    Authentication(AuthenticationError),
     /// Structured startup values were invalid before network establishment.
     Startup(StartupParameterError),
     /// PostgreSQL framing, startup, authentication, or readiness failed.
     Protocol(io::Error),
 }
 
-impl<ConnectorError: fmt::Display> fmt::Display for ConnectError<ConnectorError> {
+impl<ConnectorError: fmt::Display, TlsError: fmt::Display, AuthenticationError: fmt::Display>
+    fmt::Display for ConnectError<ConnectorError, TlsError, AuthenticationError>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Connector(error) => error.fmt(f),
+            Self::Tls(error) => error.fmt(f),
+            Self::Authentication(error) => error.fmt(f),
             Self::Startup(error) => error.fmt(f),
             Self::Protocol(error) => error.fmt(f),
         }
     }
 }
-impl<ConnectorError: std::error::Error + 'static> std::error::Error
-    for ConnectError<ConnectorError>
+impl<ConnectorError, TlsError, AuthenticationError> std::error::Error
+    for ConnectError<ConnectorError, TlsError, AuthenticationError>
+where
+    ConnectorError: std::error::Error + 'static,
+    TlsError: std::error::Error + 'static,
+    AuthenticationError: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Connector(error) => Some(error),
+            Self::Tls(error) => Some(error),
+            Self::Authentication(error) => Some(error),
             Self::Startup(error) => Some(error),
             Self::Protocol(error) => Some(error),
         }
@@ -430,17 +870,19 @@ impl<ConnectorError: std::error::Error + 'static> std::error::Error
 }
 
 /// Operational client-role connection.
-pub struct ClientConnection<Transport, State, Cleanliness = Pristine> {
+pub struct ClientConnection<Transport, State, Cleanliness = Pristine, Evidence = ()> {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
     state: State,
     handler: IdentityHandler,
-    context: ClientConnectionContext,
+    context: ClientConnectionContext<Evidence>,
 }
 
-impl<Transport, State, Cleanliness> ClientConnection<Transport, State, Cleanliness> {
+impl<Transport, State, Cleanliness, Evidence>
+    ClientConnection<Transport, State, Cleanliness, Evidence>
+{
     /// Returns immutable connection facts.
     #[must_use]
-    pub const fn context(&self) -> &ClientConnectionContext {
+    pub const fn context(&self) -> &ClientConnectionContext<Evidence> {
         &self.context
     }
 
@@ -463,13 +905,390 @@ impl<Transport, State, Cleanliness> ClientConnection<Transport, State, Cleanline
     }
 
     /// Recovers every owned connection part deliberately.
-    pub fn into_parts(self) -> (Transport, State, IdentityHandler, ClientConnectionContext) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Transport,
+        State,
+        IdentityHandler,
+        ClientConnectionContext<Evidence>,
+    ) {
         (
             self.connection.into_transport().into_inner(),
             self.state,
             self.handler,
             self.context,
         )
+    }
+}
+
+async fn complete_password<Transport, Policy>(
+    connection: Conn<Buffered<Transport, Backend>, crate::auth::PasswordResponse>,
+    challenge: ClientAuthenticationChallenge,
+    policy: &mut Policy,
+) -> Result<
+    Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
+    AuthenticationDriveError<Policy::Error>,
+>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Policy: ClientAuthenticationSession,
+{
+    let response = policy
+        .respond(challenge)
+        .await
+        .map_err(AuthenticationDriveError::Policy)?;
+    let ClientAuthenticationResponse::Password(password) = response else {
+        let _ = connection.into_transport();
+        return Err(AuthenticationDriveError::InvalidResponse);
+    };
+    let (mut awaiting, frame) = connection
+        .password(&password)
+        .map_err(AuthenticationDriveError::Protocol)?;
+    awaiting
+        .push_frame(frame)
+        .map_err(AuthenticationDriveError::Protocol)?;
+    awaiting
+        .flush()
+        .await
+        .map_err(AuthenticationDriveError::Protocol)?;
+    let message = awaiting
+        .receive_backend_wire()
+        .await
+        .map_err(AuthenticationDriveError::Protocol)?;
+    match awaiting.offer(message) {
+        Ok(crate::auth::AuthCompletion::Ok(connection)) => Ok(connection),
+        Ok(crate::auth::AuthCompletion::Error { conn, .. }) => {
+            let _ = conn.into_transport();
+            Err(AuthenticationDriveError::Rejected)
+        }
+        Err((conn, _)) => {
+            let _ = conn.into_transport();
+            Err(AuthenticationDriveError::Protocol(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "illegal authentication completion",
+            )))
+        }
+    }
+}
+
+async fn complete_sasl<Transport, Policy>(
+    connection: Conn<Buffered<Transport, Backend>, crate::auth::SaslInitial>,
+    mechanisms: Vec<Bytes>,
+    policy: &mut Policy,
+) -> Result<
+    Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
+    AuthenticationDriveError<Policy::Error>,
+>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Policy: ClientAuthenticationSession,
+{
+    let response = policy
+        .respond(ClientAuthenticationChallenge::Sasl(mechanisms))
+        .await
+        .map_err(AuthenticationDriveError::Policy)?;
+    let ClientAuthenticationResponse::SaslInitial {
+        mechanism,
+        response,
+    } = response
+    else {
+        let _ = connection.into_transport();
+        return Err(AuthenticationDriveError::InvalidResponse);
+    };
+    let (mut sasl, frame) = connection
+        .sasl(&mechanism, &response)
+        .map_err(AuthenticationDriveError::Protocol)?;
+    sasl.push_frame(frame)
+        .map_err(AuthenticationDriveError::Protocol)?;
+    sasl.flush()
+        .await
+        .map_err(AuthenticationDriveError::Protocol)?;
+    loop {
+        let message = sasl
+            .receive_backend_wire()
+            .await
+            .map_err(AuthenticationDriveError::Protocol)?;
+        match sasl.offer_backend(message) {
+            Ok(crate::auth::SaslEvent::Continue { conn, challenge }) => {
+                let response = policy
+                    .respond(ClientAuthenticationChallenge::SaslContinue(challenge))
+                    .await
+                    .map_err(AuthenticationDriveError::Policy)?;
+                let ClientAuthenticationResponse::Sasl(response) = response else {
+                    let _ = conn.into_transport();
+                    return Err(AuthenticationDriveError::InvalidResponse);
+                };
+                let (mut next, frame) = conn.respond(response);
+                next.push_frame(frame)
+                    .map_err(AuthenticationDriveError::Protocol)?;
+                next.flush()
+                    .await
+                    .map_err(AuthenticationDriveError::Protocol)?;
+                sasl = next;
+            }
+            Ok(crate::auth::SaslEvent::Final { conn, server_final }) => {
+                let response = policy
+                    .respond(ClientAuthenticationChallenge::SaslFinal(server_final))
+                    .await
+                    .map_err(AuthenticationDriveError::Policy)?;
+                if response != ClientAuthenticationResponse::Verified {
+                    let _ = conn.into_transport();
+                    return Err(AuthenticationDriveError::InvalidResponse);
+                }
+                let mut awaiting = conn.verified();
+                let message = awaiting
+                    .receive_backend_wire()
+                    .await
+                    .map_err(AuthenticationDriveError::Protocol)?;
+                return match awaiting.offer(message) {
+                    Ok(crate::auth::AuthCompletion::Ok(connection)) => Ok(connection),
+                    Ok(crate::auth::AuthCompletion::Error { conn, .. }) => {
+                        let _ = conn.into_transport();
+                        Err(AuthenticationDriveError::Rejected)
+                    }
+                    Err((conn, _)) => {
+                        let _ = conn.into_transport();
+                        Err(AuthenticationDriveError::Protocol(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "illegal SASL authentication completion",
+                        )))
+                    }
+                };
+            }
+            Ok(crate::auth::SaslEvent::Error { conn, .. }) => {
+                let _ = conn.into_transport();
+                return Err(AuthenticationDriveError::Rejected);
+            }
+            Err((conn, _)) => {
+                let _ = conn.into_transport();
+                return Err(AuthenticationDriveError::Protocol(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "illegal SASL authentication message",
+                )));
+            }
+        }
+    }
+}
+
+async fn complete_token<Transport, Policy>(
+    connection: Conn<Buffered<Transport, Backend>, crate::auth::TokenResponse>,
+    challenge: ClientAuthenticationChallenge,
+    policy: &mut Policy,
+) -> Result<
+    Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
+    AuthenticationDriveError<Policy::Error>,
+>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Policy: ClientAuthenticationSession,
+{
+    let response = policy
+        .respond(challenge)
+        .await
+        .map_err(AuthenticationDriveError::Policy)?;
+    let ClientAuthenticationResponse::Token(token) = response else {
+        let _ = connection.into_transport();
+        return Err(AuthenticationDriveError::InvalidResponse);
+    };
+    let (mut waiting, frame) = connection.respond(token);
+    waiting
+        .push_frame(frame)
+        .map_err(AuthenticationDriveError::Protocol)?;
+    waiting
+        .flush()
+        .await
+        .map_err(AuthenticationDriveError::Protocol)?;
+    loop {
+        let message = waiting
+            .receive_backend_wire()
+            .await
+            .map_err(AuthenticationDriveError::Protocol)?;
+        match waiting.offer(message) {
+            Ok(crate::auth::TokenAuthEvent::Continue { conn, token }) => {
+                let response = policy
+                    .respond(ClientAuthenticationChallenge::TokenContinue(token))
+                    .await
+                    .map_err(AuthenticationDriveError::Policy)?;
+                let ClientAuthenticationResponse::Token(token) = response else {
+                    let _ = conn.into_transport();
+                    return Err(AuthenticationDriveError::InvalidResponse);
+                };
+                let (mut next, frame) = conn.respond(token);
+                next.push_frame(frame)
+                    .map_err(AuthenticationDriveError::Protocol)?;
+                next.flush()
+                    .await
+                    .map_err(AuthenticationDriveError::Protocol)?;
+                waiting = next;
+            }
+            Ok(crate::auth::TokenAuthEvent::Ok(connection)) => return Ok(connection),
+            Ok(crate::auth::TokenAuthEvent::Error { conn, .. }) => {
+                let _ = conn.into_transport();
+                return Err(AuthenticationDriveError::Rejected);
+            }
+            Err((conn, _)) => {
+                let _ = conn.into_transport();
+                return Err(AuthenticationDriveError::Protocol(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "illegal token authentication message",
+                )));
+            }
+        }
+    }
+}
+
+enum SessionEstablishError<AuthenticationError> {
+    Authentication(ClientAuthenticationError<AuthenticationError>),
+    Protocol(io::Error),
+}
+
+#[allow(clippy::too_many_lines)] // Each authentication mechanism preserves its distinct typestate.
+async fn establish_client_session<Transport, Authentication>(
+    transport: ClientTransport<Transport>,
+    startup: &StartupMessage,
+    target: &ConnectTarget,
+    authentication_policy: &Authentication,
+    max_frame_len: usize,
+) -> Result<
+    (
+        Conn<Buffered<ClientTransport<Transport>, Backend>, Ready>,
+        Authentication::Evidence,
+    ),
+    SessionEstablishError<Authentication::Error>,
+>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Authentication: ClientAuthentication,
+{
+    let mut policy = authentication_policy.begin(target).await.map_err(|error| {
+        SessionEstablishError::Authentication(ClientAuthenticationError::Policy(error))
+    })?;
+    let buffered = Buffered::with_max_frame_len(transport, max_frame_len)
+        .map_err(SessionEstablishError::Protocol)?;
+    let (mut startup_connection, packet) = Conn::new(buffered)
+        .startup(startup)
+        .map_err(SessionEstablishError::Protocol)?;
+    startup_connection.push_startup_packet(&packet);
+    let mut authentication = startup_connection.authentication();
+    if let Err(error) = authentication.flush().await {
+        let _ = authentication.into_transport();
+        return Err(SessionEstablishError::Protocol(error));
+    }
+    let awaiting_ready = loop {
+        let message = match authentication.receive_backend_wire().await {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = authentication.into_transport();
+                return Err(SessionEstablishError::Protocol(error));
+            }
+        };
+        match authentication.offer_backend(message) {
+            Ok(AuthEvent::Authentication(AuthOffer::Ok(connection))) => break connection,
+            Ok(AuthEvent::Negotiate { conn, .. }) => authentication = conn,
+            Ok(AuthEvent::Authentication(AuthOffer::Cleartext(connection))) => {
+                break complete_password(
+                    connection,
+                    ClientAuthenticationChallenge::CleartextPassword,
+                    &mut policy,
+                )
+                .await
+                .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Authentication(AuthOffer::Md5 { conn, salt })) => {
+                break complete_password(
+                    conn,
+                    ClientAuthenticationChallenge::Md5Password(salt),
+                    &mut policy,
+                )
+                .await
+                .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Authentication(AuthOffer::Sasl { conn, mechanisms })) => {
+                break complete_sasl(conn, mechanisms, &mut policy)
+                    .await
+                    .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Authentication(AuthOffer::Gss(conn))) => {
+                break complete_token(conn, ClientAuthenticationChallenge::Gss, &mut policy)
+                    .await
+                    .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Authentication(AuthOffer::Sspi(conn))) => {
+                break complete_token(conn, ClientAuthenticationChallenge::Sspi, &mut policy)
+                    .await
+                    .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Authentication(AuthOffer::KerberosV5(conn))) => {
+                break complete_token(conn, ClientAuthenticationChallenge::KerberosV5, &mut policy)
+                    .await
+                    .map_err(session_authentication_error)?;
+            }
+            Ok(AuthEvent::Error { conn, .. }) => {
+                let _ = conn.into_transport();
+                return Err(SessionEstablishError::Authentication(
+                    ClientAuthenticationError::Rejected,
+                ));
+            }
+            Err((conn, _, source)) => {
+                authentication = conn;
+                if let Some(source) = source {
+                    let _ = authentication.into_transport();
+                    return Err(SessionEstablishError::Protocol(source));
+                }
+            }
+        }
+    };
+    let mut awaiting_ready = awaiting_ready;
+    let ready = loop {
+        let item = match awaiting_ready.receive().await {
+            Ok(item) => item,
+            Err(error) => {
+                let _ = awaiting_ready.into_transport();
+                return Err(SessionEstablishError::Protocol(error));
+            }
+        };
+        match awaiting_ready.offer_ready(item) {
+            Ok(ready) => break ready,
+            Err((connection, SessionItem::Message(_))) => awaiting_ready = connection,
+            Err((connection, _)) => {
+                let _ = connection.into_transport();
+                return Err(SessionEstablishError::Protocol(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "startup did not reach an idle operational phase",
+                )));
+            }
+        }
+    };
+    let identity = policy.authenticated().await.map_err(|error| {
+        SessionEstablishError::Authentication(ClientAuthenticationError::Policy(error))
+    })?;
+    Ok((ready, identity))
+}
+
+fn session_authentication_error<Error>(
+    error: AuthenticationDriveError<Error>,
+) -> SessionEstablishError<Error> {
+    match error {
+        AuthenticationDriveError::Policy(error) => {
+            SessionEstablishError::Authentication(ClientAuthenticationError::Policy(error))
+        }
+        AuthenticationDriveError::Rejected => {
+            SessionEstablishError::Authentication(ClientAuthenticationError::Rejected)
+        }
+        AuthenticationDriveError::InvalidResponse => {
+            SessionEstablishError::Authentication(ClientAuthenticationError::InvalidResponse)
+        }
+        AuthenticationDriveError::Protocol(error) => SessionEstablishError::Protocol(error),
+    }
+}
+
+fn map_session_error<ConnectorError, TlsError, AuthenticationError>(
+    error: SessionEstablishError<AuthenticationError>,
+) -> ConnectError<ConnectorError, TlsError, ClientAuthenticationError<AuthenticationError>> {
+    match error {
+        SessionEstablishError::Authentication(error) => ConnectError::Authentication(error),
+        SessionEstablishError::Protocol(error) => ConnectError::Protocol(error),
     }
 }
 
@@ -489,7 +1308,8 @@ impl std::error::Error for QueryError {
     }
 }
 
-impl<Transport, State, Cleanliness> ClientConnection<Transport, State, Cleanliness>
+impl<Transport, State, Cleanliness, Evidence>
+    ClientConnection<Transport, State, Cleanliness, Evidence>
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
 {
@@ -507,7 +1327,7 @@ where
         query: &[u8],
     ) -> Result<
         (
-            ClientConnection<Transport, State, Dirty>,
+            ClientConnection<Transport, State, Dirty, Evidence>,
             Vec<crate::codec::BackendMessage>,
         ),
         QueryError,
@@ -589,13 +1409,15 @@ where
     }
 }
 
-impl<Connector, Work, Transport, Error> Client<Connector>
+impl<Connector, Tls, Authentication, Work, Transport, Error> Client<Connector, Tls, Authentication>
 where
     Connector: Fn(&ConnectTarget) -> Work,
     Work: Future<Output = Result<Transport, Error>>,
     Transport: AsyncRead + AsyncWrite + Unpin,
+    Authentication: ClientAuthentication,
+    Tls: ClientTlsConfiguration,
 {
-    /// Establishes transport, startup, and trust authentication before returning.
+    /// Establishes transport, startup, and configured authentication before returning.
     ///
     /// Per-call startup values explicitly override component defaults.
     ///
@@ -608,7 +1430,14 @@ where
         target: ConnectTarget,
         overrides: StartupParameters,
         state: State,
-    ) -> Result<ClientConnection<Transport, State>, ConnectError<Error>> {
+    ) -> Result<
+        ClientConnection<ClientTransport<Transport>, State, Pristine, Authentication::Evidence>,
+        ConnectError<
+            Error,
+            ClientTlsError<<Tls::Provider as ClientTlsProvider>::Error>,
+            ClientAuthenticationError<Authentication::Error>,
+        >,
+    > {
         let startup = self
             .defaults
             .clone()
@@ -618,99 +1447,56 @@ where
         let transport = (self.connector)(&target)
             .await
             .map_err(ConnectError::Connector)?;
-        let buffered = Buffered::with_max_frame_len(transport, self.limits.max_frame_len)
-            .map_err(ConnectError::Protocol)?;
-        let (mut startup_connection, packet) = Conn::new(buffered)
-            .startup(&startup)
-            .map_err(ConnectError::Protocol)?;
-        startup_connection.push_startup_packet(&packet);
-        let mut authentication = startup_connection.authentication();
-        if let Err(error) = authentication.flush().await {
-            let _ = authentication.into_transport();
-            return Err(ConnectError::Protocol(error));
-        }
-        let awaiting_ready = loop {
-            let message = match authentication.receive_backend_wire().await {
-                Ok(message) => message,
-                Err(error) => {
-                    let _ = authentication.into_transport();
-                    return Err(ConnectError::Protocol(error));
-                }
-            };
-            match authentication.offer_backend(message) {
-                Ok(AuthEvent::Authentication(AuthOffer::Ok(connection))) => break connection,
-                Ok(AuthEvent::Negotiate { conn, .. }) => authentication = conn,
-                Ok(AuthEvent::Authentication(offer)) => {
-                    abort_auth_offer(offer);
-                    return Err(ConnectError::Protocol(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "trust authentication received a credential challenge",
-                    )));
-                }
-                Ok(AuthEvent::Error { conn, .. }) => {
-                    let _ = conn.into_transport();
-                    return Err(ConnectError::Protocol(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "server rejected authentication",
-                    )));
-                }
-                Err((conn, _, source)) => {
-                    authentication = conn;
-                    if let Some(source) = source {
-                        let _ = authentication.into_transport();
-                        return Err(ConnectError::Protocol(source));
-                    }
-                }
-            }
+        let configured_tls = self.tls.configured();
+        let transport = match configured_tls {
+            None => ClientTransport::Plain(transport),
+            Some((mode, provider)) => negotiate_client_tls(transport, mode, provider, &target)
+                .await
+                .map_err(ConnectError::Tls)?,
         };
-        let mut awaiting_ready = awaiting_ready;
-        let ready = loop {
-            let item = match awaiting_ready.receive().await {
-                Ok(item) => item,
-                Err(error) => {
-                    let _ = awaiting_ready.into_transport();
-                    return Err(ConnectError::Protocol(error));
-                }
-            };
-            match awaiting_ready.offer_ready(item) {
-                Ok(ready) => break ready,
-                Err((connection, SessionItem::Message(_))) => awaiting_ready = connection,
-                Err((connection, _)) => {
-                    let _ = connection.into_transport();
-                    return Err(ConnectError::Protocol(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "startup did not reach an idle operational phase",
-                    )));
-                }
+        let first = establish_client_session(
+            transport,
+            &startup,
+            &target,
+            &self.authentication,
+            self.limits.max_frame_len,
+        )
+        .await;
+        let retry_provider = match configured_tls {
+            Some((crate::pre_startup::SslMode::Allow, provider)) if first.is_err() => {
+                Some(provider)
             }
+            _ => None,
+        };
+        let (ready, identity) = if let Some(provider) = retry_provider {
+            let transport = (self.connector)(&target)
+                .await
+                .map_err(ConnectError::Connector)?;
+            let transport = negotiate_client_tls(
+                transport,
+                crate::pre_startup::SslMode::Require,
+                provider,
+                &target,
+            )
+            .await
+            .map_err(ConnectError::Tls)?;
+            establish_client_session(
+                transport,
+                &startup,
+                &target,
+                &self.authentication,
+                self.limits.max_frame_len,
+            )
+            .await
+            .map_err(map_session_error)?
+        } else {
+            first.map_err(map_session_error)?
         };
         Ok(ClientConnection {
             connection: ready,
             state,
             handler: IdentityHandler,
-            context: ClientConnectionContext { target },
+            context: ClientConnectionContext { target, identity },
         })
-    }
-}
-
-fn abort_auth_offer<Transport>(offer: AuthOffer<Transport>) {
-    match offer {
-        AuthOffer::Ok(connection) => {
-            let _ = connection.into_transport();
-        }
-        AuthOffer::Cleartext(connection) => {
-            let _ = connection.into_transport();
-        }
-        AuthOffer::Md5 { conn, .. } => {
-            let _ = conn.into_transport();
-        }
-        AuthOffer::Sasl { conn, .. } => {
-            let _ = conn.into_transport();
-        }
-        AuthOffer::Gss(connection)
-        | AuthOffer::Sspi(connection)
-        | AuthOffer::KerberosV5(connection) => {
-            let _ = connection.into_transport();
-        }
     }
 }

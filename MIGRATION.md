@@ -13,6 +13,20 @@ The returned branch distinguishes an operational session from an out-of-band
 cancellation request, and `teardown()` recovers the transport, caller-owned
 connection state, handler, and connection context.
 
+## Adopt reusable client construction
+
+Use `Client::builder()` to configure the upstream-facing role once. Select
+`ClientTlsPolicy::Disabled` only for deliberate plaintext deployments, or use
+`ClientTlsPolicy::libpq` with an `SslMode` and application-owned
+`ClientTlsProvider`; the provider is resolved for every connection attempt so
+certificate and key rotation do not require rebuilding the component.
+
+Implement `ClientAuthentication` as a factory for mutable per-connection
+`ClientAuthenticationSession` values. Sessions answer server challenges
+asynchronously and produce typed identity evidence only after the server sends
+`AuthenticationOk`. Routing metadata is available to the factory without
+replacing or rebuilding the configured client component.
+
 ## Replace state mutation with ownership transitions
 
 Instead of storing `state: ConnectionState` and checking it before every send or

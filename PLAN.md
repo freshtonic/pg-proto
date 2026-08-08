@@ -178,6 +178,9 @@ neutral composition harnesses and examples.
 - [x] Establish reusable plaintext trust-authenticated client-role sessions
   through an explicit-security builder, with structured startup overrides,
   conservative limits, caller-owned connection state, and complete teardown.
+- [x] Extend the client-role builder with libpq-compatible TLS negotiation,
+  reloadable per-connection TLS material, and asynchronous application-defined
+  authentication which returns typed identity evidence.
 - [x] Add a reusable server-role builder which requires explicit plaintext and
   trust policies, owns startup orchestration, and returns operational or
   cancellation branches while preserving caller-owned connection parts.

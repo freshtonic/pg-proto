@@ -28,10 +28,14 @@ pub mod tls;
 pub mod transport;
 
 pub use client_component::{
-    BuildError, Client, ClientBuilder, ClientConnection, ClientConnectionContext, ClientTlsPolicy,
+    BuildError, Client, ClientAuthentication, ClientAuthenticationChallenge,
+    ClientAuthenticationError, ClientAuthenticationFuture, ClientAuthenticationResponse,
+    ClientAuthenticationSession, ClientBuilder, ClientConnection, ClientConnectionContext,
+    ClientTlsConfig, ClientTlsError, ClientTlsPolicy, ClientTlsProvider, ClientTransport,
     ConnectError, ConnectTarget, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
-    StartupParameterError, StartupParameters, TrustClientAuthentication,
+    ReloadableClientTls, StartupParameterError, StartupParameters, TrustClientAuthentication,
 };
+pub use pre_startup::SslMode;
 pub use server_component::{
     AcceptError, BuildServerError, CancellationRequest, IdentityServerHandler, Server,
     ServerAccept, ServerBuilder, ServerCancellation, ServerConnection, ServerConnectionContext,

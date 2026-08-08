@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.5.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.4.0...pg-proto-v0.5.0) - 2026-08-07
+
+### Added
+
+- generate phase associations from grammar ([#23](https://github.com/freshtonic/pg-proto/pull/23))
+
+### Changed
+
+- deepen pipeline ledger interface ([#24](https://github.com/freshtonic/pg-proto/pull/24))
+- consolidate inbound interception
+
+### Maintenance
+
+- configure Matt Pocock agent skills
+
 ## [0.4.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.3.0...pg-proto-v0.4.0) - 2026-08-06
 
 ### Added

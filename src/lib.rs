@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod cancel;
 pub mod cleanliness;
+mod client_component;
 pub mod codec;
 pub mod credentials;
 pub mod demux;
@@ -24,6 +25,12 @@ pub mod session;
 pub mod startup;
 pub mod tls;
 pub mod transport;
+
+pub use client_component::{
+    BuildError, Client, ClientBuilder, ClientConnection, ClientConnectionContext, ClientTlsPolicy,
+    ConnectError, ConnectTarget, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
+    StartupParameterError, StartupParameters, TrustClientAuthentication,
+};
 
 use std::marker::PhantomData;
 

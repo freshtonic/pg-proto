@@ -175,6 +175,9 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Establish reusable plaintext trust-authenticated client-role sessions
+  through an explicit-security builder, with structured startup overrides,
+  conservative limits, caller-owned connection state, and complete teardown.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 

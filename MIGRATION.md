@@ -3,6 +3,16 @@
 This guide is for proxy implementations moving from a runtime connection-state
 enum to `pg-proto`'s generated and transport-integrated typestate APIs.
 
+## Adopt reusable server construction
+
+Use `Server::builder()` to configure the client-facing role once and call
+`accept()` for each application-established transport. TLS and authentication
+must both be selected explicitly; intentional plaintext trust deployments use
+the named `ServerTlsPolicy::Disabled` and `TrustServerAuthentication` choices.
+The returned branch distinguishes an operational session from an out-of-band
+cancellation request, and `teardown()` recovers the transport, caller-owned
+connection state, handler, and connection context.
+
 ## Replace state mutation with ownership transitions
 
 Instead of storing `state: ConnectionState` and checking it before every send or

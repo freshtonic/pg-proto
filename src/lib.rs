@@ -20,6 +20,7 @@ pub mod replication;
 pub mod resources;
 pub mod scram;
 pub mod server_auth;
+mod server_component;
 pub mod server_session;
 pub mod session;
 pub mod startup;
@@ -30,6 +31,11 @@ pub use client_component::{
     BuildError, Client, ClientBuilder, ClientConnection, ClientConnectionContext, ClientTlsPolicy,
     ConnectError, ConnectTarget, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
     StartupParameterError, StartupParameters, TrustClientAuthentication,
+};
+pub use server_component::{
+    AcceptError, BuildServerError, CancellationRequest, IdentityServerHandler, Server,
+    ServerAccept, ServerBuilder, ServerCancellation, ServerConnection, ServerConnectionContext,
+    ServerProtocolLimits, ServerTlsPolicy, TrustServerAuthentication,
 };
 
 use std::marker::PhantomData;

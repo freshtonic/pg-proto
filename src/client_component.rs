@@ -722,6 +722,7 @@ pub struct ClientConnectionContext<Evidence = ()> {
     target: ConnectTarget,
     tls: Option<ClientTlsStatus>,
     identity: Option<Evidence>,
+    backend_key: Option<crate::demux::CancelKey>,
 }
 
 /// Progressively discovered transport security for a client connection.
@@ -763,6 +764,12 @@ impl<Evidence> ClientConnectionContext<Evidence> {
     #[must_use]
     pub const fn identity_if_known(&self) -> Option<&Evidence> {
         self.identity.as_ref()
+    }
+
+    /// Returns the upstream cancellation key captured during startup readiness.
+    #[must_use]
+    pub const fn backend_key(&self) -> Option<&crate::demux::CancelKey> {
+        self.backend_key.as_ref()
     }
 }
 
@@ -987,6 +994,32 @@ pub enum ConnectError<ConnectorError, TlsError = Infallible, AuthenticationError
     Startup(StartupParameterError),
     /// PostgreSQL framing, startup, authentication, or readiness failed.
     Protocol(io::Error),
+}
+
+/// Failure while sending a one-shot PostgreSQL cancellation packet.
+#[derive(Debug)]
+pub enum CancelError<ConnectorError> {
+    /// The configured connector could not open the cancellation transport.
+    Connector(ConnectorError),
+    /// The key could not be encoded or the raw packet could not be written.
+    Protocol(io::Error),
+}
+
+impl<E: fmt::Display> fmt::Display for CancelError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connector(error) => error.fmt(formatter),
+            Self::Protocol(error) => error.fmt(formatter),
+        }
+    }
+}
+impl<E: std::error::Error + 'static> std::error::Error for CancelError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Connector(error) => Some(error),
+            Self::Protocol(error) => Some(error),
+        }
+    }
 }
 
 impl<ConnectorError: fmt::Display, TlsError: fmt::Display, AuthenticationError: fmt::Display>
@@ -1442,6 +1475,7 @@ async fn establish_client_session<Transport, Authentication, State, Handler>(
     (
         Conn<Buffered<ClientTransport<Transport>, Backend>, Ready>,
         Authentication::Evidence,
+        Option<crate::demux::CancelKey>,
     ),
     SessionEstablishError<Authentication::Error>,
 >
@@ -1557,6 +1591,7 @@ where
         }
     };
     let mut awaiting_ready = awaiting_ready;
+    let mut backend_key = None;
     let ready = loop {
         let item = match awaiting_ready.receive().await {
             Ok(item) => item,
@@ -1565,6 +1600,16 @@ where
                 return Err(SessionEstablishError::Protocol(error));
             }
         };
+        if let crate::codec::BackendMessage::BackendKeyData {
+            process_id,
+            secret_key,
+        } = item.clone().into_backend_message()
+        {
+            backend_key = Some(crate::demux::CancelKey {
+                process_id,
+                secret_key,
+            });
+        }
         let replacement = handler.backend(context, state, item.clone().into_backend_message());
         let Some(item) = replace_session_item(item, replacement) else {
             let _ = awaiting_ready.into_transport();
@@ -1588,7 +1633,7 @@ where
     let identity = policy.authenticated().await.map_err(|error| {
         SessionEstablishError::Authentication(ClientAuthenticationError::Policy(error))
     })?;
-    Ok((ready, identity))
+    Ok((ready, identity, backend_key))
 }
 
 fn session_authentication_error<Error>(
@@ -1845,6 +1890,7 @@ where
             target: target.clone(),
             tls: None,
             identity: None,
+            backend_key: None,
         };
         let transport = (self.connector)(&target)
             .await
@@ -1885,7 +1931,7 @@ where
             }
             _ => None,
         };
-        let (ready, identity) = if let Some(provider) = retry_provider {
+        let (ready, identity, backend_key) = if let Some(provider) = retry_provider {
             let transport = (self.connector)(&target)
                 .await
                 .map_err(ConnectError::Connector)?;
@@ -1925,8 +1971,47 @@ where
             handler,
             context: {
                 context.identity = Some(identity);
+                context.backend_key = backend_key;
                 context
             },
         })
+    }
+}
+
+impl<Connector, Tls, Authentication, Middleware, Work, Transport, Error>
+    Client<Connector, Tls, Authentication, Middleware>
+where
+    Connector: Fn(&ConnectTarget) -> Work,
+    Work: Future<Output = Result<Transport, Error>>,
+    Transport: AsyncWrite + Unpin,
+{
+    /// Opens a fresh transport and writes exactly one raw cancellation packet.
+    ///
+    /// Cancellation deliberately performs neither TLS negotiation nor startup
+    /// authentication, as required by PostgreSQL's out-of-band protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns the connector's typed error or a cancellation encode/write error.
+    pub async fn cancel(
+        &self,
+        target: &ConnectTarget,
+        key: &crate::demux::CancelKey,
+    ) -> Result<(), CancelError<Error>> {
+        let mut transport = (self.connector)(target)
+            .await
+            .map_err(CancelError::Connector)?;
+        let packet = crate::pre_startup::PreStartupMessage::CancelRequest {
+            process_id: key.process_id,
+            secret_key: key.secret_key.clone(),
+        }
+        .to_packet()
+        .map_err(CancelError::Protocol)?;
+        tokio::io::AsyncWriteExt::write_all(&mut transport, &packet)
+            .await
+            .map_err(CancelError::Protocol)?;
+        tokio::io::AsyncWriteExt::shutdown(&mut transport)
+            .await
+            .map_err(CancelError::Protocol)
     }
 }

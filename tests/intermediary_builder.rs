@@ -371,14 +371,14 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         );
     });
 
-    let mut session = intermediary
-        .accept(
-            downstream_transport,
-            "downstream-peer".to_owned(),
-            vec!["shared-state"],
-        )
-        .await
-        .unwrap();
+    let mut session = Box::pin(intermediary.accept(
+        downstream_transport,
+        "downstream-peer".to_owned(),
+        vec!["shared-state"],
+    ))
+    .await
+    .unwrap()
+    .into_session();
     assert_eq!(session.target().name(), "tenant-a");
     assert_eq!(session.state().first(), Some(&"shared-state"));
     let establishment_entries = session.state().len();

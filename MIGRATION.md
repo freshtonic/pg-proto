@@ -151,6 +151,14 @@ and optional authenticated routing and boundary-middleware factories. The
 operational connection owns one caller state and provides `forward_next()` for
 duplex asynchronous, extended, COPY, and replication traffic.
 
+Configure forwarding with `IntermediaryBuilder::cancellation_registry`. The
+application-owned handle allocates client keys and stores `CancellationRoute`
+values containing the original `ConnectTarget` metadata and upstream key.
+Cancellation resolves this mapping directly, without startup routing. Call
+`IntermediaryConnection::detach_cancellation` when releasing a live session.
+Establishment failures close silently by default; `SafeDiagnostic` emits one
+fixed, non-disclosing error through outbound server middleware before closing.
+
 ## Errors, COPY, and pooling
 
 After `ErrorResponse`, keep the returned `Draining` connection and consume only

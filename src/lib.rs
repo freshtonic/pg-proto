@@ -30,7 +30,7 @@ pub mod tls;
 pub mod transport;
 
 pub use client_component::{
-    BuildError, Client, ClientAuthentication, ClientAuthenticationChallenge,
+    BuildError, CancelError, Client, ClientAuthentication, ClientAuthenticationChallenge,
     ClientAuthenticationError, ClientAuthenticationFuture, ClientAuthenticationResponse,
     ClientAuthenticationSession, ClientBuilder, ClientConnection, ClientConnectionContext,
     ClientInitialContext, ClientTlsConfig, ClientTlsError, ClientTlsPolicy, ClientTlsProvider,
@@ -40,10 +40,12 @@ pub use client_component::{
 };
 pub use intermediary_component::{
     AllowAuthenticatedRoute, AuthenticatedRouteContext, AuthenticatedRoutePolicy,
-    CancellationPolicy, ForwardError, ForwardedMessage, IdentityIntermediaryMiddleware,
-    InitialServerContext, Intermediary, IntermediaryAcceptError, IntermediaryBuildError,
-    IntermediaryBuilder, IntermediaryConnection, IntermediaryContexts, IntermediaryMiddleware,
-    IntermediaryMiddlewareFactory, StartupResolutionError, StartupRouteResolver,
+    CancellationPolicy, CancellationRoute, EstablishmentFailurePolicy, ForwardError,
+    ForwardedMessage, IdentityIntermediaryMiddleware, InitialServerContext, Intermediary,
+    IntermediaryAccept, IntermediaryAcceptError, IntermediaryBuildError, IntermediaryBuilder,
+    IntermediaryCancellationRegistry, IntermediaryConnection, IntermediaryContexts,
+    IntermediaryMiddleware, IntermediaryMiddlewareFactory, RejectCancellation,
+    StartupResolutionError, StartupRouteResolver,
 };
 pub use pipeline::{BoundedPipeline, NoPipeline};
 pub use pre_startup::SslMode;

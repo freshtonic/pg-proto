@@ -194,6 +194,9 @@ neutral composition harnesses and examples.
   with pre-authentication startup resolution, optional authenticated routing,
   one shared state value, ordered boundary middleware, legal forwarding,
   explicit cancellation posture, and bounded backpressure.
+- [x] Record and explicitly detach application-owned cancellation mappings,
+  resolve later cancellation without startup routing, forward one-shot raw
+  packets, and provide conservative non-disclosing establishment failures.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 

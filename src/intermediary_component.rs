@@ -17,6 +17,94 @@ use crate::{
 pub enum CancellationPolicy {
     /// Reject cancellation packets instead of silently routing them.
     Reject,
+    /// Resolve and forward cancellation using the configured registry.
+    Forward,
+}
+
+/// Disclosure-safe handling for failures after a downstream connection exists.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EstablishmentFailurePolicy {
+    /// Silently close without exposing internal failure details.
+    #[default]
+    Close,
+    /// Send one fixed, non-disclosing PostgreSQL diagnostic and then close.
+    SafeDiagnostic,
+}
+
+fn safe_establishment_diagnostic() -> crate::codec::BackendMessage {
+    crate::codec::BackendMessage::ErrorResponse(crate::codec::DiagnosticResponse {
+        fields: vec![
+            crate::codec::DiagnosticField {
+                code: b'S',
+                value: bytes::Bytes::from_static(b"ERROR"),
+            },
+            crate::codec::DiagnosticField {
+                code: b'M',
+                value: bytes::Bytes::from_static(b"connection establishment failed"),
+            },
+        ],
+    })
+}
+
+/// A destination and upstream key retained independently of startup routing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancellationRoute {
+    target: ConnectTarget,
+    upstream: crate::demux::CancelKey,
+}
+
+impl CancellationRoute {
+    /// Creates a cancellation route.
+    #[must_use]
+    pub const fn new(target: ConnectTarget, upstream: crate::demux::CancelKey) -> Self {
+        Self { target, upstream }
+    }
+    /// Returns the original destination, including application metadata.
+    #[must_use]
+    pub const fn target(&self) -> &ConnectTarget {
+        &self.target
+    }
+    /// Returns the upstream cancellation key.
+    #[must_use]
+    pub const fn upstream_key(&self) -> &crate::demux::CancelKey {
+        &self.upstream
+    }
+}
+
+/// Application-owned concurrent cancellation mapping and key allocator.
+///
+/// Methods take `&self` so implementations can use an application-selected
+/// lock, actor, shared store, or other concurrency mechanism. No global
+/// `Send`, `Sync`, or `'static` requirement is imposed.
+pub trait IntermediaryCancellationRegistry {
+    /// Collision, allocation, or storage failure.
+    type Error;
+    /// Records a live route and returns the proxy key exposed downstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an application-defined allocation, collision, or storage error.
+    fn register(&self, route: CancellationRoute) -> Result<crate::demux::CancelKey, Self::Error>;
+    /// Resolves a later out-of-band request without consulting startup routing.
+    fn resolve(&self, client: &crate::demux::CancelKey) -> Option<CancellationRoute>;
+    /// Explicitly detaches a live client key.
+    fn detach(&self, client: &crate::demux::CancelKey) -> Option<CancellationRoute>;
+}
+
+/// Marker registry used by explicit cancellation rejection.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RejectCancellation;
+impl IntermediaryCancellationRegistry for RejectCancellation {
+    type Error = std::convert::Infallible;
+    fn register(&self, _: CancellationRoute) -> Result<crate::demux::CancelKey, Self::Error> {
+        unreachable!()
+    }
+    fn resolve(&self, _: &crate::demux::CancelKey) -> Option<CancellationRoute> {
+        None
+    }
+    fn detach(&self, _: &crate::demux::CancelKey) -> Option<CancellationRoute> {
+        None
+    }
 }
 
 /// Deterministic failure while assembling an intermediary component.
@@ -203,6 +291,7 @@ pub struct Intermediary<
     Route = AllowAuthenticatedRoute,
     Policy = NoPipeline,
     Boundary = IdentityIntermediaryMiddleware,
+    Cancellation = RejectCancellation,
 > {
     pub(crate) server: Server,
     pub(crate) client: Client,
@@ -211,6 +300,8 @@ pub struct Intermediary<
     pub(crate) pipeline: Policy,
     pub(crate) boundary: Boundary,
     pub(crate) cancellation: CancellationPolicy,
+    pub(crate) cancellation_registry: Cancellation,
+    pub(crate) failure_policy: EstablishmentFailurePolicy,
 }
 
 impl Intermediary<()> {
@@ -221,7 +312,7 @@ impl Intermediary<()> {
     }
 }
 
-impl<S, C, R, A, P, B> fmt::Debug for Intermediary<S, C, R, A, P, B> {
+impl<S, C, R, A, P, B, K> fmt::Debug for Intermediary<S, C, R, A, P, B, K> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Intermediary")
@@ -242,6 +333,7 @@ pub struct IntermediaryBuilder<
     Route = AllowAuthenticatedRoute,
     Policy = NoPipeline,
     Boundary = IdentityIntermediaryMiddleware,
+    Cancellation = RejectCancellation,
 > {
     server: Option<Server>,
     client: Option<Client>,
@@ -250,6 +342,8 @@ pub struct IntermediaryBuilder<
     pipeline: Policy,
     boundary: Boundary,
     cancellation: Option<CancellationPolicy>,
+    cancellation_registry: Cancellation,
+    failure_policy: EstablishmentFailurePolicy,
 }
 
 impl Default for IntermediaryBuilder {
@@ -262,14 +356,16 @@ impl Default for IntermediaryBuilder {
             pipeline: NoPipeline,
             boundary: IdentityIntermediaryMiddleware,
             cancellation: None,
+            cancellation_registry: RejectCancellation,
+            failure_policy: EstablishmentFailurePolicy::Close,
         }
     }
 }
 
-impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
+impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
     /// Supplies the complete client-facing role configuration.
     #[must_use]
-    pub fn server<Next>(self, server: Next) -> IntermediaryBuilder<Next, C, R, A, P, B> {
+    pub fn server<Next>(self, server: Next) -> IntermediaryBuilder<Next, C, R, A, P, B, K> {
         IntermediaryBuilder {
             server: Some(server),
             client: self.client,
@@ -278,12 +374,14 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline: self.pipeline,
             boundary: self.boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
     /// Supplies the complete PostgreSQL-facing role configuration.
     #[must_use]
-    pub fn client<Next>(self, client: Next) -> IntermediaryBuilder<S, Next, R, A, P, B> {
+    pub fn client<Next>(self, client: Next) -> IntermediaryBuilder<S, Next, R, A, P, B, K> {
         IntermediaryBuilder {
             server: self.server,
             client: Some(client),
@@ -292,6 +390,8 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline: self.pipeline,
             boundary: self.boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
@@ -300,7 +400,7 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
     pub fn startup_resolver<Next>(
         self,
         resolver: Next,
-    ) -> IntermediaryBuilder<S, C, Next, A, P, B> {
+    ) -> IntermediaryBuilder<S, C, Next, A, P, B, K> {
         IntermediaryBuilder {
             server: self.server,
             client: self.client,
@@ -309,6 +409,8 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline: self.pipeline,
             boundary: self.boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
@@ -317,7 +419,7 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
     pub fn authenticated_route<Next>(
         self,
         route: Next,
-    ) -> IntermediaryBuilder<S, C, R, Next, P, B> {
+    ) -> IntermediaryBuilder<S, C, R, Next, P, B, K> {
         IntermediaryBuilder {
             server: self.server,
             client: self.client,
@@ -326,6 +428,8 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline: self.pipeline,
             boundary: self.boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
@@ -334,7 +438,7 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
     pub fn pipeline<Next: PipelinePolicy>(
         self,
         pipeline: Next,
-    ) -> IntermediaryBuilder<S, C, R, A, Next, B> {
+    ) -> IntermediaryBuilder<S, C, R, A, Next, B, K> {
         IntermediaryBuilder {
             server: self.server,
             client: self.client,
@@ -343,12 +447,14 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline,
             boundary: self.boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
     /// Supplies middleware for the forwarding boundary.
     #[must_use]
-    pub fn middleware<Next>(self, boundary: Next) -> IntermediaryBuilder<S, C, R, A, P, Next> {
+    pub fn middleware<Next>(self, boundary: Next) -> IntermediaryBuilder<S, C, R, A, P, Next, K> {
         IntermediaryBuilder {
             server: self.server,
             client: self.client,
@@ -357,14 +463,45 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             pipeline: self.pipeline,
             boundary,
             cancellation: self.cancellation,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         }
     }
 
     /// Selects an explicit cancellation posture.
     #[must_use]
     pub fn cancellation(mut self, cancellation: CancellationPolicy) -> Self {
-        self.cancellation = Some(cancellation);
+        self.cancellation = match cancellation {
+            CancellationPolicy::Reject => Some(CancellationPolicy::Reject),
+            CancellationPolicy::Forward => None,
+        };
         self
+    }
+
+    /// Selects conservative close or one fixed safe diagnostic on establishment failure.
+    #[must_use]
+    pub fn establishment_failure(mut self, policy: EstablishmentFailurePolicy) -> Self {
+        self.failure_policy = policy;
+        self
+    }
+
+    /// Enables forwarding through an application-owned concurrent registry.
+    #[must_use]
+    pub fn cancellation_registry<Next>(
+        self,
+        registry: Next,
+    ) -> IntermediaryBuilder<S, C, R, A, P, B, Next> {
+        IntermediaryBuilder {
+            server: self.server,
+            client: self.client,
+            resolver: self.resolver,
+            route: self.route,
+            pipeline: self.pipeline,
+            boundary: self.boundary,
+            cancellation: Some(CancellationPolicy::Forward),
+            cancellation_registry: registry,
+            failure_policy: self.failure_policy,
+        }
     }
 
     /// Validates composition and creates a reusable component.
@@ -372,7 +509,8 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
     /// # Errors
     ///
     /// Returns the first missing mandatory role, resolver, or cancellation configuration.
-    pub fn build(self) -> Result<Intermediary<S, C, R, A, P, B>, IntermediaryBuildError> {
+    #[allow(clippy::type_complexity)]
+    pub fn build(self) -> Result<Intermediary<S, C, R, A, P, B, K>, IntermediaryBuildError> {
         Ok(Intermediary {
             server: self.server.ok_or(IntermediaryBuildError::MissingServer)?,
             client: self.client.ok_or(IntermediaryBuildError::MissingClient)?,
@@ -385,6 +523,8 @@ impl<S, C, R, A, P, B> IntermediaryBuilder<S, C, R, A, P, B> {
             cancellation: self
                 .cancellation
                 .ok_or(IntermediaryBuildError::MissingCancellationPolicy)?,
+            cancellation_registry: self.cancellation_registry,
+            failure_policy: self.failure_policy,
         })
     }
 }
@@ -429,6 +569,10 @@ where
     type Route = ConnectTarget;
     type Error = StartupResolutionError<Resolver::Error>;
 
+    fn defer_ready(&self) -> bool {
+        true
+    }
+
     fn resolve<'a>(
         &'a mut self,
         startup: &'a crate::startup::StartupMessage,
@@ -452,8 +596,14 @@ where
 }
 
 /// Failure while establishing both independently authenticated roles.
-#[derive(Debug)]
-pub enum IntermediaryAcceptError<ServerError, ResolverError, RouteError, ClientError> {
+pub enum IntermediaryAcceptError<
+    ServerError,
+    ResolverError,
+    RouteError,
+    ClientError,
+    RegistryError = std::convert::Infallible,
+    CancellationError = std::convert::Infallible,
+> {
     /// Client-facing TLS, startup, or authentication failed.
     Server(ServerError),
     /// Startup routing failed before client-facing authentication.
@@ -464,30 +614,62 @@ pub enum IntermediaryAcceptError<ServerError, ResolverError, RouteError, ClientE
     AuthenticatedRoute(RouteError),
     /// PostgreSQL-facing connection, TLS, startup, or authentication failed.
     Client(ClientError),
+    /// Cancellation-key allocation, collision detection, or storage failed.
+    CancellationRegistry(RegistryError),
+    /// A generated establishment message could not be written downstream.
+    ServerOutput(io::Error),
+    /// Opening or writing the one-shot upstream cancellation connection failed.
+    Cancellation(CancellationError),
 }
 
-impl<S: fmt::Display, R: fmt::Display, A: fmt::Display, C: fmt::Display> fmt::Display
-    for IntermediaryAcceptError<S, R, A, C>
-{
+impl<S, R, A, C, K, X> fmt::Debug for IntermediaryAcceptError<S, R, A, C, K, X> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Server(_) => "IntermediaryAcceptError::Server([REDACTED])",
+            Self::StartupRoute(_) => "IntermediaryAcceptError::StartupRoute([REDACTED])",
+            Self::CancellationRejected => "IntermediaryAcceptError::CancellationRejected",
+            Self::AuthenticatedRoute(_) => {
+                "IntermediaryAcceptError::AuthenticatedRoute([REDACTED])"
+            }
+            Self::Client(_) => "IntermediaryAcceptError::Client([REDACTED])",
+            Self::CancellationRegistry(_) => {
+                "IntermediaryAcceptError::CancellationRegistry([REDACTED])"
+            }
+            Self::ServerOutput(_) => "IntermediaryAcceptError::ServerOutput([REDACTED])",
+            Self::Cancellation(_) => "IntermediaryAcceptError::Cancellation([REDACTED])",
+        })
+    }
+}
+
+impl<S, R, A, C, K, X> fmt::Display for IntermediaryAcceptError<S, R, A, C, K, X> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Server(error) => error.fmt(formatter),
-            Self::StartupRoute(error) => error.fmt(formatter),
+            Self::Server(_) => formatter.write_str("client-facing establishment failed"),
+            Self::StartupRoute(_) => formatter.write_str("startup routing failed"),
             Self::CancellationRejected => {
                 formatter.write_str("cancellation is explicitly rejected")
             }
-            Self::AuthenticatedRoute(error) => error.fmt(formatter),
-            Self::Client(error) => error.fmt(formatter),
+            Self::AuthenticatedRoute(_) => formatter.write_str("authenticated routing failed"),
+            Self::Client(_) => formatter.write_str("PostgreSQL-facing establishment failed"),
+            Self::CancellationRegistry(_) => {
+                formatter.write_str("cancellation registration failed")
+            }
+            Self::ServerOutput(_) => {
+                formatter.write_str("client-facing establishment output failed")
+            }
+            Self::Cancellation(_) => formatter.write_str("cancellation forwarding failed"),
         }
     }
 }
 
-impl<S, R, A, C> std::error::Error for IntermediaryAcceptError<S, R, A, C>
+impl<S, R, A, C, K, X> std::error::Error for IntermediaryAcceptError<S, R, A, C, K, X>
 where
     S: std::error::Error + 'static,
     R: std::error::Error + 'static,
     A: std::error::Error + 'static,
     C: std::error::Error + 'static,
+    K: std::error::Error + 'static,
+    X: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -496,6 +678,9 @@ where
             Self::CancellationRejected => None,
             Self::AuthenticatedRoute(error) => Some(error),
             Self::Client(error) => Some(error),
+            Self::CancellationRegistry(error) => Some(error),
+            Self::ServerOutput(error) => Some(error),
+            Self::Cancellation(error) => Some(error),
         }
     }
 }
@@ -532,6 +717,7 @@ pub struct IntermediaryConnection<
     ClientHandler,
     Boundary,
     Policy,
+    Cancellation = RejectCancellation,
 > {
     downstream:
         crate::server_component::ServerConnectionCore<DT, Peer, ServerIdentity, ServerHandler>,
@@ -546,6 +732,31 @@ pub struct IntermediaryConnection<
     pipeline: Pipeline<Policy>,
     target: ConnectTarget,
     pending_frontend: Option<crate::codec::FrontendMessage>,
+    cancellation_registry: Cancellation,
+    client_cancel_key: Option<crate::demux::CancelKey>,
+}
+
+/// Result of accepting either an ordinary session or an out-of-band request.
+#[derive(Debug)]
+pub enum IntermediaryAccept<Connection> {
+    /// A fully established, independently authenticated session pair.
+    Session(Connection),
+    /// The resolved cancellation packet was rewritten and forwarded.
+    CancellationForwarded,
+}
+
+impl<Connection> IntermediaryAccept<Connection> {
+    /// Extracts the ordinary session branch.
+    ///
+    /// # Panics
+    /// Panics when the accepted connection was cancellation-only.
+    #[must_use]
+    pub fn into_session(self) -> Connection {
+        match self {
+            Self::Session(connection) => connection,
+            Self::CancellationForwarded => panic!("accepted cancellation has no session"),
+        }
+    }
 }
 
 /// Direction selected by one cancellation-safe duplex forwarding step.
@@ -557,8 +768,8 @@ pub enum ForwardedMessage {
     Backend(crate::codec::BackendMessage),
 }
 
-impl<DT, UT, State, Peer, SI, CE, SH, CH, Boundary, Policy>
-    IntermediaryConnection<DT, UT, State, Peer, SI, CE, SH, CH, Boundary, Policy>
+impl<DT, UT, State, Peer, SI, CE, SH, CH, Boundary, Policy, K>
+    IntermediaryConnection<DT, UT, State, Peer, SI, CE, SH, CH, Boundary, Policy, K>
 where
     Policy: PipelinePolicy,
 {
@@ -577,6 +788,22 @@ where
     pub const fn pipeline(&self) -> &Pipeline<Policy> {
         &self.pipeline
     }
+
+    /// Returns the proxy-issued cancellation key for this live session.
+    #[must_use]
+    pub const fn cancellation_key(&self) -> Option<&crate::demux::CancelKey> {
+        self.client_cancel_key.as_ref()
+    }
+
+    /// Detaches this session's cancellation mapping explicitly.
+    pub fn detach_cancellation(&mut self) -> Option<CancellationRoute>
+    where
+        K: IntermediaryCancellationRegistry,
+    {
+        self.client_cancel_key
+            .take()
+            .and_then(|key| self.cancellation_registry.detach(&key))
+    }
 }
 
 impl<
@@ -590,6 +817,7 @@ impl<
     ClientHandler,
     Boundary,
     Policy,
+    K,
 >
     IntermediaryConnection<
         DT,
@@ -602,6 +830,7 @@ impl<
         ClientHandler,
         Boundary,
         Policy,
+        K,
     >
 where
     DT: AsyncRead + AsyncWrite + Unpin,
@@ -615,6 +844,7 @@ where
             crate::ClientConnectionContext<ClientEvidence>,
         >,
     Policy: PipelinePolicy,
+    K: IntermediaryCancellationRegistry,
 {
     /// Receives one legal client message and forwards it upstream in
     /// source-role, boundary, destination-role middleware order.
@@ -736,7 +966,7 @@ where
     /// contexts, boundary middleware, and the sole connection state.
     #[allow(clippy::type_complexity)]
     pub fn teardown(
-        self,
+        mut self,
     ) -> (
         crate::AcceptedServerTransport<DT>,
         crate::ClientTransport<UT>,
@@ -748,6 +978,7 @@ where
             crate::ClientConnectionContext<ClientEvidence>,
         >,
     ) {
+        let _ = self.detach_cancellation();
         let (downstream, server_handler, server_context) = self.downstream.into_parts();
         let (upstream, client_handler, client_context) = self.upstream.into_parts();
         (
@@ -805,7 +1036,7 @@ impl From<io::Error> for ForwardError {
     }
 }
 
-impl<ST, SA, SM, Connector, CT, CA, CM, Resolver, Route, Policy, Boundary>
+impl<ST, SA, SM, Connector, CT, CA, CM, Resolver, Route, Policy, Boundary, K>
     Intermediary<
         crate::Server<ST, SA, SM>,
         crate::Client<Connector, CT, CA, CM>,
@@ -813,6 +1044,7 @@ impl<ST, SA, SM, Connector, CT, CA, CM, Resolver, Route, Policy, Boundary>
         Route,
         Policy,
         Boundary,
+        K,
     >
 where
     ST: crate::ServerTlsConfiguration,
@@ -821,6 +1053,7 @@ where
     CA: crate::ClientAuthentication,
     CM: crate::MiddlewareFactory<crate::ClientInitialContext>,
     Policy: PipelinePolicy,
+    K: IntermediaryCancellationRegistry + Clone,
 {
     /// Establishes both independently authenticated roles around one shared state.
     ///
@@ -835,28 +1068,31 @@ where
         peer: Peer,
         state: State,
     ) -> Result<
-        IntermediaryConnection<
-            DT,
-            UT,
-            State,
-            Peer,
-            <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
-            CA::Evidence,
-            <SM as crate::MiddlewareFactory<
-                crate::ServerConnectionContext<
-                    Peer,
-                    <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
-                >,
-            >>::Handler,
-            <CM as crate::MiddlewareFactory<crate::ClientInitialContext>>::Handler,
-            <Boundary as IntermediaryMiddlewareFactory<
-                crate::ServerConnectionContext<
-                    Peer,
-                    <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
-                >,
-                crate::ClientConnectionContext<CA::Evidence>,
-            >>::Handler,
-            Policy,
+        IntermediaryAccept<
+            IntermediaryConnection<
+                DT,
+                UT,
+                State,
+                Peer,
+                <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
+                CA::Evidence,
+                <SM as crate::MiddlewareFactory<
+                    crate::ServerConnectionContext<
+                        Peer,
+                        <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
+                    >,
+                >>::Handler,
+                <CM as crate::MiddlewareFactory<crate::ClientInitialContext>>::Handler,
+                <Boundary as IntermediaryMiddlewareFactory<
+                    crate::ServerConnectionContext<
+                        Peer,
+                        <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
+                    >,
+                    crate::ClientConnectionContext<CA::Evidence>,
+                >>::Handler,
+                Policy,
+                K,
+            >,
         >,
         IntermediaryAcceptError<
             crate::AcceptError<
@@ -870,6 +1106,8 @@ where
                 crate::ClientTlsError<<CT::Provider as crate::ClientTlsProvider>::Error>,
                 crate::ClientAuthenticationError<CA::Error>,
             >,
+            K::Error,
+            crate::CancelError<CE>,
         >,
     >
     where
@@ -940,12 +1178,42 @@ where
                     IntermediaryAcceptError::StartupRoute(error)
                 }
             })?;
-        let crate::ServerAccept::Session(downstream) = accepted else {
-            return Err(IntermediaryAcceptError::CancellationRejected);
+        let mut downstream = match accepted {
+            crate::ServerAccept::Session(downstream) => downstream,
+            crate::ServerAccept::Cancellation(cancellation) => {
+                if self.cancellation == CancellationPolicy::Reject {
+                    let _ = cancellation.teardown();
+                    return Err(IntermediaryAcceptError::CancellationRejected);
+                }
+                let request = cancellation.request();
+                let client_key = crate::demux::CancelKey {
+                    process_id: request.process_id(),
+                    secret_key: bytes::Bytes::copy_from_slice(request.secret_key()),
+                };
+                let Some(route) = self.cancellation_registry.resolve(&client_key) else {
+                    let _ = cancellation.teardown();
+                    return Err(IntermediaryAcceptError::CancellationRejected);
+                };
+                if let Err(error) = self
+                    .client
+                    .cancel(route.target(), route.upstream_key())
+                    .await
+                {
+                    let _ = cancellation.teardown();
+                    return Err(IntermediaryAcceptError::Cancellation(error));
+                }
+                let _ = cancellation.teardown();
+                return Ok(IntermediaryAccept::CancellationForwarded);
+            }
         };
         let startup = match StartupParameters::from_wire(downstream.startup()) {
             Ok(startup) => startup,
             Err(error) => {
+                if self.failure_policy == EstablishmentFailurePolicy::SafeDiagnostic {
+                    let _ = downstream
+                        .send_generated_error(safe_establishment_diagnostic())
+                        .await;
+                }
                 let _ = downstream.teardown();
                 return Err(IntermediaryAcceptError::StartupRoute(
                     StartupResolutionError::Parameters(error),
@@ -963,11 +1231,16 @@ where
         let selected = match self.route.route(selected, context).await {
             Ok(target) => target,
             Err(error) => {
+                if self.failure_policy == EstablishmentFailurePolicy::SafeDiagnostic {
+                    let _ = downstream
+                        .send_generated_error(safe_establishment_diagnostic())
+                        .await;
+                }
                 let _ = downstream.teardown();
                 return Err(IntermediaryAcceptError::AuthenticatedRoute(error));
             }
         };
-        let (downstream, mut state) = downstream.into_core_and_state();
+        let (mut downstream, mut state) = downstream.into_core_and_state();
         let upstream = match self
             .client
             .connect_core(selected.clone(), startup, &mut state)
@@ -975,6 +1248,15 @@ where
         {
             Ok(upstream) => upstream,
             Err(error) => {
+                if self.failure_policy == EstablishmentFailurePolicy::SafeDiagnostic {
+                    let diagnostic = safe_establishment_diagnostic();
+                    let diagnostic = downstream.intercept_backend(&mut state, diagnostic);
+                    if matches!(diagnostic, crate::codec::BackendMessage::ErrorResponse(_)) {
+                        // A failed encode/write is a terminal close; do not recursively
+                        // invoke failure handling or middleware.
+                        let _ = downstream.send_wire_raw(diagnostic).await;
+                    }
+                }
                 let _ = downstream.into_parts();
                 return Err(IntermediaryAcceptError::Client(error));
             }
@@ -982,7 +1264,39 @@ where
         let boundary = self
             .boundary
             .create(downstream.context(), upstream.context());
-        Ok(IntermediaryConnection {
+        let (client_cancel_key, backend_key_message) =
+            match (self.cancellation, upstream.context().backend_key().cloned()) {
+                (CancellationPolicy::Forward, Some(upstream_key)) => {
+                    let client_key = match self
+                        .cancellation_registry
+                        .register(CancellationRoute::new(selected.clone(), upstream_key))
+                    {
+                        Ok(key) => key,
+                        Err(error) => {
+                            if self.failure_policy == EstablishmentFailurePolicy::SafeDiagnostic {
+                                let diagnostic = downstream
+                                    .intercept_backend(&mut state, safe_establishment_diagnostic());
+                                if matches!(
+                                    diagnostic,
+                                    crate::codec::BackendMessage::ErrorResponse(_)
+                                ) {
+                                    let _ = downstream.send_wire_raw(diagnostic).await;
+                                }
+                            }
+                            let _ = downstream.into_parts();
+                            let _ = upstream.into_parts();
+                            return Err(IntermediaryAcceptError::CancellationRegistry(error));
+                        }
+                    };
+                    let message = crate::codec::BackendMessage::BackendKeyData {
+                        process_id: client_key.process_id,
+                        secret_key: client_key.secret_key.clone(),
+                    };
+                    (Some(client_key), Some(message))
+                }
+                _ => (None, None),
+            };
+        let mut connection = IntermediaryConnection {
             downstream,
             upstream,
             state,
@@ -990,6 +1304,51 @@ where
             pipeline: Pipeline::new(self.pipeline),
             target: selected,
             pending_frontend: None,
-        })
+            cancellation_registry: self.cancellation_registry.clone(),
+            client_cancel_key,
+        };
+        if let Some(message) = backend_key_message {
+            let expected = message.clone();
+            let message = connection.boundary.backend(
+                connection.downstream.context(),
+                connection.upstream.context(),
+                &mut connection.state,
+                message,
+            );
+            let message = connection
+                .downstream
+                .intercept_backend(&mut connection.state, message);
+            if message != expected {
+                let _ = connection.detach_cancellation();
+                let _ = connection.teardown();
+                return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "middleware rejected generated cancellation key",
+                )));
+            }
+            if let Err(error) = connection.downstream.send_wire_raw(message).await {
+                let _ = connection.detach_cancellation();
+                let _ = connection.teardown();
+                return Err(IntermediaryAcceptError::ServerOutput(error));
+            }
+        }
+        let ready = connection.downstream.intercept_backend(
+            &mut connection.state,
+            crate::codec::BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
+        );
+        if !matches!(ready, crate::codec::BackendMessage::ReadyForQuery(_)) {
+            let _ = connection.detach_cancellation();
+            let _ = connection.teardown();
+            return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "middleware rejected generated readiness",
+            )));
+        }
+        if let Err(error) = connection.downstream.send_wire_raw(ready).await {
+            let _ = connection.detach_cancellation();
+            let _ = connection.teardown();
+            return Err(IntermediaryAcceptError::ServerOutput(error));
+        }
+        Ok(IntermediaryAccept::Session(connection))
     }
 }

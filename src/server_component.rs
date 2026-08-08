@@ -30,6 +30,11 @@ pub trait StartupResolver<State, Peer, Identity> {
     type Route;
     type Error;
 
+    /// Whether the intermediary must insert startup messages before readiness.
+    fn defer_ready(&self) -> bool {
+        false
+    }
+
     fn resolve<'a>(
         &'a mut self,
         startup: &'a StartupMessage,
@@ -906,6 +911,24 @@ impl<Transport, State, Peer, Identity, Handler>
     }
 }
 
+impl<Transport, State, Peer, Identity, Handler>
+    ServerConnection<Transport, State, Peer, Identity, Handler>
+where
+    Transport: AsyncRead + AsyncWrite + Unpin,
+    Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
+{
+    pub(crate) async fn send_generated_error(&mut self, message: BackendMessage) -> io::Result<()> {
+        let message = self.core.intercept_backend(&mut self.state, message);
+        if !matches!(message, BackendMessage::ErrorResponse(_)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "middleware rejected generated diagnostic",
+            ));
+        }
+        self.core.send_wire_raw(message).await
+    }
+}
+
 impl<Transport, Peer, Identity, Handler> ServerConnectionCore<Transport, Peer, Identity, Handler> {
     pub(crate) const fn context(&self) -> &ServerConnectionContext<Peer, Identity> {
         &self.context
@@ -1260,6 +1283,7 @@ where
                         &mut context,
                         &mut state,
                         &mut handler,
+                        resolver.defer_ready(),
                     )
                     .await?;
                     return Ok((
@@ -1403,6 +1427,7 @@ where
                     &mut context,
                     &mut state,
                     &mut handler,
+                    resolver.defer_ready(),
                 )
                 .await?;
                 return Ok((
@@ -1433,6 +1458,7 @@ async fn complete_auth<I, Authentication, Peer, TlsError, State, Handler>(
     >,
     state: &mut State,
     handler: &mut Handler,
+    defer_ready: bool,
 ) -> Result<
     Conn<Buffered<I, Frontend>, Ready>,
     AcceptError<TlsError, <Authentication::Authentication as ServerAuthentication<Peer>>::Error>,
@@ -1551,15 +1577,19 @@ where
         .map_err(AcceptError::Io)?;
     let startup_ready = push_or_abort(startup_ready, authentication_ok)?;
     let (ready, _ready_frame) = startup_ready.ready().map_err(AcceptError::Io)?;
-    let ready_frame = handler
-        .backend(
-            context,
-            state,
-            BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
-        )
-        .to_frame()
-        .map_err(AcceptError::Io)?;
-    let ready = push_or_abort(ready, ready_frame)?;
+    let ready = if defer_ready {
+        ready
+    } else {
+        let ready_frame = handler
+            .backend(
+                context,
+                state,
+                BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
+            )
+            .to_frame()
+            .map_err(AcceptError::Io)?;
+        push_or_abort(ready, ready_frame)?
+    };
     let ready = flush_or_abort(ready).await?;
     Ok(ready)
 }

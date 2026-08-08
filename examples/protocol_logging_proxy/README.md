@@ -1,5 +1,12 @@
 # Protocol logging proxy example
 
+This example is assembled only through `Server::builder`, `Client::builder`,
+and `Intermediary::builder`; listener acceptance and task placement remain
+application-owned. The client-facing role requires TLS, while the upstream role
+explicitly selects plaintext. Both roles use trust authentication solely for
+the local demonstration. Production deployments should provide managed TLS on
+each required leg and independent application authentication policies.
+
 This companion example forwards the same traffic while printing every decoded
 pre-startup, frontend, and backend message with its direction and connection
 number. `PasswordResponse` uses pg-proto's redacted `Debug` implementation.

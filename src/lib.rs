@@ -47,7 +47,7 @@ pub use intermediary_component::{
     IntermediaryMiddleware, IntermediaryMiddlewareFactory, RejectCancellation,
     StartupResolutionError, StartupRouteResolver,
 };
-pub use pipeline::{BoundedPipeline, NoPipeline};
+pub use pipeline::{BoundedPipeline, FrontendProjectionError, NoPipeline};
 pub use pre_startup::SslMode;
 pub use runtime_middleware::{
     ClientMiddleware, IdentityMiddleware, MiddlewareChain, MiddlewareFactory, ServerMiddleware,

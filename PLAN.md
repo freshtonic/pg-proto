@@ -1,5 +1,8 @@
 # PostgreSQL session-typed protocol implementation plan
 
+Current integration: issue #37 migrates every shipped example to the operational
+builder facade and verifies the examples without legacy protocol entry points.
+
 This plan tracks the route from the current protocol library to a production
 implementation suitable for `cipherstash/proxy`. A checked item is implemented
 and covered by proportionate tests; it does not imply that all later integration

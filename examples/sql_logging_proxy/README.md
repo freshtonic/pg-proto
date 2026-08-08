@@ -1,5 +1,12 @@
 # SQL logging proxy example
 
+The executable uses only `Server::builder`, `Client::builder`, and
+`Intermediary::builder`; listener acceptance and task placement remain owned by
+the application. Its client-facing role requires TLS, while its upstream role
+explicitly selects plaintext. Both roles use trust authentication solely for
+this local demonstration. Production deployments should provide managed TLS on
+each required leg and independent application authentication policies.
+
 This example is a small, transparent PostgreSQL proxy built with pg-proto's
 direction-parameterised codecs. It prints every inbound simple-query `Query`
 and extended-query `Parse` statement, then prints the number of `DataRow`

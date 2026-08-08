@@ -1,115 +1,84 @@
-//! Minimal bounded-pipeline policy for a `PostgreSQL` intermediary.
+//! Complete bounded-pipeline intermediary configuration.
 
+use pg_proto::{
+    BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget,
+    InitialServerContext, Intermediary, Server, ServerTlsPolicy, StartupParameters,
+    StartupRouteResolver, TrustClientAuthentication, TrustServerAuthentication,
+};
 use std::convert::Infallible;
 
-use bytes::Bytes;
-use pg_proto::{
-    codec::{BackendMessage, DiagnosticResponse, FrontendMessage, Parse, TransactionStatus},
-    grammar::backend,
-    intermediary::SessionPair,
-    middleware::Middleware,
-    pipeline::{
-        BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
-        FrontendAdmission, FrontendHandling, FrontendPipelineMiddleware, FrontendProjectionError,
-        PipelineMiddlewareError,
-    },
-};
-
-struct Statistics;
-
-impl FrontendPipelineMiddleware<usize> for Statistics {
+struct Route;
+impl<Peer> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
-
-    async fn frontend_ready(
-        &mut self,
-        messages: &mut usize,
-        message: backend::ReadyExternalMessage,
-    ) -> Result<backend::ReadyExternalMessage, Self::Error> {
-        *messages += 1;
-        Ok(message)
+    fn resolve<'a>(
+        &'a self,
+        _: StartupParameters,
+        _: InitialServerContext<'a, Peer>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
+    {
+        Box::pin(async { Ok(ConnectTarget::new("postgres")) })
     }
 }
 
-impl BackendPipelineMiddleware<usize> for Statistics {
-    type Error = Infallible;
-
-    async fn backend_parse_response(
-        &mut self,
-        messages: &mut usize,
-        message: backend::ParseResponseInternalMessage,
-    ) -> Result<backend::ParseResponseInternalMessage, Self::Error> {
-        *messages += 1;
-        Ok(message)
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let upstream: std::net::SocketAddr = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "127.0.0.1:5432".into())
+        .parse()?;
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .unwrap();
+    let client = Client::builder()
+        .connector(move |_| tokio::net::TcpStream::connect(upstream))
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .unwrap();
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route)
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(1).expect("non-zero bound"))
+        .build()
+        .unwrap();
+    let listen = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:6432".into());
+    let listener = tokio::net::TcpListener::bind(&listen).await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut session = Box::pin(intermediary.accept(transport, peer, ()))
+        .await?
+        .into_session();
+    loop {
+        if matches!(
+            session.forward_frontend().await?,
+            pg_proto::codec::FrontendMessage::Terminate
+        ) {
+            return Ok(());
+        }
+        match session.forward_frontend().await {
+            Err(pg_proto::ForwardError::Frontend(pg_proto::FrontendProjectionError::Capacity(
+                _,
+            ))) => {
+                println!("capacity reached: the second owned request is retained");
+            }
+            Ok(pg_proto::codec::FrontendMessage::Terminate) => return Ok(()),
+            Ok(_) => unreachable!("capacity one must reject a second outstanding operation"),
+            Err(error) => return Err(error.into()),
+        }
+        loop {
+            if matches!(
+                session.forward_backend().await?,
+                pg_proto::codec::BackendMessage::ReadyForQuery(_)
+            ) {
+                break;
+            }
+        }
+        session.forward_frontend().await?;
+        println!("response progress freed capacity; retained request forwarded unchanged");
     }
-}
-
-#[tokio::main]
-async fn main() {
-    let mut proxy = SessionPair::new((), ())
-        .with_pipeline(BoundedPipeline::new(16).expect("non-zero pipeline limit"));
-    let mut middleware = Middleware::new(0, Statistics);
-
-    let parse = FrontendMessage::Parse(Parse {
-        statement: Bytes::from_static(b"blocked"),
-        query: Bytes::from_static(b"select secret"),
-        parameter_types: vec![],
-    });
-    let action = match proxy
-        .pipeline_mut()
-        .accept_frontend_typed(&mut middleware, parse, FrontendHandling::Local)
-        .await
-    {
-        Ok(FrontendAdmission::Immediate(action) | FrontendAdmission::Waiting(action)) => action,
-        Err(PipelineMiddlewareError::Projection(FrontendProjectionError::Capacity(message))) => {
-            // Pause downstream reads and retry this same owned value later.
-            // This minimal example exits, but a real intermediary must retain and retry it.
-            drop(message);
-            return;
-        }
-        Err(error) => panic!("frontend admission failed: {error:?}"),
-    };
-    let local_id = match action {
-        FrontendAction::Discard { id } => id,
-        FrontendAction::Forward { message, .. } => {
-            // Encode `message` to the upstream transport here.
-            // This transport-free example drops it only as a stand-in for sending it.
-            drop(message);
-            return;
-        }
-    };
-
-    let local_error = BackendMessage::ErrorResponse(DiagnosticResponse { fields: vec![] });
-    match proxy
-        .pipeline_mut()
-        .try_emit_local_typed(&mut middleware, local_id, local_error)
-        .await
-        .expect("response matches Parse")
-    {
-        BackendAction::Emit(message) => {
-            // Encode `message` to the downstream transport here.
-            // This transport-free example drops it only as a stand-in for sending it.
-            drop(message);
-        }
-        BackendAction::Deferred(message) => {
-            // An earlier response must be processed first; retry this owned value.
-            // This minimal example ends, but a real intermediary must retain and retry it.
-            drop(message);
-        }
-    }
-
-    let _ = proxy
-        .pipeline_mut()
-        .accept_frontend_typed(
-            &mut middleware,
-            FrontendMessage::Sync,
-            FrontendHandling::Forward,
-        )
-        .await;
-    let _ = proxy
-        .pipeline_mut()
-        .accept_backend_typed(
-            &mut middleware,
-            BackendMessage::ReadyForQuery(TransactionStatus::Idle),
-        )
-        .await;
 }

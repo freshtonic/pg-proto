@@ -5,6 +5,19 @@ root facade. Implementation modules and the low-level `Conn` typestates are no
 longer public; applications configure and operate `Client`, `Server`, or
 `Intermediary` values instead.
 
+The three supported construction entry points are `Client::builder()`,
+`Server::builder()`, and `Intermediary::builder()`. There is no low-level public
+escape hatch: if an application requirement is not expressible through these
+builders and their root-level message vocabulary, it should be raised as a
+facade capability rather than implemented by importing an internal module.
+
+Security posture is never inferred. Production migrations should pair
+`SslMode::VerifyFull` with an application `ClientTlsProvider`, require server TLS
+with an application `ServerIdentityProvider`, and provide application-owned
+authentication policies on each side. Selecting disabled TLS, trust
+authentication, a non-verifying client SSL mode, or an unbounded protocol frame
+limit is an explicit downgrade and should receive application security review.
+
 ## Adopt reusable server construction
 
 Use `Server::builder()` to configure the client-facing role once and call
@@ -46,7 +59,8 @@ Replace imports from `codec`, `transport`, `grammar`, `session`, `auth`, and
 other implementation modules with the root facade vocabulary. Message values
 used by middleware and forwarding are available at the crate root. Establish
 connections only through `Client::connect`, `Server::accept`, or
-`Intermediary::accept`; recover caller-owned parts through their teardown APIs.
+`Intermediary::accept`. Recover client parts with `ClientConnection::into_parts`
+and server/intermediary parts with their `teardown` methods.
 
 ## Replace proxy message queues with a bounded pipeline ledger
 

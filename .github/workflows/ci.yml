@@ -152,6 +152,18 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps
 
+      - name: Builder facade doctests
+        run: cargo test --workspace --doc
+
+      - name: Functional builder examples
+        run: cargo check --workspace --examples
+
+      - name: Builder-only public surface
+        run: cargo test --test public_surface
+
+      - name: Legacy documentation reference audit
+        run: cargo test --test documentation_audit
+
       - name: Run all tests, including container tests
         run: cargo test --workspace -- --include-ignored --test-threads=1
 

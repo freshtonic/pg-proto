@@ -83,20 +83,156 @@ message queues.
   conformance harness.
 - A driver or administrative client which benefits from compile-time sequencing.
 
-## Usage
+## Security choices come first
 
-Choose one of the three role builders. Security choices are mandatory and
-plaintext must be selected explicitly.
+Every role builder requires explicit TLS and authentication policy. The short
+examples below deliberately use **plaintext** (`ClientTlsPolicy::Disabled` and
+`ServerTlsPolicy::Disabled`) and **unverified trust authentication**
+(`TrustClientAuthentication` and `TrustServerAuthentication`) so that their
+insecure posture is visible in code. They are suitable for a protected local
+development network, not an Internet-facing production deployment.
 
-```rust
-use pg_proto::{Client, ClientTlsPolicy, TrustClientAuthentication};
+For production, use `ClientTlsPolicy::libpq` with `SslMode::VerifyFull` and an
+application-owned reloadable `ClientTlsProvider`; use `ServerTlsPolicy::Required`
+with an application-owned `ServerIdentityProvider`. Supply application-defined
+`ClientAuthentication` and `ServerAuthenticationProvider` implementations that
+return typed identity evidence. `pg-proto` orchestrates the protocol but remains
+policy-neutral: it does not store credentials, authorise identities, choose
+authentication mechanisms, or provision certificates.
 
-let client = Client::builder()
-    .connector(|_| async { Ok::<_, std::io::Error>(()) })
-    .tls(ClientTlsPolicy::Disabled)
-    .authentication(TrustClientAuthentication)
-    .build()?;
-# Ok::<(), pg_proto::BuildError>(())
+The default one-mebibyte frame limits are conservative. Raising a limit or
+calling `ProtocolLimits::without_frame_limit` is an explicit resource-exhaustion
+downgrade; production services should instead choose the smallest limit their
+workload needs. Likewise, `SslMode::Allow`, `Prefer`, `Require`, and `VerifyCa`
+provide less assurance than `VerifyFull`, and must be selected deliberately.
+
+## Client: connect to PostgreSQL
+
+Build one reusable upstream-facing component, then establish operational
+connections with caller-owned state and per-call startup parameters.
+
+```no_run
+use pg_proto::{
+    Client, ClientTlsPolicy, ConnectTarget, StartupParameters,
+    TrustClientAuthentication,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        // Development-only: plaintext transport and no credential exchange.
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .startup_parameters(StartupParameters::new("application"))
+        .build()?;
+
+    let connection = client
+        .connect(
+            ConnectTarget::new("127.0.0.1:5432"),
+            StartupParameters::default().database("postgres"),
+            Vec::<String>::new(),
+        )
+        .await?;
+    let (_transport, state, _middleware, context) = connection.into_parts();
+    assert!(state.is_empty());
+    assert_eq!(context.target().name(), "127.0.0.1:5432");
+    Ok(())
+}
+```
+
+## Server: accept PostgreSQL clients
+
+The server builder owns reusable client-facing policy. The application owns the
+listener, peer metadata, per-connection state, credentials, and authorisation.
+
+```no_run
+use pg_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        // Development-only: clients are neither encrypted nor authenticated.
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+
+    match server.accept(transport, peer, Vec::<String>::new()).await? {
+        ServerAccept::Session(connection) => {
+            println!("accepted user {:?}", connection.startup().parameters.get(b"user".as_slice()));
+            let (_transport, _state, _middleware, _context) = connection.teardown();
+        }
+        ServerAccept::Cancellation(cancellation) => {
+            println!("cancel process {}", cancellation.request().process_id());
+        }
+    }
+    Ok(())
+}
+```
+
+## Intermediary: compose both roles
+
+An intermediary takes complete server and client components. Startup routing,
+authenticated routing, cancellation storage, middleware, and failure disclosure
+remain explicit application policies.
+
+```no_run
+use std::{convert::Infallible, future::Future, pin::Pin};
+use pg_proto::{
+    CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
+    Intermediary, Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustServerAuthentication,
+};
+
+struct Route;
+impl<Peer> StartupRouteResolver<Peer> for Route {
+    type Error = Infallible;
+    fn resolve<'a>(
+        &'a self,
+        _: StartupParameters,
+        _: InitialServerContext<'a, Peer>,
+    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>> {
+        Box::pin(async { Ok(ConnectTarget::new("127.0.0.1:5432")) })
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        .tls(ClientTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustClientAuthentication)
+        .build()?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route)
+        .cancellation(CancellationPolicy::Reject)
+        .build()?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut connection = Box::pin(intermediary.accept(transport, peer, ()))
+        .await?
+        .into_session();
+    while !matches!(
+        connection.forward_next().await?,
+        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
+    ) {}
+    Ok(())
+}
 ```
 
 ## Stateful message middleware

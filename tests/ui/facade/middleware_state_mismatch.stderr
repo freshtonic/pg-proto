@@ -20,7 +20,4 @@ help: the return type of this call is `WrongState` due to the type of the argume
 34 | |         )
    | |_________^
 note: method defined here
-  --> src/client_component.rs
-   |
-   |     pub async fn connect<State>(
-   |                  ^^^^^^^
+  --> <WORKSPACE>/src/client_component.rs:1837:17

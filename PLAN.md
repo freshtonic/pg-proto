@@ -4,6 +4,10 @@ Current integration: issue #38 makes the root builder facade the crate's only
 public API, migrates all external consumers, and retains low-level protocol
 coverage as crate-internal tests.
 
+Issue #39 puts that facade front and centre in the README and crate Rustdoc,
+adds complete compile-checked workflows for all three roles, and names the
+documentation, example, and public-surface release gates in CI.
+
 This plan tracks the route from the current protocol library to a production
 implementation suitable for `cipherstash/proxy`. A checked item is implemented
 and covered by proportionate tests; it does not imply that all later integration
@@ -211,6 +215,9 @@ neutral composition harnesses and examples.
 - [x] Add CI, docs.rs, and crates.io status badges to the README.
 - [x] Cut over to a builder-only root facade, make implementation modules and
   connection typestates crate-private, and freeze the reviewed public surface.
+- [x] Lead README/crate documentation with complete client, server, and
+  intermediary builder workflows, explicit security guardrails, migration
+  guidance, and deterministic documentation/release audits.
 
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
   `width-limiter` cap without changing the width of ordinary documentation pages.

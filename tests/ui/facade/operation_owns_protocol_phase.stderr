@@ -10,7 +10,4 @@ error[E0382]: borrow of moved value: `connection`
    |             ^^^^^^^^^^ value borrowed here after move
    |
 note: `ClientConnection::<Transport, State, Cleanliness, Evidence, Handler>::simple_query` takes ownership of the receiver `self`, which moves `connection`
-  --> src/client_component.rs
-   |
-   |         self,
-   |         ^^^^
+  --> <WORKSPACE>/src/client_component.rs:1707:8

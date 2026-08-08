@@ -1,0 +1,5 @@
+error: expected `message`
+  --> tests/ui/unknown_lane_field.rs:20:17
+   |
+20 |                 messages: external;
+   |                 ^^^^^^^^

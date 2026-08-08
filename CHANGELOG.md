@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.4.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.3.0...pg-proto-v0.4.0) - 2026-08-06
+
+### Added
+
+- add typed bounded pipeline middleware
+- compose typed pipeline middleware
+- track exact pipeline response phases
+- type outbound middleware by connection phase
+
+### Changed
+
+- deepen typed pipeline middleware
+
+### Fixed
+
+- separate server authentication decision phases
+
+### Testing
+
+- refresh outbound role diagnostic
+- support platform-specific compiler diagnostics
+- match Linux macro diagnostic indentation
+
+## [0.3.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.3...pg-proto-v0.3.0) - 2026-08-06
+
+### Added
+
+- make message middleware async
+
+## [0.2.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.2...pg-proto-v0.2.3) - 2026-08-06
+
+### Added
+
+- generate typed message projections
+- add stateful message middleware core
+- integrate checked message middleware
+- generate phase-typed middleware messages
+- infer typed middleware from connections
+- project typed transport messages
+- migrate rewriting example to typed middleware
+- add typed wire pass-through adapter
+
+### Changed
+
+- reuse successful PR checks on main
+- tolerate post-merge API lag
+
+### Documentation
+
+- plan stateful message middleware
+- clarify runtime middleware validation
+- plan compile-time middleware API
+- document compile-time middleware
+- complete typed middleware plan
+- explain dropped pipeline messages
+
+### Fixed
+
+- preserve negotiation observations in proxy example
+- align typed projections with completion plan
+
+### Testing
+
+- refresh compile-fail diagnostics
+- stabilize compile-fail diagnostics
+
 ## [0.2.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.1...pg-proto-v0.2.2) - 2026-08-05
 
 ### Added

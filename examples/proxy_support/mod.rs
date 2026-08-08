@@ -80,7 +80,7 @@ macro_rules! pass_through {
         impl MessageMiddleware<$message, ExampleState> for $handler {
             type Error = Infallible;
 
-            fn intercept(
+            async fn intercept(
                 &mut self,
                 _state: &mut ExampleState,
                 message: $message,
@@ -94,7 +94,7 @@ macro_rules! pass_through {
 impl MessageMiddleware<PreStartupMessage, ExampleState> for ProtocolLogger {
     type Error = Infallible;
 
-    fn intercept(
+    async fn intercept(
         &mut self,
         state: &mut ExampleState,
         message: PreStartupMessage,
@@ -111,7 +111,7 @@ impl MessageMiddleware<PreStartupMessage, ExampleState> for ProtocolLogger {
 impl MessageMiddleware<FrontendMessage, ExampleState> for ProtocolLogger {
     type Error = Infallible;
 
-    fn intercept(
+    async fn intercept(
         &mut self,
         state: &mut ExampleState,
         message: FrontendMessage,
@@ -128,7 +128,7 @@ impl MessageMiddleware<FrontendMessage, ExampleState> for ProtocolLogger {
 impl MessageMiddleware<BackendMessage, ExampleState> for ProtocolLogger {
     type Error = Infallible;
 
-    fn intercept(
+    async fn intercept(
         &mut self,
         state: &mut ExampleState,
         message: BackendMessage,
@@ -148,7 +148,7 @@ pass_through!(SqlLogger, BackendMessage);
 impl MessageMiddleware<FrontendMessage, ExampleState> for SqlLogger {
     type Error = Infallible;
 
-    fn intercept(
+    async fn intercept(
         &mut self,
         state: &mut ExampleState,
         message: FrontendMessage,
@@ -174,7 +174,7 @@ pass_through!(RowStatistics, FrontendMessage);
 impl MessageMiddleware<BackendMessage, ExampleState> for RowStatistics {
     type Error = Infallible;
 
-    fn intercept(
+    async fn intercept(
         &mut self,
         state: &mut ExampleState,
         message: BackendMessage,
@@ -307,6 +307,7 @@ async fn proxy_connection(
     loop {
         let message = middleware
             .intercept(pre_startup.receive_pre_startup_wire().await?)
+            .await
             .expect("example middleware is infallible");
         match pre_startup.offer_pre_startup(message) {
             PreStartupOffer::Ssl(decision) => {
@@ -359,6 +360,7 @@ async fn encrypted_startup(
     middleware.state_mut().pre_startup_direction = "client -> server (TLS plaintext)";
     let message = middleware
         .intercept(pre_startup.receive_pre_startup_wire().await?)
+        .await
         .expect("example middleware is infallible");
     match pre_startup.offer_pre_startup(message) {
         PreStartupOffer::Startup { conn, message } => {
@@ -432,6 +434,7 @@ where
             frontend = downstream.receive_wire() => {
                 let frontend = middleware
                     .intercept(frontend?)
+                    .await
                     .expect("example middleware is infallible");
                 let terminate = matches!(frontend, FrontendMessage::Terminate);
                 upstream.push(frontend.to_frame()?)?;
@@ -443,6 +446,7 @@ where
             backend = upstream.receive_wire() => {
                 let backend = middleware
                     .intercept(backend?)
+                    .await
                     .expect("example middleware is infallible");
                 downstream.push(backend.to_frame()?)?;
                 downstream.flush().await?;

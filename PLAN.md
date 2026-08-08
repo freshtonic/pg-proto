@@ -294,36 +294,66 @@ checked middleware belongs on the state-aware session APIs above it.
 
 ### Compile-time-checked message middleware
 
-- [ ] Generate a state-specific owned message enum for every role and protocol
+- [x] Generate a state-specific owned message enum for every role and protocol
   phase, containing only the frontend, backend, pre-startup, authentication,
   COPY, replication, error-recovery, and asynchronous messages legal there.
-- [ ] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
+- [x] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
   output are the generated `Phase::Message` type. An illegal replacement should
   be unrepresentable rather than rejected using a `RuntimeState` value.
-  - [ ] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
+  - [x] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
     cannot supply a mismatched runtime state.
-  - [ ] Retain caller-owned mutable state, closure adapters, identity middleware,
-    deterministic chaining, and typed short-circuit errors.
-  - [ ] Represent asynchronous backend traffic in each applicable phase without
+  - [x] Retain caller-owned mutable state across async interception, async closure
+    adapters, identity middleware, deterministic awaited chaining, and typed
+    short-circuit errors.
+  - [x] Represent asynchronous backend traffic in each applicable phase without
     advancing the connection state or disturbing wire order.
-- [ ] Generate projection result enums whose variants carry the correctly typed
+- [x] Generate projection result enums whose variants carry the correctly typed
   next `Conn`, because replacing one legal message variant with another may
   select a different transition and therefore a different next phase.
-- [ ] Keep wire-shape validation at runtime for constraints such as embedded NUL
+- [x] Keep wire-shape validation at runtime for constraints such as embedded NUL
   bytes and frame-size overflow, unless message fields later adopt prevalidated
   refinement types. Document this separately from compile-time protocol legality.
-- [ ] Provide default pass-through adapters so policies can specialize only the
+- [x] Provide default pass-through adapters so policies can specialize only the
   phases or message families they inspect without manually implementing every
   generated state.
-- [ ] Add compile-fail coverage proving illegal replacements and role/state
+- [x] Add compile-fail coverage proving illegal replacements and role/state
   mismatches do not compile, plus runtime tests for reconstruction failures,
   composition, state threading, asynchronous traffic, and next-state selection.
-- [ ] Introduce the typed API alongside `intercept_checked`, migrate examples and
+- [x] Introduce the typed API alongside `intercept_checked`, migrate examples and
   transport/session entry points, then consider deprecating the runtime-state API
   only after the typed API covers every generated grammar phase.
+  The phase-aware rewriting example uses the typed API. The transparent network
+  loggers deliberately retain direction-wide middleware because they erase the
+  current phase while concurrently forwarding both directions; `WireAdapter`
+  is the migration path when such a policy is attached to a typed `Conn`.
+  `intercept_checked` remains supported for these runtime-selected sessions.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.
+- [x] Add async typed middleware dispatch to the runtime bounded pipeline so
+  frontend phases and pending backend operation responses constrain replacements
+  at compile time without duplicating the runtime ledger.
+  - [x] Track the generated backend response subphase independently for every
+    queued operation, including COPY and multi-message response sequences.
+  - [x] Compose typed pipeline policies in deterministic order with shared state.
+  - [x] Index locally generated middleware by the sending `Conn` typestate and
+    include non-advancing asynchronous server messages.
+  - [x] Split server SASL and token authentication into distinct policy and
+    client-response typestates so replies cannot precede required input.
+  - [x] Consolidate frontend and backend phase catalogues so hook declaration,
+    chaining, wire adaptation, and runtime dispatch share one local source.
+  - [x] Split frontend and backend pipeline middleware with independent errors,
+    and prepare admission/response decisions before policy so the ledger commits
+    each validated decision once.
+  - [x] Make each generated grammar the authoritative source for inbound and
+    outbound connection-typestate associations, exposed through one sealed
+    direction-indexed trait without a manual middleware catalogue.
+  - [x] Deepen the pipeline ledger interface by removing overlapping projection,
+    action-remapping, and session-item entry points, leaving one frontend
+    admission seam and one backend response seam.
+  - [x] Consolidate inbound receipt, middleware interception, phase legality,
+    and reconstruction validation across backend, frontend, pre-startup, and
+    encryption-reply traffic without combining receipt with projection.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

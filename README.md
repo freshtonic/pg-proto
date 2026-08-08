@@ -103,60 +103,102 @@ let _terminated = ready.terminate();
 ## Stateful message middleware
 
 A proxy can inspect or replace any owned frontend, backend, or pre-startup
-message before reconstructing its checked wire representation. Middleware has
-mutable access to a caller-defined state value, so statistics and other
-connection-local policy do not require global storage. Returning the message
-unchanged is the identity operation.
+message before reconstructing its checked wire representation. `TypedMiddleware`
+indexes each policy by sender role and generated grammar phase. Its input and
+output enums contain only messages legal in that phase, so a replacement from a
+different role or phase is a compile error. `Conn::receive_frontend_typed`,
+`Conn::receive_backend_typed`, `Conn::receive_pre_startup_typed`, and
+`Conn::receive_encryption_reply_typed` infer those indices from the connection;
+there is no caller-supplied runtime state to mismatch. Locally generated traffic
+uses `Conn::intercept_outbound_typed`: the connection phase selects the generated
+internal message enum before the caller applies its corresponding existing
+typestate transition and encodes it. Server-originated asynchronous traffic is
+included without advancing that phase.
 
-`intercept_checked` validates the final replacement at runtime against a
-generated `RuntimeState` value and verifies that it can be encoded. The compiler
-still enforces message direction and that the state type supplies the correct
-validator, but replacement-variant legality cannot be decided at compile time
-because middleware may choose a different variant dynamically. Illegal
-replacements are returned without advancing the session.
-`MessageMiddlewareExt::then` chains stages in order, passing each replacement to
-the next stage and stopping at the first error.
+Middleware is async and has mutable access to caller-defined state across
+`.await`, so policy can consult a database, authorization service, or async
+telemetry sink before deciding which message continues. Returning the message
+unchanged is the identity operation, `Identity` supplies a universal pass-through,
+and `MessageMiddlewareExt::then` awaits typed stages deterministically. A
+`WireAdapter` can apply an async direction-wide policy across generated phases
+while rechecking any replacement before it re-enters the typed API.
 
 ```rust
 use bytes::Bytes;
 use pg_proto::{
-    codec::{FrontendMessage, Parse},
+    codec::FrontendMessage,
     grammar::backend,
-    middleware::Middleware,
+    middleware::{ClientRole, Middleware},
 };
 
-let mut proxy = Middleware::new(0_usize, |rewrites: &mut usize, message| {
-    let FrontendMessage::Parse(mut parse) = message else {
-        return Ok::<_, std::convert::Infallible>(message);
-    };
+# async fn example() -> Result<(), std::io::Error> {
+
+let mut proxy = Middleware::new(0_usize, async |rewrites: &mut usize, _message| {
+    // Async authorization, routing, or storage work can be awaited here.
+    tokio::task::yield_now().await;
     *rewrites += 1;
-    parse.query = Bytes::from_static(
-        b"select decrypt_email(email) from customers where active",
-    );
-    Ok(FrontendMessage::Parse(parse))
+    backend::ReadyExternalMessage::try_from(FrontendMessage::Query(
+        Bytes::from_static(b"select visible_email from customers"),
+    ))
 });
-let message = FrontendMessage::Parse(Parse {
-    statement: Bytes::from_static(b"report"),
-    query: Bytes::from_static(b"select email from customers"),
-    parameter_types: vec![],
-});
+let message = backend::ReadyExternalMessage::try_from(
+    FrontendMessage::Query(Bytes::from_static(b"select email from customers")),
+).unwrap();
 
 let rewritten = proxy
-    .intercept_checked(&backend::RuntimeState::Ready, message)
-    .unwrap();
+    .intercept_typed::<ClientRole, backend::Ready, _>(message)
+    .await
+    .unwrap()
+    .into_wire();
 
 let frame = rewritten.to_frame()?;
 assert_eq!(*proxy.state(), 1);
 # Ok::<(), std::io::Error>(())
+# }
 ```
 
-The buffered connection helpers
-`receive_frontend_wire_with_middleware`,
-`receive_backend_wire_with_middleware`, and
-`receive_pre_startup_wire_with_middleware` apply this lifecycle directly after
-decoding. `receive_with_middleware` additionally places backend interception
-before asynchronous-message demultiplexing, ensuring rewritten parameter,
-cancellation-key, and transaction-status values become the recorded values.
+Protocol legality is compile-time checked, while wire-shape constraints remain
+runtime checked. For example, embedded NUL bytes, oversized frames, and other
+encoding failures are reported as `TypedReceiveError::InvalidWire`. Backend
+asynchronous messages pass through typed middleware in wire order without
+advancing the connection phase; `receive_typed` then records them before
+returning the next protocol-advancing `SessionItem`.
+
+`BoundedPipeline` retains its runtime operation ledger but can dispatch through
+`FrontendPipelineMiddleware` and `BackendPipelineMiddleware` using
+`accept_frontend_typed`, `accept_backend_typed`, and `try_emit_local_typed`.
+Frontend admission reports whether an accepted `Forward` or `Discard` action is
+immediate or waiting; capacity returns the original message in
+`FrontendProjectionError::Capacity` for retry. The ledger chooses the hook at
+runtime, while each hook's owned input and output are restricted to that frontend
+phase or the exact generated backend response subphase of the pending operation.
+The ledger tracks COPY half-closes, function-call readiness, extended responses,
+and error recovery independently for every queued operation. Implementations
+override only the phases they inspect; unimplemented hooks are identity operations, and typed
+pipeline policies compose with `MessageMiddlewareExt::then`. Deferred backend
+messages are not intercepted until retried at the response head.
+`PipelineWireAdapter` adapts an existing async direction-wide policy when
+compile-time specialization is not needed.
+
+When a `Demux` returns a `SessionItem`, first consume any pooling, command, or
+notice evidence the application needs. `SessionItem::into_backend_message` is a
+deliberately lossy adapter; pass its result to `accept_backend_typed` only after
+using that evidence.
+
+### Migrating typed pipeline middleware
+
+The pre-1.0 `TypedPipelineMiddleware<State>` trait has been split by wire
+direction. Move frontend hooks into an implementation of
+`FrontendPipelineMiddleware<State>` and backend hooks into a separate
+`BackendPipelineMiddleware<State>` implementation. A policy handling both
+directions implements both traits; each implementation chooses its own `Error`
+type. Existing directional `.then(...)` composition and `PipelineWireAdapter`
+usage are unchanged.
+
+The older `intercept_checked` and `receive_*_with_middleware` APIs remain
+available for runtime-selected sessions. They validate replacement legality
+against a supplied generated `RuntimeState` at runtime. Prefer the typed receive
+APIs whenever the connection typestate is available.
 
 For a complete networked example, see the TLS-terminating
 [`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion

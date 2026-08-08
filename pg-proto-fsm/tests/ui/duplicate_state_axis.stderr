@@ -1,0 +1,5 @@
+error: expected `outbound`
+  --> tests/ui/duplicate_state_axis.rs:20:40
+   |
+20 |             associate { inbound: none; inbound: none; outbound: none; }
+   |                                        ^^^^^^^

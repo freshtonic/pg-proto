@@ -18,6 +18,7 @@ pub mod pipeline;
 pub mod pre_startup;
 pub mod replication;
 pub mod resources;
+mod runtime_middleware;
 pub mod scram;
 pub mod server_auth;
 mod server_component;
@@ -31,11 +32,15 @@ pub use client_component::{
     BuildError, Client, ClientAuthentication, ClientAuthenticationChallenge,
     ClientAuthenticationError, ClientAuthenticationFuture, ClientAuthenticationResponse,
     ClientAuthenticationSession, ClientBuilder, ClientConnection, ClientConnectionContext,
-    ClientTlsConfig, ClientTlsError, ClientTlsPolicy, ClientTlsProvider, ClientTransport,
-    ConnectError, ConnectTarget, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
-    ReloadableClientTls, StartupParameterError, StartupParameters, TrustClientAuthentication,
+    ClientInitialContext, ClientTlsConfig, ClientTlsError, ClientTlsPolicy, ClientTlsProvider,
+    ClientTlsStatus, ClientTransport, ConnectError, ConnectTarget, IdentityHandler,
+    ProtocolLimitError, ProtocolLimits, QueryError, ReloadableClientTls, StartupParameterError,
+    StartupParameters, TrustClientAuthentication,
 };
 pub use pre_startup::SslMode;
+pub use runtime_middleware::{
+    ClientMiddleware, IdentityMiddleware, MiddlewareChain, MiddlewareFactory, ServerMiddleware,
+};
 pub use server_component::{
     AcceptError, AcceptedServerTransport, BuildServerError, CancellationRequest, DisabledServerTls,
     IdentityServerHandler, NegotiatedServerTls, NoServerIdentityProvider, OptionalServerTls,

@@ -27,6 +27,17 @@ asynchronously and produce typed identity evidence only after the server sends
 `AuthenticationOk`. Routing metadata is available to the factory without
 replacing or rebuilding the configured client component.
 
+## Attach role middleware through builders
+
+Call `.middleware(factory)` repeatedly on either role builder. Each factory is
+synchronous and infallible and creates one isolated handler from the initial
+connection context. Stages run in declaration order. The same handler receives
+owned pre-startup, startup, authentication, cancellation, generated response,
+and operational messages with immutable progressively enriched context and
+mutable caller-owned state. Narrow handlers may override only the message
+families they use; the default handler remains identity middleware. Teardown
+returns the handler and state for explicit recovery.
+
 ## Replace state mutation with ownership transitions
 
 Instead of storing `state: ConnectionState` and checking it before every send or

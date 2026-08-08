@@ -15,6 +15,7 @@ use bytes::Bytes;
 use tokio::io::ReadBuf;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
+use crate::ClientMiddleware as _;
 use crate::{
     Conn, Dirty, Pristine,
     auth::{AuthEvent, AuthOffer, Ready},
@@ -238,19 +239,35 @@ impl<Transport: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ClientTransport<T
     }
 }
 
-async fn negotiate_client_tls<Transport, Provider>(
+async fn negotiate_client_tls<Transport, Provider, State, Handler, Evidence>(
     mut transport: Transport,
     mode: crate::pre_startup::SslMode,
     provider: &Provider,
     target: &ConnectTarget,
+    context: &mut ClientConnectionContext<Evidence>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<ClientTransport<Transport>, ClientTlsError<Provider::Error>>
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Provider: ClientTlsProvider,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
 {
     if !mode.strategy().request_on_first_connection {
+        context.tls = Some(ClientTlsStatus::Plaintext);
         return Ok(ClientTransport::Plain(transport));
     }
+    let request = handler.pre_startup(
+        context,
+        state,
+        crate::pre_startup::PreStartupMessage::SslRequest,
+    );
+    let crate::pre_startup::PreStartupMessage::SslRequest = request else {
+        return Err(ClientTlsError::Handshake(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "middleware replaced SSLRequest with an incompatible packet",
+        )));
+    };
     transport
         .write_all(&[0, 0, 0, 8, 4, 210, 22, 47])
         .await
@@ -270,9 +287,13 @@ where
             let stream = crate::tls::connect(transport, resolved.server_name, config)
                 .await
                 .map_err(ClientTlsError::Handshake)?;
+            context.tls = Some(ClientTlsStatus::Encrypted);
             Ok(ClientTransport::Tls(Box::new(stream)))
         }
-        b'N' if mode.strategy().allow_server_rejection => Ok(ClientTransport::Plain(transport)),
+        b'N' if mode.strategy().allow_server_rejection => {
+            context.tls = Some(ClientTlsStatus::Plaintext);
+            Ok(ClientTransport::Plain(transport))
+        }
         b'N' => Err(ClientTlsError::Handshake(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "server rejected required TLS",
@@ -659,7 +680,17 @@ impl std::error::Error for ProtocolLimitError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientConnectionContext<Evidence = ()> {
     target: ConnectTarget,
-    identity: Evidence,
+    tls: Option<ClientTlsStatus>,
+    identity: Option<Evidence>,
+}
+
+/// Progressively discovered transport security for a client connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientTlsStatus {
+    /// The connection uses explicitly selected plaintext.
+    Plaintext,
+    /// The connection is protected by TLS.
+    Encrypted,
 }
 
 impl<Evidence> ClientConnectionContext<Evidence> {
@@ -669,29 +700,72 @@ impl<Evidence> ClientConnectionContext<Evidence> {
         &self.target
     }
 
+    /// Returns transport security once negotiation has completed.
+    #[must_use]
+    pub const fn tls(&self) -> Option<ClientTlsStatus> {
+        self.tls
+    }
+
     /// Returns application-defined evidence from the authentication policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from middleware before authentication has completed.
     #[must_use]
     pub const fn identity(&self) -> &Evidence {
-        &self.identity
+        match &self.identity {
+            Some(identity) => identity,
+            None => panic!("identity is not known before authentication"),
+        }
+    }
+
+    /// Returns evidence only after authentication has enriched the context.
+    #[must_use]
+    pub const fn identity_if_known(&self) -> Option<&Evidence> {
+        self.identity.as_ref()
     }
 }
 
-/// Identity middleware handler used until middleware configuration is introduced.
+/// Identity middleware handler.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct IdentityHandler;
+impl<C> crate::MiddlewareFactory<C> for IdentityHandler {
+    type Handler = Self;
+    fn create(&self, _: &C) -> Self {
+        *self
+    }
+}
+impl<S, C> crate::ClientMiddleware<S, C> for IdentityHandler {}
+
+/// Immutable facts available when a client middleware handler is created.
+pub struct ClientInitialContext {
+    target: ConnectTarget,
+}
+impl ClientInitialContext {
+    /// Destination selected for this connection.
+    #[must_use]
+    pub const fn target(&self) -> &ConnectTarget {
+        &self.target
+    }
+}
 
 /// Reusable client-role component.
-pub struct Client<Connector = (), Tls = ClientTlsPolicy, Authentication = TrustClientAuthentication>
-{
+pub struct Client<
+    Connector = (),
+    Tls = ClientTlsPolicy,
+    Authentication = TrustClientAuthentication,
+    Middleware = IdentityHandler,
+> {
     connector: Connector,
     tls: Tls,
     authentication: Authentication,
     defaults: StartupParameters,
     limits: ProtocolLimits,
+    middleware: Middleware,
 }
 
-impl<Connector: Clone, Tls: Clone, Authentication: Clone> Clone
-    for Client<Connector, Tls, Authentication>
+impl<Connector: Clone, Tls: Clone, Authentication: Clone, Middleware: Clone> Clone
+    for Client<Connector, Tls, Authentication, Middleware>
 {
     fn clone(&self) -> Self {
         Self {
@@ -700,6 +774,7 @@ impl<Connector: Clone, Tls: Clone, Authentication: Clone> Clone
             authentication: self.authentication.clone(),
             defaults: self.defaults.clone(),
             limits: self.limits,
+            middleware: self.middleware.clone(),
         }
     }
 }
@@ -712,8 +787,8 @@ impl Client<()> {
     }
 }
 
-impl<Connector, Tls: fmt::Debug, Authentication: fmt::Debug> fmt::Debug
-    for Client<Connector, Tls, Authentication>
+impl<Connector, Tls: fmt::Debug, Authentication: fmt::Debug, Middleware> fmt::Debug
+    for Client<Connector, Tls, Authentication, Middleware>
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -725,12 +800,18 @@ impl<Connector, Tls: fmt::Debug, Authentication: fmt::Debug> fmt::Debug
 }
 
 /// Ordinary generic builder for a reusable client-role component.
-pub struct ClientBuilder<Connector = (), Tls = (), Authentication = ()> {
+pub struct ClientBuilder<
+    Connector = (),
+    Tls = (),
+    Authentication = (),
+    Middleware = IdentityHandler,
+> {
     connector: Option<Connector>,
     tls: Option<Tls>,
     authentication: Option<Authentication>,
     defaults: StartupParameters,
     limits: ProtocolLimits,
+    middleware: Middleware,
 }
 
 impl Default for ClientBuilder<()> {
@@ -741,6 +822,7 @@ impl Default for ClientBuilder<()> {
             authentication: None,
             defaults: StartupParameters::default(),
             limits: ProtocolLimits::default(),
+            middleware: IdentityHandler,
         }
     }
 }
@@ -762,32 +844,43 @@ impl ClientBuilder<()> {
             authentication: self.authentication,
             defaults: self.defaults,
             limits: self.limits,
+            middleware: self.middleware,
         }
     }
 }
 
-impl<Connector, Tls, Authentication> ClientBuilder<Connector, Tls, Authentication> {
+impl<Connector, Tls, Authentication, Middleware>
+    ClientBuilder<Connector, Tls, Authentication, Middleware>
+{
     /// Selects an explicit TLS policy.
     #[must_use]
-    pub fn tls<Next>(self, tls: Next) -> ClientBuilder<Connector, Next, Authentication> {
+    pub fn tls<Next>(
+        self,
+        tls: Next,
+    ) -> ClientBuilder<Connector, Next, Authentication, Middleware> {
         ClientBuilder {
             connector: self.connector,
             tls: Some(tls),
             authentication: self.authentication,
             defaults: self.defaults,
             limits: self.limits,
+            middleware: self.middleware,
         }
     }
 
     /// Selects explicit trust authentication.
     #[must_use]
-    pub fn authentication<Next>(self, authentication: Next) -> ClientBuilder<Connector, Tls, Next> {
+    pub fn authentication<Next>(
+        self,
+        authentication: Next,
+    ) -> ClientBuilder<Connector, Tls, Next, Middleware> {
         ClientBuilder {
             connector: self.connector,
             tls: self.tls,
             authentication: Some(authentication),
             defaults: self.defaults,
             limits: self.limits,
+            middleware: self.middleware,
         }
     }
 
@@ -805,12 +898,29 @@ impl<Connector, Tls, Authentication> ClientBuilder<Connector, Tls, Authenticatio
         self
     }
 
+    /// Appends a middleware factory. Stages run in declaration order.
+    #[must_use]
+    pub fn middleware<Next>(
+        self,
+        factory: Next,
+    ) -> ClientBuilder<Connector, Tls, Authentication, crate::MiddlewareChain<Middleware, Next>>
+    {
+        ClientBuilder {
+            connector: self.connector,
+            tls: self.tls,
+            authentication: self.authentication,
+            defaults: self.defaults,
+            limits: self.limits,
+            middleware: crate::MiddlewareChain(self.middleware, factory),
+        }
+    }
+
     /// Validates and creates the reusable component.
     ///
     /// # Errors
     ///
     /// Returns the first missing mandatory configuration category.
-    pub fn build(self) -> Result<Client<Connector, Tls, Authentication>, BuildError> {
+    pub fn build(self) -> Result<Client<Connector, Tls, Authentication, Middleware>, BuildError> {
         Ok(Client {
             connector: self.connector.ok_or(BuildError::MissingConnector)?,
             tls: self.tls.ok_or(BuildError::MissingTls)?,
@@ -819,6 +929,7 @@ impl<Connector, Tls, Authentication> ClientBuilder<Connector, Tls, Authenticatio
                 .ok_or(BuildError::MissingAuthentication)?,
             defaults: self.defaults,
             limits: self.limits,
+            middleware: self.middleware,
         })
     }
 }
@@ -870,15 +981,21 @@ where
 }
 
 /// Operational client-role connection.
-pub struct ClientConnection<Transport, State, Cleanliness = Pristine, Evidence = ()> {
+pub struct ClientConnection<
+    Transport,
+    State,
+    Cleanliness = Pristine,
+    Evidence = (),
+    Handler = IdentityHandler,
+> {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
     state: State,
-    handler: IdentityHandler,
+    handler: Handler,
     context: ClientConnectionContext<Evidence>,
 }
 
-impl<Transport, State, Cleanliness, Evidence>
-    ClientConnection<Transport, State, Cleanliness, Evidence>
+impl<Transport, State, Cleanliness, Evidence, Handler>
+    ClientConnection<Transport, State, Cleanliness, Evidence, Handler>
 {
     /// Returns immutable connection facts.
     #[must_use]
@@ -900,19 +1017,16 @@ impl<Transport, State, Cleanliness, Evidence>
     pub async fn receive_wire(&mut self) -> io::Result<crate::codec::BackendMessage>
     where
         Transport: AsyncRead + Unpin,
+        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
     {
-        self.connection.receive_backend_wire().await
+        let message = self.connection.receive_backend_wire().await?;
+        Ok(self
+            .handler
+            .backend(&self.context, &mut self.state, message))
     }
 
     /// Recovers every owned connection part deliberately.
-    pub fn into_parts(
-        self,
-    ) -> (
-        Transport,
-        State,
-        IdentityHandler,
-        ClientConnectionContext<Evidence>,
-    ) {
+    pub fn into_parts(self) -> (Transport, State, Handler, ClientConnectionContext<Evidence>) {
         (
             self.connection.into_transport().into_inner(),
             self.state,
@@ -922,10 +1036,32 @@ impl<Transport, State, Cleanliness, Evidence>
     }
 }
 
-async fn complete_password<Transport, Policy>(
+fn intercept_auth_response<State, Evidence, Handler>(
+    handler: &mut Handler,
+    context: &ClientConnectionContext<Evidence>,
+    state: &mut State,
+    response: Bytes,
+) -> Result<Bytes, AuthenticationDriveError<Infallible>>
+where
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
+{
+    match handler.frontend(
+        context,
+        state,
+        crate::codec::FrontendMessage::PasswordResponse(response),
+    ) {
+        crate::codec::FrontendMessage::PasswordResponse(response) => Ok(response),
+        _ => Err(AuthenticationDriveError::InvalidResponse),
+    }
+}
+
+async fn complete_password<Transport, Policy, State, Handler>(
     connection: Conn<Buffered<Transport, Backend>, crate::auth::PasswordResponse>,
     challenge: ClientAuthenticationChallenge,
     policy: &mut Policy,
+    context: &ClientConnectionContext<Policy::Evidence>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
     AuthenticationDriveError<Policy::Error>,
@@ -933,6 +1069,7 @@ async fn complete_password<Transport, Policy>(
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Policy: ClientAuthenticationSession,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Policy::Evidence>>,
 {
     let response = policy
         .respond(challenge)
@@ -942,6 +1079,8 @@ where
         let _ = connection.into_transport();
         return Err(AuthenticationDriveError::InvalidResponse);
     };
+    let password = intercept_auth_response(handler, context, state, password)
+        .map_err(|_| AuthenticationDriveError::InvalidResponse)?;
     let (mut awaiting, frame) = connection
         .password(&password)
         .map_err(AuthenticationDriveError::Protocol)?;
@@ -956,6 +1095,7 @@ where
         .receive_backend_wire()
         .await
         .map_err(AuthenticationDriveError::Protocol)?;
+    let message = handler.backend(context, state, message);
     match awaiting.offer(message) {
         Ok(crate::auth::AuthCompletion::Ok(connection)) => Ok(connection),
         Ok(crate::auth::AuthCompletion::Error { conn, .. }) => {
@@ -972,10 +1112,13 @@ where
     }
 }
 
-async fn complete_sasl<Transport, Policy>(
+async fn complete_sasl<Transport, Policy, State, Handler>(
     connection: Conn<Buffered<Transport, Backend>, crate::auth::SaslInitial>,
     mechanisms: Vec<Bytes>,
     policy: &mut Policy,
+    context: &ClientConnectionContext<Policy::Evidence>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
     AuthenticationDriveError<Policy::Error>,
@@ -983,6 +1126,7 @@ async fn complete_sasl<Transport, Policy>(
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Policy: ClientAuthenticationSession,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Policy::Evidence>>,
 {
     let response = policy
         .respond(ClientAuthenticationChallenge::Sasl(mechanisms))
@@ -996,6 +1140,8 @@ where
         let _ = connection.into_transport();
         return Err(AuthenticationDriveError::InvalidResponse);
     };
+    let response = intercept_auth_response(handler, context, state, response)
+        .map_err(|_| AuthenticationDriveError::InvalidResponse)?;
     let (mut sasl, frame) = connection
         .sasl(&mechanism, &response)
         .map_err(AuthenticationDriveError::Protocol)?;
@@ -1009,6 +1155,7 @@ where
             .receive_backend_wire()
             .await
             .map_err(AuthenticationDriveError::Protocol)?;
+        let message = handler.backend(context, state, message);
         match sasl.offer_backend(message) {
             Ok(crate::auth::SaslEvent::Continue { conn, challenge }) => {
                 let response = policy
@@ -1019,6 +1166,8 @@ where
                     let _ = conn.into_transport();
                     return Err(AuthenticationDriveError::InvalidResponse);
                 };
+                let response = intercept_auth_response(handler, context, state, response)
+                    .map_err(|_| AuthenticationDriveError::InvalidResponse)?;
                 let (mut next, frame) = conn.respond(response);
                 next.push_frame(frame)
                     .map_err(AuthenticationDriveError::Protocol)?;
@@ -1041,6 +1190,7 @@ where
                     .receive_backend_wire()
                     .await
                     .map_err(AuthenticationDriveError::Protocol)?;
+                let message = handler.backend(context, state, message);
                 return match awaiting.offer(message) {
                     Ok(crate::auth::AuthCompletion::Ok(connection)) => Ok(connection),
                     Ok(crate::auth::AuthCompletion::Error { conn, .. }) => {
@@ -1071,10 +1221,13 @@ where
     }
 }
 
-async fn complete_token<Transport, Policy>(
+async fn complete_token<Transport, Policy, State, Handler>(
     connection: Conn<Buffered<Transport, Backend>, crate::auth::TokenResponse>,
     challenge: ClientAuthenticationChallenge,
     policy: &mut Policy,
+    context: &ClientConnectionContext<Policy::Evidence>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     Conn<Buffered<Transport, Backend>, crate::auth::AwaitingStartupReady>,
     AuthenticationDriveError<Policy::Error>,
@@ -1082,6 +1235,7 @@ async fn complete_token<Transport, Policy>(
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Policy: ClientAuthenticationSession,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Policy::Evidence>>,
 {
     let response = policy
         .respond(challenge)
@@ -1091,6 +1245,8 @@ where
         let _ = connection.into_transport();
         return Err(AuthenticationDriveError::InvalidResponse);
     };
+    let token = intercept_auth_response(handler, context, state, token)
+        .map_err(|_| AuthenticationDriveError::InvalidResponse)?;
     let (mut waiting, frame) = connection.respond(token);
     waiting
         .push_frame(frame)
@@ -1104,6 +1260,7 @@ where
             .receive_backend_wire()
             .await
             .map_err(AuthenticationDriveError::Protocol)?;
+        let message = handler.backend(context, state, message);
         match waiting.offer(message) {
             Ok(crate::auth::TokenAuthEvent::Continue { conn, token }) => {
                 let response = policy
@@ -1114,6 +1271,8 @@ where
                     let _ = conn.into_transport();
                     return Err(AuthenticationDriveError::InvalidResponse);
                 };
+                let token = intercept_auth_response(handler, context, state, token)
+                    .map_err(|_| AuthenticationDriveError::InvalidResponse)?;
                 let (mut next, frame) = conn.respond(token);
                 next.push_frame(frame)
                     .map_err(AuthenticationDriveError::Protocol)?;
@@ -1143,13 +1302,45 @@ enum SessionEstablishError<AuthenticationError> {
     Protocol(io::Error),
 }
 
-#[allow(clippy::too_many_lines)] // Each authentication mechanism preserves its distinct typestate.
-async fn establish_client_session<Transport, Authentication>(
+fn replace_session_item(
+    item: SessionItem,
+    replacement: crate::codec::BackendMessage,
+) -> Option<SessionItem> {
+    match (item, replacement) {
+        (SessionItem::Message(_), message) => Some(SessionItem::Message(message)),
+        (
+            SessionItem::ReadyForQuery {
+                parameters_changed, ..
+            },
+            crate::codec::BackendMessage::ReadyForQuery(status),
+        ) => Some(SessionItem::ReadyForQuery {
+            status,
+            parameters_changed,
+        }),
+        (
+            SessionItem::CommandComplete {
+                command, notices, ..
+            },
+            crate::codec::BackendMessage::CommandComplete(tag),
+        ) => Some(SessionItem::CommandComplete {
+            tag,
+            command,
+            notices,
+        }),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Typestate plus middleware lifecycle.
+async fn establish_client_session<Transport, Authentication, State, Handler>(
     transport: ClientTransport<Transport>,
     startup: &StartupMessage,
     target: &ConnectTarget,
     authentication_policy: &Authentication,
     max_frame_len: usize,
+    context: &ClientConnectionContext<Authentication::Evidence>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     (
         Conn<Buffered<ClientTransport<Transport>, Backend>, Ready>,
@@ -1160,6 +1351,7 @@ async fn establish_client_session<Transport, Authentication>(
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Authentication: ClientAuthentication,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Authentication::Evidence>>,
 {
     let mut policy = authentication_policy.begin(target).await.map_err(|error| {
         SessionEstablishError::Authentication(ClientAuthenticationError::Policy(error))
@@ -1183,6 +1375,7 @@ where
                 return Err(SessionEstablishError::Protocol(error));
             }
         };
+        let message = handler.backend(context, state, message);
         match authentication.offer_backend(message) {
             Ok(AuthEvent::Authentication(AuthOffer::Ok(connection))) => break connection,
             Ok(AuthEvent::Negotiate { conn, .. }) => authentication = conn,
@@ -1191,6 +1384,9 @@ where
                     connection,
                     ClientAuthenticationChallenge::CleartextPassword,
                     &mut policy,
+                    context,
+                    state,
+                    handler,
                 )
                 .await
                 .map_err(session_authentication_error)?;
@@ -1200,29 +1396,53 @@ where
                     conn,
                     ClientAuthenticationChallenge::Md5Password(salt),
                     &mut policy,
+                    context,
+                    state,
+                    handler,
                 )
                 .await
                 .map_err(session_authentication_error)?;
             }
             Ok(AuthEvent::Authentication(AuthOffer::Sasl { conn, mechanisms })) => {
-                break complete_sasl(conn, mechanisms, &mut policy)
+                break complete_sasl(conn, mechanisms, &mut policy, context, state, handler)
                     .await
                     .map_err(session_authentication_error)?;
             }
             Ok(AuthEvent::Authentication(AuthOffer::Gss(conn))) => {
-                break complete_token(conn, ClientAuthenticationChallenge::Gss, &mut policy)
-                    .await
-                    .map_err(session_authentication_error)?;
+                break complete_token(
+                    conn,
+                    ClientAuthenticationChallenge::Gss,
+                    &mut policy,
+                    context,
+                    state,
+                    handler,
+                )
+                .await
+                .map_err(session_authentication_error)?;
             }
             Ok(AuthEvent::Authentication(AuthOffer::Sspi(conn))) => {
-                break complete_token(conn, ClientAuthenticationChallenge::Sspi, &mut policy)
-                    .await
-                    .map_err(session_authentication_error)?;
+                break complete_token(
+                    conn,
+                    ClientAuthenticationChallenge::Sspi,
+                    &mut policy,
+                    context,
+                    state,
+                    handler,
+                )
+                .await
+                .map_err(session_authentication_error)?;
             }
             Ok(AuthEvent::Authentication(AuthOffer::KerberosV5(conn))) => {
-                break complete_token(conn, ClientAuthenticationChallenge::KerberosV5, &mut policy)
-                    .await
-                    .map_err(session_authentication_error)?;
+                break complete_token(
+                    conn,
+                    ClientAuthenticationChallenge::KerberosV5,
+                    &mut policy,
+                    context,
+                    state,
+                    handler,
+                )
+                .await
+                .map_err(session_authentication_error)?;
             }
             Ok(AuthEvent::Error { conn, .. }) => {
                 let _ = conn.into_transport();
@@ -1247,6 +1467,14 @@ where
                 let _ = awaiting_ready.into_transport();
                 return Err(SessionEstablishError::Protocol(error));
             }
+        };
+        let replacement = handler.backend(context, state, item.clone().into_backend_message());
+        let Some(item) = replace_session_item(item, replacement) else {
+            let _ = awaiting_ready.into_transport();
+            return Err(SessionEstablishError::Protocol(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "middleware replacement during startup readiness is not phase-compatible",
+            )));
         };
         match awaiting_ready.offer_ready(item) {
             Ok(ready) => break ready,
@@ -1308,10 +1536,11 @@ impl std::error::Error for QueryError {
     }
 }
 
-impl<Transport, State, Cleanliness, Evidence>
-    ClientConnection<Transport, State, Cleanliness, Evidence>
+impl<Transport, State, Cleanliness, Evidence, Handler>
+    ClientConnection<Transport, State, Cleanliness, Evidence, Handler>
 where
     Transport: AsyncRead + AsyncWrite + Unpin,
+    Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
 {
     /// Executes a simple query through typed completion back to operational readiness.
     ///
@@ -1327,18 +1556,30 @@ where
         query: &[u8],
     ) -> Result<
         (
-            ClientConnection<Transport, State, Dirty, Evidence>,
+            ClientConnection<Transport, State, Dirty, Evidence, Handler>,
             Vec<crate::codec::BackendMessage>,
         ),
         QueryError,
     > {
         let Self {
             connection,
-            state,
-            handler,
+            mut state,
+            mut handler,
             context,
         } = self;
-        let (mut query_connection, frame) = connection.push_query(query).map_err(QueryError)?;
+        let outbound = handler.frontend(
+            &context,
+            &mut state,
+            crate::codec::FrontendMessage::Query(Bytes::copy_from_slice(query)),
+        );
+        let crate::codec::FrontendMessage::Query(query) = outbound else {
+            let _ = connection.into_transport();
+            return Err(QueryError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "middleware replaced Query with an incompatible message",
+            )));
+        };
+        let (mut query_connection, frame) = connection.push_query(&query).map_err(QueryError)?;
         if let Err(error) = query_connection.push_frame(frame) {
             let _ = query_connection.into_transport();
             return Err(QueryError(error));
@@ -1356,7 +1597,16 @@ where
                     return Err(QueryError(error));
                 }
             };
-            messages.push(item.clone().into_backend_message());
+            let observed =
+                handler.backend(&context, &mut state, item.clone().into_backend_message());
+            let Some(item) = replace_session_item(item, observed.clone()) else {
+                let _ = query_connection.into_transport();
+                return Err(QueryError(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "middleware replacement during simple query is not phase-compatible",
+                )));
+            };
+            messages.push(observed);
             match query_connection.offer(item) {
                 Ok(SimpleTransition::Continue(connection, _)) => query_connection = connection,
                 Ok(SimpleTransition::Ready(
@@ -1409,13 +1659,15 @@ where
     }
 }
 
-impl<Connector, Tls, Authentication, Work, Transport, Error> Client<Connector, Tls, Authentication>
+impl<Connector, Tls, Authentication, Middleware, Work, Transport, Error>
+    Client<Connector, Tls, Authentication, Middleware>
 where
     Connector: Fn(&ConnectTarget) -> Work,
     Work: Future<Output = Result<Transport, Error>>,
     Transport: AsyncRead + AsyncWrite + Unpin,
     Authentication: ClientAuthentication,
     Tls: ClientTlsConfiguration,
+    Middleware: crate::MiddlewareFactory<ClientInitialContext>,
 {
     /// Establishes transport, startup, and configured authentication before returning.
     ///
@@ -1429,37 +1681,70 @@ where
         &self,
         target: ConnectTarget,
         overrides: StartupParameters,
-        state: State,
+        mut state: State,
     ) -> Result<
-        ClientConnection<ClientTransport<Transport>, State, Pristine, Authentication::Evidence>,
+        ClientConnection<
+            ClientTransport<Transport>,
+            State,
+            Pristine,
+            Authentication::Evidence,
+            <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler,
+        >,
         ConnectError<
             Error,
             ClientTlsError<<Tls::Provider as ClientTlsProvider>::Error>,
             ClientAuthenticationError<Authentication::Error>,
         >,
-    > {
+    >
+    where
+        <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler:
+            crate::ClientMiddleware<State, ClientConnectionContext<Authentication::Evidence>>,
+    {
+        let mut handler = self.middleware.create(&ClientInitialContext {
+            target: target.clone(),
+        });
         let startup = self
             .defaults
             .clone()
             .merged_with(overrides)
             .into_message()
             .map_err(ConnectError::Startup)?;
+        let mut context = ClientConnectionContext {
+            target: target.clone(),
+            tls: None,
+            identity: None,
+        };
         let transport = (self.connector)(&target)
             .await
             .map_err(ConnectError::Connector)?;
         let configured_tls = self.tls.configured();
         let transport = match configured_tls {
-            None => ClientTransport::Plain(transport),
-            Some((mode, provider)) => negotiate_client_tls(transport, mode, provider, &target)
-                .await
-                .map_err(ConnectError::Tls)?,
+            None => {
+                context.tls = Some(ClientTlsStatus::Plaintext);
+                ClientTransport::Plain(transport)
+            }
+            Some((mode, provider)) => negotiate_client_tls(
+                transport,
+                mode,
+                provider,
+                &target,
+                &mut context,
+                &mut state,
+                &mut handler,
+            )
+            .await
+            .map_err(ConnectError::Tls)?,
         };
+        let first_startup = handler.startup(&context, &mut state, startup.clone());
         let first = establish_client_session(
             transport,
-            &startup,
+            &first_startup,
             &target,
             &self.authentication,
             self.limits.max_frame_len,
+            &context,
+            &mut state,
+            &mut handler,
         )
         .await;
         let retry_provider = match configured_tls {
@@ -1472,20 +1757,31 @@ where
             let transport = (self.connector)(&target)
                 .await
                 .map_err(ConnectError::Connector)?;
+            // The retry is a new transport attempt within the same logical
+            // connection; do not expose the failed plaintext attempt as its
+            // current transport fact.
+            context.tls = None;
             let transport = negotiate_client_tls(
                 transport,
                 crate::pre_startup::SslMode::Require,
                 provider,
                 &target,
+                &mut context,
+                &mut state,
+                &mut handler,
             )
             .await
             .map_err(ConnectError::Tls)?;
+            let retry_startup = handler.startup(&context, &mut state, startup);
             establish_client_session(
                 transport,
-                &startup,
+                &retry_startup,
                 &target,
                 &self.authentication,
                 self.limits.max_frame_len,
+                &context,
+                &mut state,
+                &mut handler,
             )
             .await
             .map_err(map_session_error)?
@@ -1495,8 +1791,11 @@ where
         Ok(ClientConnection {
             connection: ready,
             state,
-            handler: IdentityHandler,
-            context: ClientConnectionContext { target, identity },
+            handler,
+            context: {
+                context.identity = Some(identity);
+                context
+            },
         })
     }
 }

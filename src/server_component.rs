@@ -6,10 +6,13 @@ use bytes::Bytes;
 use rustls::{ServerConfig, pki_types::CertificateDer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::ServerMiddleware as _;
 use crate::{
     Conn,
     auth::{Ready, TlsServerEndPoint},
-    codec::{DEFAULT_MAX_FRAME_LEN, Frontend, FrontendMessage},
+    codec::{
+        Backend, BackendMessage, DEFAULT_MAX_FRAME_LEN, Direction as _, Frontend, FrontendMessage,
+    },
     pre_startup::{DEFAULT_MAX_PRE_STARTUP_PACKET_LEN, PreStartupOffer},
     server_auth::ServerProtocolOffer,
     startup::{ProtocolVersion, StartupMessage},
@@ -476,10 +479,15 @@ impl Default for ServerProtocolLimits {
 
 /// Reusable client-facing PostgreSQL server component.
 #[derive(Clone)]
-pub struct Server<Tls = DisabledServerTls, Authentication = TrustServerAuthentication> {
+pub struct Server<
+    Tls = DisabledServerTls,
+    Authentication = TrustServerAuthentication,
+    Middleware = IdentityServerHandler,
+> {
     tls: Tls,
     authentication: Authentication,
     limits: ServerProtocolLimits,
+    middleware: Middleware,
 }
 
 impl Server {
@@ -490,23 +498,26 @@ impl Server {
     }
 }
 
-impl<Tls: ServerTlsConfiguration, Authentication> fmt::Debug for Server<Tls, Authentication> {
+impl<Tls: ServerTlsConfiguration, Authentication, Middleware> fmt::Debug
+    for Server<Tls, Authentication, Middleware>
+{
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Server")
             .field("tls", &self.tls.category())
             .field("authentication", &"<redacted>")
             .field("limits", &self.limits)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 /// Builder for a reusable [`Server`].
 #[derive(Clone)]
-pub struct ServerBuilder<Tls = (), Authentication = ()> {
+pub struct ServerBuilder<Tls = (), Authentication = (), Middleware = IdentityServerHandler> {
     tls: Option<Tls>,
     authentication: Option<Authentication>,
     limits: ServerProtocolLimits,
+    middleware: Middleware,
 }
 
 impl<Tls, Authentication> fmt::Debug for ServerBuilder<Tls, Authentication> {
@@ -526,28 +537,31 @@ impl Default for ServerBuilder {
             tls: None,
             authentication: None,
             limits: ServerProtocolLimits::default(),
+            middleware: IdentityServerHandler,
         }
     }
 }
 
-impl<Tls, Authentication> ServerBuilder<Tls, Authentication> {
+impl<Tls, Authentication, Middleware> ServerBuilder<Tls, Authentication, Middleware> {
     /// Selects the client-facing TLS posture explicitly.
     #[must_use]
-    pub fn tls<Next>(self, policy: Next) -> ServerBuilder<Next, Authentication> {
+    pub fn tls<Next>(self, policy: Next) -> ServerBuilder<Next, Authentication, Middleware> {
         ServerBuilder {
             tls: Some(policy),
             authentication: self.authentication,
             limits: self.limits,
+            middleware: self.middleware,
         }
     }
 
     /// Replaces the authentication policy used for each accepted connection.
     #[must_use]
-    pub fn authentication<Next>(self, policy: Next) -> ServerBuilder<Tls, Next> {
+    pub fn authentication<Next>(self, policy: Next) -> ServerBuilder<Tls, Next, Middleware> {
         ServerBuilder {
             tls: self.tls,
             authentication: Some(policy),
             limits: self.limits,
+            middleware: self.middleware,
         }
     }
 
@@ -558,13 +572,27 @@ impl<Tls, Authentication> ServerBuilder<Tls, Authentication> {
         self
     }
 
+    /// Appends a synchronous, infallible per-connection middleware factory.
+    #[must_use]
+    pub fn middleware<Next>(
+        self,
+        factory: Next,
+    ) -> ServerBuilder<Tls, Authentication, crate::MiddlewareChain<Middleware, Next>> {
+        ServerBuilder {
+            tls: self.tls,
+            authentication: self.authentication,
+            limits: self.limits,
+            middleware: crate::MiddlewareChain(self.middleware, factory),
+        }
+    }
+
     /// Validates configuration and creates an immutable reusable component.
     ///
     /// # Errors
     ///
     /// Returns an error when either security policy is omitted or a protocol
     /// limit cannot be represented by the PostgreSQL wire format.
-    pub fn build(self) -> Result<Server<Tls, Authentication>, BuildServerError> {
+    pub fn build(self) -> Result<Server<Tls, Authentication, Middleware>, BuildServerError> {
         let tls = self.tls.ok_or(BuildServerError::MissingTlsPolicy)?;
         let authentication = self
             .authentication
@@ -576,6 +604,7 @@ impl<Tls, Authentication> ServerBuilder<Tls, Authentication> {
             tls,
             authentication,
             limits: self.limits,
+            middleware: self.middleware,
         })
     }
 }
@@ -584,8 +613,8 @@ impl<Tls, Authentication> ServerBuilder<Tls, Authentication> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerConnectionContext<Peer, Identity> {
     peer: Peer,
-    tls: NegotiatedServerTls,
-    identity: Identity,
+    tls: Option<NegotiatedServerTls>,
+    identity: Option<Identity>,
 }
 
 impl<Peer, Identity> ServerConnectionContext<Peer, Identity> {
@@ -596,21 +625,54 @@ impl<Peer, Identity> ServerConnectionContext<Peer, Identity> {
     }
 
     /// Returns the negotiated TLS fact.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called before pre-startup negotiation completes.
     #[must_use]
     pub const fn tls(&self) -> &NegotiatedServerTls {
-        &self.tls
+        match &self.tls {
+            Some(tls) => tls,
+            None => panic!("TLS is not known before pre-startup negotiation"),
+        }
+    }
+
+    /// Returns TLS evidence only after pre-startup negotiation has completed.
+    #[must_use]
+    pub const fn tls_if_known(&self) -> Option<&NegotiatedServerTls> {
+        self.tls.as_ref()
     }
 
     /// Returns typed evidence from application authentication.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called before authentication completes.
     #[must_use]
     pub const fn identity(&self) -> &Identity {
-        &self.identity
+        match &self.identity {
+            Some(identity) => identity,
+            None => panic!("identity is not known before authentication"),
+        }
+    }
+
+    /// Returns identity evidence only after authentication has completed.
+    #[must_use]
+    pub const fn identity_if_known(&self) -> Option<&Identity> {
+        self.identity.as_ref()
     }
 }
 
 /// Identity handler used until contextual middleware is configured.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct IdentityServerHandler;
+impl<C> crate::MiddlewareFactory<C> for IdentityServerHandler {
+    type Handler = Self;
+    fn create(&self, _: &C) -> Self {
+        *self
+    }
+}
+impl<S, C> crate::ServerMiddleware<S, C> for IdentityServerHandler {}
 
 /// A decoded out-of-band PostgreSQL cancellation request.
 #[derive(Clone, Eq, PartialEq)]
@@ -646,33 +708,53 @@ impl CancellationRequest {
 /// Result of accepting one caller-established transport.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
-pub enum ServerAccept<Transport, State, Peer, Identity = TrustIdentity> {
+pub enum ServerAccept<
+    Transport,
+    State,
+    Peer,
+    Identity = TrustIdentity,
+    Handler = IdentityServerHandler,
+> {
     /// Authentication completed and the connection is operational.
-    Session(ServerConnection<Transport, State, Peer, Identity>),
+    Session(ServerConnection<Transport, State, Peer, Identity, Handler>),
     /// The first packet was an out-of-band cancellation request.
-    Cancellation(ServerCancellation<Transport, State, Peer>),
+    Cancellation(ServerCancellation<Transport, State, Peer, Handler>),
 }
 
 /// Non-`Send` future returned while accepting one server-role connection.
-pub type ServerAcceptFuture<'a, Transport, State, Peer, Identity, TlsError, AuthenticationError> =
-    Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        ServerAccept<Transport, State, Peer, Identity>,
-                        AcceptError<TlsError, AuthenticationError>,
-                    >,
-                > + 'a,
-        >,
-    >;
+pub type ServerAcceptFuture<
+    'a,
+    Transport,
+    State,
+    Peer,
+    Identity,
+    Handler,
+    TlsError,
+    AuthenticationError,
+> = Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    ServerAccept<Transport, State, Peer, Identity, Handler>,
+                    AcceptError<TlsError, AuthenticationError>,
+                >,
+            > + 'a,
+    >,
+>;
 
 /// An operational server-role connection with all per-connection ownership.
 #[derive(Debug)]
-pub struct ServerConnection<Transport, State, Peer, Identity = TrustIdentity> {
+pub struct ServerConnection<
+    Transport,
+    State,
+    Peer,
+    Identity = TrustIdentity,
+    Handler = IdentityServerHandler,
+> {
     conn: ServerConnectionInner<Transport>,
     startup: StartupMessage,
     state: State,
-    handler: IdentityServerHandler,
+    handler: Handler,
     context: ServerConnectionContext<Peer, Identity>,
 }
 
@@ -691,7 +773,9 @@ pub enum AcceptedServerTransport<Transport> {
     Tls(Box<ServerTls<Transport>>),
 }
 
-impl<Transport, State, Peer, Identity> ServerConnection<Transport, State, Peer, Identity> {
+impl<Transport, State, Peer, Identity, Handler>
+    ServerConnection<Transport, State, Peer, Identity, Handler>
+{
     /// Returns immutable connection facts.
     #[must_use]
     pub const fn context(&self) -> &ServerConnectionContext<Peer, Identity> {
@@ -722,10 +806,42 @@ impl<Transport, State, Peer, Identity> ServerConnection<Transport, State, Peer, 
     pub async fn receive_wire(&mut self) -> io::Result<FrontendMessage>
     where
         Transport: AsyncRead + AsyncWrite + Unpin,
+        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
     {
-        match &mut self.conn {
+        let message = match &mut self.conn {
             ServerConnectionInner::Plaintext(conn) => conn.receive_frontend_wire().await,
             ServerConnectionInner::Tls(conn) => conn.receive_frontend_wire().await,
+        }?;
+        Ok(self
+            .handler
+            .frontend(&self.context, &mut self.state, message))
+    }
+
+    /// Sends one operational backend message after middleware interception.
+    ///
+    /// The replacement returned by middleware is the value encoded on the wire.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding, configured frame-limit, or transport error.
+    pub async fn send_wire(&mut self, message: BackendMessage) -> io::Result<()>
+    where
+        Transport: AsyncRead + AsyncWrite + Unpin,
+        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
+    {
+        let message = self
+            .handler
+            .backend(&self.context, &mut self.state, message);
+        let frame = message.to_frame()?;
+        match &mut self.conn {
+            ServerConnectionInner::Plaintext(conn) => {
+                conn.push_frame(frame)?;
+                conn.flush().await
+            }
+            ServerConnectionInner::Tls(conn) => {
+                conn.push_frame(frame)?;
+                conn.flush().await
+            }
         }
     }
 
@@ -736,7 +852,7 @@ impl<Transport, State, Peer, Identity> ServerConnection<Transport, State, Peer, 
     ) -> (
         AcceptedServerTransport<Transport>,
         State,
-        IdentityServerHandler,
+        Handler,
         ServerConnectionContext<Peer, Identity>,
     ) {
         let transport = match self.conn {
@@ -753,15 +869,15 @@ impl<Transport, State, Peer, Identity> ServerConnection<Transport, State, Peer, 
 
 /// A cancellation branch retaining all caller and handler ownership.
 #[derive(Debug)]
-pub struct ServerCancellation<Transport, State, Peer> {
+pub struct ServerCancellation<Transport, State, Peer, Handler = IdentityServerHandler> {
     transport: AcceptedServerTransport<Transport>,
     request: CancellationRequest,
     state: State,
-    handler: IdentityServerHandler,
+    handler: Handler,
     context: ServerConnectionContext<Peer, ()>,
 }
 
-impl<Transport, State, Peer> ServerCancellation<Transport, State, Peer> {
+impl<Transport, State, Peer, Handler> ServerCancellation<Transport, State, Peer, Handler> {
     /// Returns the decoded request.
     #[must_use]
     pub const fn request(&self) -> &CancellationRequest {
@@ -776,7 +892,7 @@ impl<Transport, State, Peer> ServerCancellation<Transport, State, Peer> {
         AcceptedServerTransport<Transport>,
         CancellationRequest,
         State,
-        IdentityServerHandler,
+        Handler,
         ServerConnectionContext<Peer, ()>,
     ) {
         (
@@ -789,7 +905,7 @@ impl<Transport, State, Peer> ServerCancellation<Transport, State, Peer> {
     }
 }
 
-impl<Tls, Authentication> Server<Tls, Authentication>
+impl<Tls, Authentication, Middleware> Server<Tls, Authentication, Middleware>
 where
     Tls: ServerTlsConfiguration,
     Authentication: ServerAuthenticationProvider,
@@ -821,6 +937,12 @@ where
         State,
         Peer,
         <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+        <Middleware as crate::MiddlewareFactory<
+            ServerConnectionContext<
+                Peer,
+                <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            >,
+        >>::Handler,
         <Tls::Provider as ServerIdentityProvider>::Error,
         <Authentication::Authentication as ServerAuthentication<Peer>>::Error,
     >
@@ -829,21 +951,46 @@ where
         State: 'a,
         Peer: 'a,
         Authentication::Authentication: ServerAuthentication<Peer>,
+        Middleware: crate::MiddlewareFactory<
+                ServerConnectionContext<
+                    Peer,
+                    <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+                >,
+            >,
+        <Middleware as crate::MiddlewareFactory<
+            ServerConnectionContext<
+                Peer,
+                <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            >,
+        >>::Handler: crate::ServerMiddleware<
+                State,
+                ServerConnectionContext<
+                    Peer,
+                    <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+                >,
+            >,
     {
         Box::pin(self.accept_inner(transport, peer, state))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn accept_inner<Transport, State, Peer>(
         &self,
         transport: Transport,
         peer: Peer,
-        state: State,
+        mut state: State,
     ) -> Result<
         ServerAccept<
             Transport,
             State,
             Peer,
             <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            <Middleware as crate::MiddlewareFactory<
+                ServerConnectionContext<
+                    Peer,
+                    <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+                >,
+            >>::Handler,
         >,
         AcceptError<
             <Tls::Provider as ServerIdentityProvider>::Error,
@@ -853,8 +1000,31 @@ where
     where
         Transport: AsyncRead + AsyncWrite + Unpin,
         Authentication::Authentication: ServerAuthentication<Peer>,
+        Middleware: crate::MiddlewareFactory<
+                ServerConnectionContext<
+                    Peer,
+                    <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+                >,
+            >,
+        <Middleware as crate::MiddlewareFactory<
+            ServerConnectionContext<
+                Peer,
+                <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            >,
+        >>::Handler: crate::ServerMiddleware<
+                State,
+                ServerConnectionContext<
+                    Peer,
+                    <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+                >,
+            >,
     {
-        let handler = IdentityServerHandler;
+        let mut context = ServerConnectionContext {
+            peer,
+            tls: None,
+            identity: None,
+        };
+        let mut handler = self.middleware.create(&context);
         let buffered = self.buffer_transport(transport).map_err(AcceptError::Io)?;
         let mut conn = Conn::new(buffered);
 
@@ -866,6 +1036,7 @@ where
                     return Err(AcceptError::Io(error));
                 }
             };
+            let message = handler.pre_startup(&context, &mut state, message);
             match conn.offer_pre_startup(message) {
                 PreStartupOffer::Ssl(decision) => match self.tls.provider() {
                     None => {
@@ -888,7 +1059,7 @@ where
                             .map_err(AcceptError::Io)?;
                         return accept_encrypted(
                             encrypted,
-                            peer,
+                            context,
                             state,
                             handler,
                             &self.authentication,
@@ -905,20 +1076,26 @@ where
                     process_id,
                     secret_key,
                 } => {
+                    context.tls = Some(NegotiatedServerTls::Plaintext);
+                    let request = handler.cancellation(
+                        &context,
+                        &mut state,
+                        CancellationRequest {
+                            process_id,
+                            secret_key,
+                        },
+                    );
                     return Ok(ServerAccept::Cancellation(ServerCancellation {
                         transport: AcceptedServerTransport::Plaintext(
                             terminal.into_transport().into_inner(),
                         ),
-                        request: CancellationRequest {
-                            process_id,
-                            secret_key,
-                        },
+                        request,
                         state,
                         handler,
                         context: ServerConnectionContext {
-                            peer,
-                            tls: NegotiatedServerTls::Plaintext,
-                            identity: (),
+                            peer: context.peer,
+                            tls: Some(NegotiatedServerTls::Plaintext),
+                            identity: None,
                         },
                     }));
                 }
@@ -930,12 +1107,15 @@ where
                         let _ = startup_conn.into_transport();
                         return Err(AcceptError::TlsRequired);
                     }
-                    let (ready, identity) = complete_auth(
+                    context.tls = Some(NegotiatedServerTls::Plaintext);
+                    let message = handler.startup(&context, &mut state, message);
+                    let ready = complete_auth(
                         startup_conn,
                         &message,
-                        &NegotiatedServerTls::Plaintext,
-                        &peer,
                         &self.authentication,
+                        &mut context,
+                        &mut state,
+                        &mut handler,
                     )
                     .await?;
                     return Ok(ServerAccept::Session(ServerConnection {
@@ -943,11 +1123,7 @@ where
                         startup: message,
                         state,
                         handler,
-                        context: ServerConnectionContext {
-                            peer,
-                            tls: NegotiatedServerTls::Plaintext,
-                            identity,
-                        },
+                        context,
                     }));
                 }
             }
@@ -966,11 +1142,14 @@ where
     }
 }
 
-async fn accept_encrypted<Transport, State, Peer, Authentication, TlsError>(
+async fn accept_encrypted<Transport, State, Peer, Authentication, TlsError, Handler>(
     mut conn: Conn<Buffered<ServerTls<Transport>, Frontend>, crate::pre_startup::PreStartup>,
-    peer: Peer,
-    state: State,
-    handler: IdentityServerHandler,
+    mut context: ServerConnectionContext<
+        Peer,
+        <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+    >,
+    mut state: State,
+    mut handler: Handler,
     authentication: &Authentication,
 ) -> Result<
     ServerAccept<
@@ -978,6 +1157,7 @@ async fn accept_encrypted<Transport, State, Peer, Authentication, TlsError>(
         State,
         Peer,
         <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+        Handler,
     >,
     AcceptError<TlsError, <Authentication::Authentication as ServerAuthentication<Peer>>::Error>,
 >
@@ -985,10 +1165,18 @@ where
     Transport: AsyncRead + AsyncWrite + Unpin,
     Authentication: ServerAuthenticationProvider,
     Authentication::Authentication: ServerAuthentication<Peer>,
+    Handler: crate::ServerMiddleware<
+            State,
+            ServerConnectionContext<
+                Peer,
+                <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            >,
+        >,
 {
     let negotiated_tls = NegotiatedServerTls::Tls {
         server_end_point: Bytes::copy_from_slice(conn.transport().get_ref().tls_server_end_point()),
     };
+    context.tls = Some(negotiated_tls.clone());
     loop {
         let message = match conn.receive_pre_startup_wire().await {
             Ok(message) => message,
@@ -997,6 +1185,7 @@ where
                 return Err(AcceptError::Io(error));
             }
         };
+        let message = handler.pre_startup(&context, &mut state, message);
         match conn.offer_pre_startup(message) {
             PreStartupOffer::Ssl(decision) => {
                 conn = decision.decline_ssl();
@@ -1011,20 +1200,25 @@ where
                 process_id,
                 secret_key,
             } => {
+                let request = handler.cancellation(
+                    &context,
+                    &mut state,
+                    CancellationRequest {
+                        process_id,
+                        secret_key,
+                    },
+                );
                 return Ok(ServerAccept::Cancellation(ServerCancellation {
                     transport: AcceptedServerTransport::Tls(Box::new(
                         terminal.into_transport().into_inner(),
                     )),
-                    request: CancellationRequest {
-                        process_id,
-                        secret_key,
-                    },
+                    request,
                     state,
                     handler,
                     context: ServerConnectionContext {
-                        peer,
-                        tls: negotiated_tls.clone(),
-                        identity: (),
+                        peer: context.peer,
+                        tls: context.tls,
+                        identity: None,
                     },
                 }));
             }
@@ -1032,12 +1226,14 @@ where
                 conn: startup_conn,
                 message,
             } => {
-                let (ready, identity) = complete_auth(
+                let message = handler.startup(&context, &mut state, message);
+                let ready = complete_auth(
                     startup_conn,
                     &message,
-                    &negotiated_tls,
-                    &peer,
                     authentication,
+                    &mut context,
+                    &mut state,
+                    &mut handler,
                 )
                 .await?;
                 return Ok(ServerAccept::Session(ServerConnection {
@@ -1045,34 +1241,39 @@ where
                     startup: message,
                     state,
                     handler,
-                    context: ServerConnectionContext {
-                        peer,
-                        tls: negotiated_tls,
-                        identity,
-                    },
+                    context,
                 }));
             }
         }
     }
 }
 
-async fn complete_auth<I, Authentication, Peer, TlsError>(
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn complete_auth<I, Authentication, Peer, TlsError, State, Handler>(
     startup_conn: Conn<Buffered<I, Frontend>, crate::pre_startup::Startup>,
     message: &StartupMessage,
-    tls: &NegotiatedServerTls,
-    peer: &Peer,
     provider: &Authentication,
-) -> Result<
-    (
-        Conn<Buffered<I, Frontend>, Ready>,
+    context: &mut ServerConnectionContext<
+        Peer,
         <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
-    ),
+    >,
+    state: &mut State,
+    handler: &mut Handler,
+) -> Result<
+    Conn<Buffered<I, Frontend>, Ready>,
     AcceptError<TlsError, <Authentication::Authentication as ServerAuthentication<Peer>>::Error>,
 >
 where
     I: AsyncRead + AsyncWrite + Unpin,
     Authentication: ServerAuthenticationProvider,
     Authentication::Authentication: ServerAuthentication<Peer>,
+    Handler: crate::ServerMiddleware<
+            State,
+            ServerConnectionContext<
+                Peer,
+                <Authentication::Authentication as ServerAuthentication<Peer>>::Identity,
+            >,
+        >,
 {
     let validated = match startup_conn.validate_protocol(message.clone(), ProtocolVersion::V3_2) {
         ServerProtocolOffer::Supported { conn, .. } => conn,
@@ -1085,8 +1286,8 @@ where
     let auth = validated.begin_server_auth();
     let request = ServerAuthenticationRequest {
         startup: message,
-        tls,
-        peer,
+        tls: context.tls(),
+        peer: context.peer(),
     };
     let action = match policy.start(request).await {
         Ok(action) => action,
@@ -1105,9 +1306,12 @@ where
                 _ => unreachable!("matched password action"),
             }
             .map_err(AcceptError::Io)?;
+            let frame = intercept_server_backend(handler, context, state, frame)
+                .map_err(AcceptError::Io)?;
             let waiting = push_or_abort(waiting, frame)?;
             let waiting = flush_or_abort(waiting).await?;
             let (waiting, wire) = receive_frontend_or_abort(waiting).await?;
+            let wire = handler.frontend(context, state, wire);
             let (auth, credential) = match waiting.receive_password(wire) {
                 Ok(response) => response,
                 Err(rejected) => {
@@ -1132,12 +1336,21 @@ where
             }
         }
         ServerAuthenticationAction::Sasl { mechanisms } => {
-            authenticate_sasl(auth, mechanisms, &mut policy, request).await?
+            authenticate_sasl(
+                auth,
+                mechanisms,
+                &mut policy,
+                request,
+                context,
+                state,
+                handler,
+            )
+            .await?
         }
         action @ (ServerAuthenticationAction::KerberosV5
         | ServerAuthenticationAction::Gss
         | ServerAuthenticationAction::Sspi) => {
-            authenticate_token(auth, action, &mut policy, request).await?
+            authenticate_token(auth, action, &mut policy, request, context, state, handler).await?
         }
         ServerAuthenticationAction::SaslContinue(_)
         | ServerAuthenticationAction::SaslFinal { .. }
@@ -1146,23 +1359,45 @@ where
             return Err(AcceptError::AuthenticationProtocol);
         }
     };
-    let (mut startup_ready, authentication_ok) =
+    context.identity = Some(identity);
+    let (mut startup_ready, _authentication_ok) =
         auth.authentication_ok().map_err(AcceptError::Io)?;
     if let Some(final_frame) = final_frame {
+        let final_frame = intercept_server_backend(handler, context, state, final_frame)
+            .map_err(AcceptError::Io)?;
         startup_ready = push_or_abort(startup_ready, final_frame)?;
     }
+    let authentication_ok = handler
+        .backend(
+            context,
+            state,
+            BackendMessage::Authentication(crate::codec::Authentication::Ok),
+        )
+        .to_frame()
+        .map_err(AcceptError::Io)?;
     let startup_ready = push_or_abort(startup_ready, authentication_ok)?;
-    let (ready, ready_frame) = startup_ready.ready().map_err(AcceptError::Io)?;
+    let (ready, _ready_frame) = startup_ready.ready().map_err(AcceptError::Io)?;
+    let ready_frame = handler
+        .backend(
+            context,
+            state,
+            BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::Idle),
+        )
+        .to_frame()
+        .map_err(AcceptError::Io)?;
     let ready = push_or_abort(ready, ready_frame)?;
     let ready = flush_or_abort(ready).await?;
-    Ok((ready, identity))
+    Ok(ready)
 }
 
-async fn authenticate_sasl<I, Policy, Peer, TlsError>(
+async fn authenticate_sasl<I, Policy, Peer, TlsError, State, Handler>(
     auth: Conn<Buffered<I, Frontend>, crate::server_auth::ServerAuth>,
     mechanisms: Vec<Bytes>,
     policy: &mut Policy,
     request: ServerAuthenticationRequest<'_, Peer>,
+    context: &ServerConnectionContext<Peer, Policy::Identity>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     (
         Conn<Buffered<I, Frontend>, crate::server_auth::ServerAuth>,
@@ -1174,6 +1409,7 @@ async fn authenticate_sasl<I, Policy, Peer, TlsError>(
 where
     I: AsyncRead + AsyncWrite + Unpin,
     Policy: ServerAuthentication<Peer>,
+    Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Policy::Identity>>,
 {
     if mechanisms.iter().any(|mechanism| mechanism.contains(&0)) {
         let _ = auth.into_transport();
@@ -1183,9 +1419,12 @@ where
         )));
     }
     let (initial, frame) = auth.request_sasl(mechanisms).map_err(AcceptError::Io)?;
+    let frame =
+        intercept_server_backend(handler, context, state, frame).map_err(AcceptError::Io)?;
     let initial = push_or_abort(initial, frame)?;
     let initial = flush_or_abort(initial).await?;
     let (initial, wire) = receive_frontend_or_abort(initial).await?;
+    let wire = handler.frontend(context, state, wire);
     let (mut sasl, initial_response) = match initial.receive_initial(wire) {
         Ok(response) => response,
         Err(rejected) => {
@@ -1214,9 +1453,12 @@ where
         match action {
             ServerAuthenticationAction::SaslContinue(challenge) => {
                 let (waiting, frame) = sasl.continue_with(challenge).map_err(AcceptError::Io)?;
+                let frame = intercept_server_backend(handler, context, state, frame)
+                    .map_err(AcceptError::Io)?;
                 let waiting = push_or_abort(waiting, frame)?;
                 let waiting = flush_or_abort(waiting).await?;
                 let (waiting, wire) = receive_frontend_or_abort(waiting).await?;
+                let wire = handler.frontend(context, state, wire);
                 let (next, response) = match waiting.receive_response(wire) {
                     Ok(response) => response,
                     Err(rejected) => {
@@ -1252,11 +1494,14 @@ where
     }
 }
 
-async fn authenticate_token<I, Policy, Peer, TlsError>(
+async fn authenticate_token<I, Policy, Peer, TlsError, State, Handler>(
     auth: Conn<Buffered<I, Frontend>, crate::server_auth::ServerAuth>,
     initial_action: ServerAuthenticationAction<Policy::Identity>,
     policy: &mut Policy,
     request: ServerAuthenticationRequest<'_, Peer>,
+    context: &ServerConnectionContext<Peer, Policy::Identity>,
+    state: &mut State,
+    handler: &mut Handler,
 ) -> Result<
     (
         Conn<Buffered<I, Frontend>, crate::server_auth::ServerAuth>,
@@ -1268,6 +1513,7 @@ async fn authenticate_token<I, Policy, Peer, TlsError>(
 where
     I: AsyncRead + AsyncWrite + Unpin,
     Policy: ServerAuthentication<Peer>,
+    Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Policy::Identity>>,
 {
     let (waiting, frame) = match initial_action {
         ServerAuthenticationAction::KerberosV5 => auth.request_kerberos_v5(),
@@ -1276,12 +1522,14 @@ where
         _ => unreachable!("matched initial token action"),
     }
     .map_err(AcceptError::Io)?;
+    let frame =
+        intercept_server_backend(handler, context, state, frame).map_err(AcceptError::Io)?;
     let waiting = push_or_abort(waiting, frame)?;
     let mut waiting = flush_or_abort(waiting).await?;
     loop {
         let received = receive_frontend_or_abort(waiting).await?;
         waiting = received.0;
-        let wire = received.1;
+        let wire = handler.frontend(context, state, received.1);
         let (decision, token) = match waiting.receive_response(wire) {
             Ok(response) => response,
             Err(rejected) => {
@@ -1306,6 +1554,8 @@ where
             }
             ServerAuthenticationAction::GssContinue(token) => {
                 let (next, frame) = decision.continue_gss(token).map_err(AcceptError::Io)?;
+                let frame = intercept_server_backend(handler, context, state, frame)
+                    .map_err(AcceptError::Io)?;
                 let next = push_or_abort(next, frame)?;
                 waiting = flush_or_abort(next).await?;
             }
@@ -1315,6 +1565,20 @@ where
             }
         }
     }
+}
+
+fn intercept_server_backend<State, Context, Handler>(
+    handler: &mut Handler,
+    context: &Context,
+    state: &mut State,
+    frame: crate::codec::Frame,
+) -> io::Result<crate::codec::Frame>
+where
+    Handler: crate::ServerMiddleware<State, Context>,
+{
+    handler
+        .backend(context, state, Backend::decode(frame)?)
+        .to_frame()
 }
 
 async fn flush_or_abort<I, D, Phase, TlsError, AuthenticationError>(

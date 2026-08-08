@@ -187,6 +187,9 @@ neutral composition harnesses and examples.
 - [x] Extend the server-role builder with disabled, optional, and required TLS,
   per-connection reloadable identities, protocol-orchestrated application
   authentication, and typed authenticated connection context.
+- [x] Make builder middleware operational across client and server connection
+  establishment, authentication, cancellation, generated responses, and live
+  protocol traffic with fresh handlers, progressive context, and caller state.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 

@@ -13,7 +13,24 @@ protocol! {
             internal: crate::codec::FrontendMessage,
             external: crate::codec::BackendMessage,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::codec::BackendMessage;
+                message: crate::middleware::TypedBackendMessage<external>;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::codec::FrontendMessage;
+                message: internal;
+            }
+        }
         Ready internal {
+            associate { inbound: crate::auth::Ready; outbound: crate::auth::Ready; }
             Query(query: bytes::Bytes) => Simple [Dirty] <= crate::codec::FrontendMessage::Query(_),
             BeginExtended(begin_extended) => Building,
             FunctionCall(function_call: crate::codec::FunctionCall) => FunctionCalling [Dirty] <= crate::codec::FrontendMessage::FunctionCall(_),
@@ -21,10 +38,12 @@ protocol! {
             Terminate(terminate) => Terminated <= crate::codec::FrontendMessage::Terminate,
         }
         FunctionCalling external {
+            associate { inbound: crate::session::FunctionCalling; outbound: none; }
             FunctionResponse(function_response: bytes::Bytes) => AwaitingReady <= crate::codec::BackendMessage::FunctionCallResponse(_),
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Simple external {
+            associate { inbound: crate::session::SimpleQuery; outbound: none; }
             Continue(continue_response: crate::codec::BackendMessage) => Simple <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::CommandComplete(_)
@@ -36,6 +55,7 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Building internal {
+            associate { inbound: crate::session::Building; outbound: crate::session::Building; }
             Parse(parse: crate::codec::Parse) => Building [Dirty] <= crate::codec::FrontendMessage::Parse(_),
             Describe(describe: crate::codec::Describe) => Building <= crate::codec::FrontendMessage::Describe(_),
             Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Bind(_),
@@ -44,6 +64,7 @@ protocol! {
             Sync(sync) => AwaitingReady <= crate::codec::FrontendMessage::Sync,
         }
         BoundBuilding internal {
+            associate { inbound: crate::session::BoundBuilding; outbound: crate::session::BoundBuilding; }
             Parse(parse: crate::codec::Parse) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Parse(_),
             Describe(describe: crate::codec::Describe) => BoundBuilding <= crate::codec::FrontendMessage::Describe(_),
             Bind(bind: crate::codec::Bind) => BoundBuilding [Dirty] <= crate::codec::FrontendMessage::Bind(_),
@@ -53,6 +74,7 @@ protocol! {
             Sync(sync) => AwaitingReady <= crate::codec::FrontendMessage::Sync,
         }
         AwaitingReady external {
+            associate { inbound: crate::session::AwaitingReady; outbound: none; }
             Continue(continue_response: crate::codec::BackendMessage) => AwaitingReady <= crate::codec::BackendMessage::ParseComplete
                 | crate::codec::BackendMessage::BindComplete
                 | crate::codec::BackendMessage::CloseComplete
@@ -67,17 +89,20 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyIn mixed {
+            associate { inbound: crate::session::CopyIn; outbound: crate::session::CopyIn; }
             internal CopyData(copy_data: bytes::Bytes) => CopyIn <= crate::codec::FrontendMessage::CopyData(_),
             internal CopyDone(copy_done) => AwaitingReady <= crate::codec::FrontendMessage::CopyDone,
             internal CopyFail(copy_fail: bytes::Bytes) => AwaitingReady <= crate::codec::FrontendMessage::CopyFail(_),
             external Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyOut external {
+            associate { inbound: crate::session::CopyOut; outbound: none; }
             CopyData(copy_data: bytes::Bytes) => CopyOut <= crate::codec::BackendMessage::CopyData(_),
             CopyDone(copy_done) => AwaitingReady <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBoth mixed {
+            associate { inbound: crate::session::CopyBoth; outbound: crate::session::CopyBoth; }
             internal SendCopyData(send_copy_data: bytes::Bytes) => CopyBoth <= crate::codec::FrontendMessage::CopyData(_),
             external ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBoth <= crate::codec::BackendMessage::CopyData(_),
             internal SendCopyDone(send_copy_done) => CopyBothClientDone <= crate::codec::FrontendMessage::CopyDone,
@@ -85,15 +110,18 @@ protocol! {
             external Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBothClientDone external {
+            associate { inbound: crate::session::CopyBothClientDone; outbound: none; }
             ReceiveCopyData(receive_copy_data: bytes::Bytes) => CopyBothClientDone <= crate::codec::BackendMessage::CopyData(_),
             ReceiveCopyDone(receive_copy_done) => AwaitingReady <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CopyBothServerDone internal {
+            associate { inbound: crate::session::CopyBothServerDone; outbound: crate::session::CopyBothServerDone; }
             SendCopyData(send_copy_data: bytes::Bytes) => CopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
             SendCopyDone(send_copy_done) => AwaitingReady <= crate::codec::FrontendMessage::CopyDone,
         }
         Draining external {
+            associate { inbound: crate::session::Draining; outbound: none; }
             Continue(continue_response: crate::codec::BackendMessage) => Draining <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::CommandComplete(_)
@@ -107,6 +135,7 @@ protocol! {
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Resetting external {
+            associate { inbound: crate::session::Resetting; outbound: none; }
             Continue(continue_reset: crate::codec::BackendMessage) => Resetting <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::EmptyQueryResponse,
@@ -114,6 +143,7 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ResetComplete external {
+            associate { inbound: crate::session::ResetComplete; outbound: none; }
             Continue(continue_reset: crate::codec::BackendMessage) => ResetComplete <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::CommandComplete(_)
@@ -122,7 +152,9 @@ protocol! {
             ReadyDirty(ready_dirty: crate::codec::TransactionStatus) => Ready [Dirty] <= crate::codec::BackendMessage::ReadyForQuery(crate::codec::TransactionStatus::InTransaction | crate::codec::TransactionStatus::FailedTransaction),
             Error(error: crate::codec::DiagnosticResponse) => Draining <= crate::codec::BackendMessage::ErrorResponse(_),
         }
-        Terminated external {}
+        Terminated external {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 
@@ -133,30 +165,55 @@ protocol! {
             internal: crate::pre_startup::PreStartupMessage,
             external: crate::pre_startup::EncryptionReply,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::pre_startup::EncryptionReply;
+                message: external;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::pre_startup::PreStartupMessage;
+                message: internal;
+            }
+        }
         PreStartup internal {
+            associate { inbound: none; outbound: crate::pre_startup::PreStartup; }
             SslRequest(ssl_request) => AwaitingSslReply <= crate::pre_startup::PreStartupMessage::SslRequest,
             GssRequest(gss_request) => AwaitingGssReply <= crate::pre_startup::PreStartupMessage::GssEncRequest,
             Cancel(cancel: (u32, bytes::Bytes)) => Terminated <= crate::pre_startup::PreStartupMessage::CancelRequest { .. },
             Startup(startup: crate::startup::StartupMessage) => Auth <= crate::pre_startup::PreStartupMessage::Startup(_),
         }
         AwaitingSslReply external {
+            associate { inbound: crate::pre_startup::AwaitingSslReply; outbound: none; }
             Accept(accept) => TlsHandshake <= crate::pre_startup::EncryptionReply::Accepted,
             Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
             LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         AwaitingGssReply external {
+            associate { inbound: crate::pre_startup::AwaitingGssReply; outbound: none; }
             Accept(accept) => GssHandshake <= crate::pre_startup::EncryptionReply::Accepted,
             Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
             LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         TlsHandshake internal {
+            associate { inbound: none; outbound: none; }
             HandshakeComplete(complete) => PreStartup,
         }
         GssHandshake internal {
+            associate { inbound: none; outbound: none; }
             HandshakeComplete(complete) => PreStartup,
         }
-        Auth external {}
-        Terminated external {}
+        Auth external {
+            associate { inbound: none; outbound: none; }
+        }
+        Terminated external {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 
@@ -167,30 +224,55 @@ protocol! {
             internal: crate::pre_startup::EncryptionReply,
             external: crate::pre_startup::PreStartupMessage,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::pre_startup::PreStartupMessage;
+                message: external;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::pre_startup::EncryptionReply;
+                message: internal;
+            }
+        }
         PreStartup external {
+            associate { inbound: crate::pre_startup::PreStartup; outbound: none; }
             SslRequest(ssl_request) => SslDecision <= crate::pre_startup::PreStartupMessage::SslRequest,
             GssRequest(gss_request) => GssDecision <= crate::pre_startup::PreStartupMessage::GssEncRequest,
             Cancel(cancel: (u32, bytes::Bytes)) => Terminated <= crate::pre_startup::PreStartupMessage::CancelRequest { .. },
             Startup(startup: crate::startup::StartupMessage) => Auth <= crate::pre_startup::PreStartupMessage::Startup(_),
         }
         SslDecision internal {
+            associate { inbound: none; outbound: crate::pre_startup::ServerSslDecision; }
             Accept(accept) => TlsHandshake <= crate::pre_startup::EncryptionReply::Accepted,
             Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
             LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         GssDecision internal {
+            associate { inbound: none; outbound: crate::pre_startup::ServerGssDecision; }
             Accept(accept) => GssHandshake <= crate::pre_startup::EncryptionReply::Accepted,
             Reject(reject) => PreStartup <= crate::pre_startup::EncryptionReply::Rejected,
             LegacyError(legacy_error) => Terminated <= crate::pre_startup::EncryptionReply::LegacyError,
         }
         TlsHandshake internal {
+            associate { inbound: none; outbound: none; }
             HandshakeComplete(complete) => PreStartup,
         }
         GssHandshake internal {
+            associate { inbound: none; outbound: none; }
             HandshakeComplete(complete) => PreStartup,
         }
-        Auth internal {}
-        Terminated internal {}
+        Auth internal {
+            associate { inbound: none; outbound: none; }
+        }
+        Terminated internal {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 
@@ -201,7 +283,24 @@ protocol! {
             internal: crate::codec::FrontendMessage,
             external: crate::codec::BackendMessage,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::codec::BackendMessage;
+                message: crate::middleware::TypedBackendMessage<external>;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::codec::FrontendMessage;
+                message: internal;
+            }
+        }
         Auth external {
+            associate { inbound: crate::auth::Auth; outbound: none; }
             Negotiate(negotiate: crate::codec::NegotiateProtocolVersion) => Auth <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
             Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
             Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
@@ -213,39 +312,52 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         PasswordResponse internal {
+            associate { inbound: none; outbound: crate::auth::PasswordResponse; }
             Password(password: bytes::Bytes) => AwaitingAuthOk <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenResponse internal {
+            associate { inbound: none; outbound: crate::auth::TokenResponse; }
             Response(response: bytes::Bytes) => TokenChallenge <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenChallenge external {
+            associate { inbound: crate::auth::TokenChallenge; outbound: none; }
             Continue(continue_token: bytes::Bytes) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::GssContinue(_)),
             Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslInitial internal {
+            associate { inbound: none; outbound: crate::auth::SaslInitial; }
             Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         Sasl external {
+            associate { inbound: crate::auth::Sasl; outbound: none; }
             Continue(continue_response: bytes::Bytes) => SaslChallenge <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslContinue(_)),
             Final(final_response: bytes::Bytes) => SaslFinal <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslFinal(_)),
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslChallenge internal {
+            associate { inbound: none; outbound: crate::auth::SaslChallenge; }
             Response(response: bytes::Bytes) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         SaslFinal internal {
+            associate { inbound: none; outbound: none; }
             Verified(verified) => AwaitingAuthOk,
         }
         AwaitingAuthOk external {
+            associate { inbound: crate::auth::AwaitingAuthOk; outbound: none; }
             Ok(ok) => AwaitingStartupReady <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Ok),
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         AwaitingStartupReady external {
+            associate { inbound: crate::auth::AwaitingStartupReady; outbound: none; }
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
-        Ready external {}
-        Terminated external {}
+        Ready external {
+            associate { inbound: none; outbound: none; }
+        }
+        Terminated external {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 
@@ -256,7 +368,24 @@ protocol! {
             internal: crate::codec::BackendMessage,
             external: crate::codec::FrontendMessage,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::codec::FrontendMessage;
+                message: external;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::codec::BackendMessage;
+                message: crate::middleware::TypedBackendMessage<internal>;
+            }
+        }
         Ready external {
+            associate { inbound: crate::auth::Ready; outbound: none; }
             Query(query: bytes::Bytes) => Simple [Dirty] <= crate::codec::FrontendMessage::Query(_),
             Parse(parse: crate::codec::Parse) => ParseResponse [Dirty] <= crate::codec::FrontendMessage::Parse(_),
             Bind(bind: crate::codec::Bind) => BindResponse [Dirty] <= crate::codec::FrontendMessage::Bind(_),
@@ -267,6 +396,7 @@ protocol! {
             Terminate(terminate) => Terminated <= crate::codec::FrontendMessage::Terminate,
         }
         Simple internal {
+            associate { inbound: none; outbound: crate::server_session::ServerSimpleQuery; }
             Continue(continue_response: crate::codec::BackendMessage) => Simple <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::CommandComplete(_)
@@ -278,9 +408,11 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => SimpleError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleError internal {
+            associate { inbound: none; outbound: crate::server_session::ServerSimpleError; }
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         Building external {
+            associate { inbound: crate::server_session::ServerBuilding; outbound: crate::server_session::ServerBuilding; }
             Parse(parse: crate::codec::Parse) => ParseResponse [Dirty] <= crate::codec::FrontendMessage::Parse(_),
             Bind(bind: crate::codec::Bind) => BindResponse [Dirty] <= crate::codec::FrontendMessage::Bind(_),
             Describe(describe: crate::codec::Describe) => DescribeResponse <= crate::codec::FrontendMessage::Describe(_),
@@ -290,19 +422,24 @@ protocol! {
             Sync(sync) => SyncResponse <= crate::codec::FrontendMessage::Sync,
         }
         ParseResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerParse; }
             Complete(complete) => Building <= crate::codec::BackendMessage::ParseComplete,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         BindResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerBind; }
             Complete(complete) => Building <= crate::codec::BackendMessage::BindComplete,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         DescribeResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerDescribe; }
+            ParameterDescription(parameter_description: Vec<u32>) => DescribeResponse <= crate::codec::BackendMessage::ParameterDescription(_),
             RowDescription(row_description: crate::codec::RowDescription) => Building <= crate::codec::BackendMessage::RowDescription(_),
             NoData(no_data) => Building <= crate::codec::BackendMessage::NoData,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExecuteResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerExecute; }
             Continue(continue_response: crate::codec::BackendMessage) => ExecuteResponse <= crate::codec::BackendMessage::RowDescription(_)
                 | crate::codec::BackendMessage::DataRow(_)
                 | crate::codec::BackendMessage::EmptyQueryResponse,
@@ -314,10 +451,12 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         CloseResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerClose; }
             Complete(complete) => Building <= crate::codec::BackendMessage::CloseComplete,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedError external {
+            associate { inbound: crate::server_session::ServerExtendedError; outbound: crate::server_session::ServerExtendedError; }
             Discard(discard) => ExtendedError <= crate::codec::FrontendMessage::Parse(_)
                 | crate::codec::FrontendMessage::Bind(_)
                 | crate::codec::FrontendMessage::Describe(_)
@@ -334,57 +473,81 @@ protocol! {
             Sync(sync) => SyncResponse <= crate::codec::FrontendMessage::Sync,
         }
         SyncResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerSync; }
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         FunctionResponse internal {
+            associate { inbound: none; outbound: crate::server_session::ServerFunctionCall; }
             Result(result: bytes::Bytes) => FunctionReady <= crate::codec::BackendMessage::FunctionCallResponse(_),
             Error(error: crate::codec::DiagnosticResponse) => FunctionReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         FunctionReady internal {
+            associate { inbound: none; outbound: [crate::server_session::ServerFunctionCallDone, crate::server_session::ServerFunctionCallError]; }
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         SimpleCopyIn external {
+            associate {
+                inbound: crate::server_session::ServerCopyIn<crate::server_session::CopySimple>;
+                outbound: crate::server_session::ServerCopyIn<crate::server_session::CopySimple>;
+            }
             Data(data: bytes::Bytes) => SimpleCopyIn <= crate::codec::FrontendMessage::CopyData(_),
             Done(done) => SimpleCopyInDone <= crate::codec::FrontendMessage::CopyDone,
             Fail(fail: bytes::Bytes) => SimpleCopyInFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         SimpleCopyInDone internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyInDone<crate::server_session::CopySimple>; }
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady <= crate::codec::BackendMessage::CommandComplete(_),
         }
         SimpleCopyInFailed internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyInFailed<crate::server_session::CopySimple>; }
             Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleCopyOut internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyOut<crate::server_session::CopySimple>; }
             Data(data: bytes::Bytes) => SimpleCopyOut <= crate::codec::BackendMessage::CopyData(_),
             Done(done) => SimpleCopyOutDone <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleCopyOutDone internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyOutDone<crate::server_session::CopySimple>; }
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady <= crate::codec::BackendMessage::CommandComplete(_),
         }
         SimpleCopyReady internal {
+            associate { inbound: none; outbound: none; }
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
         ExtendedCopyIn external {
+            associate {
+                inbound: crate::server_session::ServerCopyIn<crate::server_session::CopyExtended>;
+                outbound: crate::server_session::ServerCopyIn<crate::server_session::CopyExtended>;
+            }
             Data(data: bytes::Bytes) => ExtendedCopyIn <= crate::codec::FrontendMessage::CopyData(_),
             Done(done) => ExtendedCopyInDone <= crate::codec::FrontendMessage::CopyDone,
             Fail(fail: bytes::Bytes) => ExtendedCopyInFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         ExtendedCopyInDone internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyInDone<crate::server_session::CopyExtended>; }
             CommandComplete(command_complete: bytes::Bytes) => Building <= crate::codec::BackendMessage::CommandComplete(_),
         }
         ExtendedCopyInFailed internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyInFailed<crate::server_session::CopyExtended>; }
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyOut internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyOut<crate::server_session::CopyExtended>; }
             Data(data: bytes::Bytes) => ExtendedCopyOut <= crate::codec::BackendMessage::CopyData(_),
             Done(done) => ExtendedCopyOutDone <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyOutDone internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyOutDone<crate::server_session::CopyExtended>; }
             CommandComplete(command_complete: bytes::Bytes) => Building <= crate::codec::BackendMessage::CommandComplete(_),
         }
         SimpleCopyBoth mixed {
+            associate {
+                inbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen>;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothOpen>;
+            }
             internal SendData(send_data: bytes::Bytes) => SimpleCopyBoth <= crate::codec::BackendMessage::CopyData(_),
             external ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBoth <= crate::codec::FrontendMessage::CopyData(_),
             internal SendDone(send_done) => SimpleCopyBothServerDone <= crate::codec::BackendMessage::CopyDone,
@@ -393,22 +556,39 @@ protocol! {
             internal Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleCopyBothClientDone internal {
+            associate {
+                inbound: none;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothClientDone>;
+            }
             SendData(send_data: bytes::Bytes) => SimpleCopyBothClientDone <= crate::codec::BackendMessage::CopyData(_),
             SendDone(send_done) => SimpleCopyBothDone <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleCopyBothServerDone external {
+            associate {
+                inbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone>;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothServerDone>;
+            }
             ReceiveData(receive_data: bytes::Bytes) => SimpleCopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
             ReceiveDone(receive_done) => SimpleCopyBothDone <= crate::codec::FrontendMessage::CopyDone,
             Fail(fail: bytes::Bytes) => SimpleCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         SimpleCopyBothDone internal {
+            associate {
+                inbound: none;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopySimple, crate::server_session::BothDone>;
+            }
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady <= crate::codec::BackendMessage::CommandComplete(_),
         }
         SimpleCopyBothFailed internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyBothFailed<crate::server_session::CopySimple>; }
             Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyBoth mixed {
+            associate {
+                inbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen>;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothOpen>;
+            }
             internal SendData(send_data: bytes::Bytes) => ExtendedCopyBoth <= crate::codec::BackendMessage::CopyData(_),
             external ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBoth <= crate::codec::FrontendMessage::CopyData(_),
             internal SendDone(send_done) => ExtendedCopyBothServerDone <= crate::codec::BackendMessage::CopyDone,
@@ -417,22 +597,37 @@ protocol! {
             internal Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyBothClientDone internal {
+            associate {
+                inbound: none;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothClientDone>;
+            }
             SendData(send_data: bytes::Bytes) => ExtendedCopyBothClientDone <= crate::codec::BackendMessage::CopyData(_),
             SendDone(send_done) => ExtendedCopyBothDone <= crate::codec::BackendMessage::CopyDone,
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyBothServerDone external {
+            associate {
+                inbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone>;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothServerDone>;
+            }
             ReceiveData(receive_data: bytes::Bytes) => ExtendedCopyBothServerDone <= crate::codec::FrontendMessage::CopyData(_),
             ReceiveDone(receive_done) => ExtendedCopyBothDone <= crate::codec::FrontendMessage::CopyDone,
             Fail(fail: bytes::Bytes) => ExtendedCopyBothFailed <= crate::codec::FrontendMessage::CopyFail(_),
         }
         ExtendedCopyBothDone internal {
+            associate {
+                inbound: none;
+                outbound: crate::server_session::ServerCopyBoth<crate::server_session::CopyExtended, crate::server_session::BothDone>;
+            }
             CommandComplete(command_complete: bytes::Bytes) => Building <= crate::codec::BackendMessage::CommandComplete(_),
         }
         ExtendedCopyBothFailed internal {
+            associate { inbound: none; outbound: crate::server_session::ServerCopyBothFailed<crate::server_session::CopyExtended>; }
             Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
-        Terminated external {}
+        Terminated external {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 
@@ -443,11 +638,29 @@ protocol! {
             internal: crate::codec::BackendMessage,
             external: crate::codec::FrontendMessage,
         }
+        associations {
+            interface: crate::middleware::PhaseAssociation;
+            seal: crate::middleware::phase_association_seal::Sealed;
+            inbound {
+                direction: crate::middleware::Inbound;
+                role: crate::middleware::ClientRole;
+                wire: crate::codec::FrontendMessage;
+                message: external;
+            }
+            outbound {
+                direction: crate::middleware::Outbound;
+                role: crate::middleware::ServerRole;
+                wire: crate::codec::BackendMessage;
+                message: crate::middleware::TypedBackendMessage<internal>;
+            }
+        }
         Startup internal {
+            associate { inbound: none; outbound: crate::server_auth::ServerStartupRejected; }
             Begin(begin) => Auth,
-            Reject(reject) => Terminated,
+            Reject(reject: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         Auth internal {
+            associate { inbound: crate::server_auth::ServerAuth; outbound: crate::server_auth::ServerAuth; }
             Negotiate(negotiate: crate::codec::NegotiateProtocolVersion) => Auth <= crate::codec::BackendMessage::NegotiateProtocolVersion(_),
             Cleartext(cleartext) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::CleartextPassword),
             Md5(md5: [u8; 4]) => PasswordResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::Md5Password { .. }),
@@ -459,34 +672,45 @@ protocol! {
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         PasswordResponse external {
+            associate { inbound: crate::server_auth::ServerPassword; outbound: crate::server_auth::ServerPassword; }
             Response(response: bytes::Bytes) => Auth <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         SaslInitial external {
+            associate { inbound: crate::server_auth::ServerSaslInitial; outbound: crate::server_auth::ServerSaslInitial; }
             Initial(initial: crate::server_auth::SaslInitialResponse) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         Sasl internal {
+            associate { inbound: none; outbound: crate::server_auth::ServerSasl; }
             Continue(continue_response: bytes::Bytes) => SaslResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslContinue(_)),
             Final(final_response: bytes::Bytes) => Auth <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::SaslFinal(_)),
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SaslResponse external {
+            associate { inbound: crate::server_auth::ServerSaslResponse; outbound: crate::server_auth::ServerSaslResponse; }
             Response(response: bytes::Bytes) => Sasl <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenResponse external {
+            associate { inbound: crate::server_auth::ServerAuthResponse; outbound: crate::server_auth::ServerAuthResponse; }
             Response(response: bytes::Bytes) => TokenPolicy <= crate::codec::FrontendMessage::PasswordResponse(_),
         }
         TokenPolicy internal {
+            associate { inbound: none; outbound: crate::server_auth::ServerAuthPolicy; }
             Continue(continue_token: bytes::Bytes) => TokenResponse <= crate::codec::BackendMessage::Authentication(crate::codec::Authentication::GssContinue(_)),
             Verified(verified) => Auth,
             Error(error: crate::codec::DiagnosticResponse) => Terminated <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         StartupReady internal {
+            associate { inbound: crate::server_auth::ServerStartupReady; outbound: crate::server_auth::ServerStartupReady; }
             ParameterStatus(parameter_status: (bytes::Bytes, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::ParameterStatus { .. },
             BackendKeyData(backend_key_data: (u32, bytes::Bytes)) => StartupReady <= crate::codec::BackendMessage::BackendKeyData { .. },
             Ready(ready: crate::codec::TransactionStatus) => Ready <= crate::codec::BackendMessage::ReadyForQuery(_),
         }
-        Ready external {}
-        Terminated external {}
+        Ready external {
+            associate { inbound: none; outbound: none; }
+        }
+        Terminated external {
+            associate { inbound: none; outbound: none; }
+        }
     }
 }
 

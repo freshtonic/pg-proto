@@ -17,6 +17,8 @@ work using that feature is complete.
 - [x] Raw pre-startup framing for SSL, GSSENC, cancellation, and startup packets.
 - [x] Client and server TLS negotiation with transport-type replacement.
 - [x] `sslmode` policy and `tls-server-end-point` channel binding.
+- [x] Erased plain/client-TLS/server-TLS network streams plus configurable TCP
+  socket options and connection retry for production proxy integration.
 - [x] Buffered GSSENC request/reply sequencing, including historical `E` replies.
 - [x] Expose a production GSSAPI encrypted-transport integration boundary.
   The audited Proxy and pgcat revisions do not implement GSSENC, so selecting a
@@ -242,10 +244,116 @@ neutral composition harnesses and examples.
 - [x] Extend differential testing from canonical runtime events to codec-message
   projections and handwritten sessions.
 
+## Stateful message middleware
+
+- [x] Move the examples' protocol observation and rewriting mechanism into a
+  policy-neutral core `middleware` module.
+  - [x] Define direction-specific middleware for owned `FrontendMessage` and
+    `BackendMessage` values. Returning the input value is the no-op; middleware
+    may mutate it or replace it with another message of the same direction.
+  - [x] Pass caller-owned mutable state through every invocation, with accessors
+    to borrow or recover that state for statistics and other accumulated policy.
+  - [x] Provide closure adapters and an identity middleware so simple observers
+    do not require bespoke wrapper types.
+  - [x] Compose middleware in deterministic order, feeding each stage's output
+    into the next stage and stopping at the first error.
+- [x] Integrate middleware at state-aware protocol boundaries after decoding and
+  before projection, demultiplexing, or typestate advancement.
+  - [x] Validate every replacement with the generated state-aware message
+    projection for the current authentication, query, COPY, replication, or
+    error-recovery state.
+  - [x] Return rejected replacements without advancing either protocol session;
+    preserve the original APIs as no-middleware compatibility paths.
+  - [x] Apply backend middleware before `Demux` so asynchronous messages are
+    interceptable and rewritten parameter, cancellation, and transaction state
+    is recorded consistently.
+  - [x] Cover untagged pre-startup packets with a separate typed hook; keep raw
+    TLS/GSS decision bytes outside message middleware unless they gain a typed
+    protocol representation.
+- [x] Refactor the proxy examples onto the core abstraction.
+  - [x] Express protocol logging, SQL extraction, and row statistics as separate
+    composable middleware while retaining connection-local user state.
+  - [x] Update the rewriting example and crate documentation to demonstrate
+    no-op, mutation, replacement, state accumulation, and chaining.
+  - [x] Retain `Intermediary::inspect` only as a low-level escape hatch, clearly
+    distinguishing it from checked state-aware middleware.
+- [x] Verify the abstraction at unit, state-machine, and network boundaries.
+  - [x] Test no-op identity, mutation, replacement, state access, ordering,
+    composition, and error short-circuiting.
+  - [x] Reject messages illegal in authentication, extended-query recovery,
+    COPY, replication, and pre-startup states.
+  - [x] Confirm rewritten messages reach the peer and backend rewrites update
+    demultiplexer bookkeeping without changing wire order.
+
+The intended lifecycle is `decode -> middleware chain -> state validation ->
+projection/demux -> encode/forward`. Generic `Buffered::receive_wire` remains a
+codec boundary because it knows direction but not the current protocol state;
+checked middleware belongs on the state-aware session APIs above it.
+
 ## Optional future work
+
+### Compile-time-checked message middleware
+
+- [x] Generate a state-specific owned message enum for every role and protocol
+  phase, containing only the frontend, backend, pre-startup, authentication,
+  COPY, replication, error-recovery, and asynchronous messages legal there.
+- [x] Add a `TypedMiddleware<Role, Phase, UserState>` abstraction whose input and
+  output are the generated `Phase::Message` type. An illegal replacement should
+  be unrepresentable rather than rejected using a `RuntimeState` value.
+  - [x] Infer `Role` and `Phase` from the existing `Conn` typestate so callers
+    cannot supply a mismatched runtime state.
+  - [x] Retain caller-owned mutable state across async interception, async closure
+    adapters, identity middleware, deterministic awaited chaining, and typed
+    short-circuit errors.
+  - [x] Represent asynchronous backend traffic in each applicable phase without
+    advancing the connection state or disturbing wire order.
+- [x] Generate projection result enums whose variants carry the correctly typed
+  next `Conn`, because replacing one legal message variant with another may
+  select a different transition and therefore a different next phase.
+- [x] Keep wire-shape validation at runtime for constraints such as embedded NUL
+  bytes and frame-size overflow, unless message fields later adopt prevalidated
+  refinement types. Document this separately from compile-time protocol legality.
+- [x] Provide default pass-through adapters so policies can specialize only the
+  phases or message families they inspect without manually implementing every
+  generated state.
+- [x] Add compile-fail coverage proving illegal replacements and role/state
+  mismatches do not compile, plus runtime tests for reconstruction failures,
+  composition, state threading, asynchronous traffic, and next-state selection.
+- [x] Introduce the typed API alongside `intercept_checked`, migrate examples and
+  transport/session entry points, then consider deprecating the runtime-state API
+  only after the typed API covers every generated grammar phase.
+  The phase-aware rewriting example uses the typed API. The transparent network
+  loggers deliberately retain direction-wide middleware because they erase the
+  current phase while concurrently forwarding both directions; `WireAdapter`
+  is the migration path when such a policy is attached to a typed `Conn`.
+  `intercept_checked` remains supported for these runtime-selected sessions.
 
 - [x] Add optional operation-bounded intermediary pipeline orchestration with
   payload-free ordering records, local responses, COPY, and Sync error recovery.
+- [x] Add async typed middleware dispatch to the runtime bounded pipeline so
+  frontend phases and pending backend operation responses constrain replacements
+  at compile time without duplicating the runtime ledger.
+  - [x] Track the generated backend response subphase independently for every
+    queued operation, including COPY and multi-message response sequences.
+  - [x] Compose typed pipeline policies in deterministic order with shared state.
+  - [x] Index locally generated middleware by the sending `Conn` typestate and
+    include non-advancing asynchronous server messages.
+  - [x] Split server SASL and token authentication into distinct policy and
+    client-response typestates so replies cannot precede required input.
+  - [x] Consolidate frontend and backend phase catalogues so hook declaration,
+    chaining, wire adaptation, and runtime dispatch share one local source.
+  - [x] Split frontend and backend pipeline middleware with independent errors,
+    and prepare admission/response decisions before policy so the ledger commits
+    each validated decision once.
+  - [x] Make each generated grammar the authoritative source for inbound and
+    outbound connection-typestate associations, exposed through one sealed
+    direction-indexed trait without a manual middleware catalogue.
+  - [x] Deepen the pipeline ledger interface by removing overlapping projection,
+    action-remapping, and session-item entry points, leaving one frontend
+    admission seam and one backend response seam.
+  - [x] Consolidate inbound receipt, middleware interception, phase legality,
+    and reconstruction validation across backend, frontend, pre-startup, and
+    encryption-reply traffic without combining receipt with projection.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

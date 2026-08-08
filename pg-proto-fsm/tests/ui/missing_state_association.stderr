@@ -1,0 +1,5 @@
+error: state requires an `associate` block
+  --> tests/ui/missing_state_association.rs:19:9
+   |
+19 |         Open internal {}
+   |         ^^^^

@@ -1,0 +1,5 @@
+error: duplicate connection type in association lane
+  --> tests/ui/duplicate_connection_type.rs:22:46
+   |
+22 |                 inbound: [crate::Connection, crate::Connection];
+   |                                              ^^^^^^^^^^^^^^^^^

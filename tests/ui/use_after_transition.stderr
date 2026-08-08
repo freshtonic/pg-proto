@@ -1,15 +1,17 @@
 error[E0382]: use of moved value: `ready`
- --> tests/ui/use_after_transition.rs:5:18
-  |
-3 | fn illegal<S, C>(ready: Conn<S, Ready, C>) {
-  |                  ----- move occurs because `ready` has type `Conn<S, pg_proto::auth::Ready, C>`, which does not implement the `Copy` trait
-4 |     let _building = ready.begin_extended();
-  |                           ---------------- `ready` moved due to this method call
-5 |     let _again = ready.begin_extended();
-  |                  ^^^^^ value used here after move
-  |
-note: `session::<impl Conn<S, pg_proto::auth::Ready, C>>::begin_extended` takes ownership of the receiver `self`, which moves `ready`
- --> src/session.rs
-  |
-  |     pub fn begin_extended(self) -> Conn<S, Building, C> {
-  |                           ^^^^
+  --> tests/ui/use_after_transition.rs:13:29
+   |
+11 | fn illegal<S, C>(ready: Conn<S, Ready, C>) {
+   |                  ----- move occurs because `ready` has type `Conn<S, pg_proto::auth::Ready, C>`, which does not implement the `Copy` trait
+12 |     let _building = transition(ready);
+   |                                ----- value moved here
+13 |     let _again = transition(ready);
+   |                             ^^^^^ value used here after move
+   |
+note: consider changing this parameter type in function `transition` to borrow instead if owning the value isn't necessary
+  --> tests/ui/use_after_transition.rs:7:28
+   |
+ 7 | fn transition<S, C>(ready: Conn<S, Ready, C>) -> Conn<S, Building, C> {
+   |    ----------              ^^^^^^^^^^^^^^^^^ this parameter takes ownership of the value
+   |    |
+   |    in this function

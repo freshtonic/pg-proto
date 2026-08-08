@@ -5,6 +5,10 @@ direction-parameterised codecs. It prints every inbound simple-query `Query`
 and extended-query `Parse` statement, then prints the number of `DataRow`
 messages in each result when `CommandComplete` arrives.
 
+Protocol logging, SQL extraction, and row counting are independent core
+middleware stages chained in deterministic order. Their shared per-connection
+state carries the connection number and accumulated row count.
+
 The example forwards authentication and all tagged protocol messages without
 changing them. It terminates client TLS using pg-proto's typed pre-startup
 transport transition, then inspects and forwards the decrypted messages. The

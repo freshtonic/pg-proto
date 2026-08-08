@@ -1,0 +1,7 @@
+error[E0599]: no method named `finish` found for struct `Conn<(), ServerSaslResponse>` in the current scope
+ --> tests/ui/server_sasl_reply_before_client_response.rs:5:18
+  |
+5 |     let _ = conn.finish(Bytes::new());
+  |                  ^^^^^^ method not found in `Conn<(), ServerSaslResponse>`
+  |
+  = note: the method was found for `Conn<S, ServerSasl, C>`

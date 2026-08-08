@@ -182,7 +182,7 @@ where
     initial.push_frame(offer)?;
     initial.flush().await?;
     let response = initial.receive_frontend_wire().await?;
-    let (mut sasl, initial_response) = initial.receive_initial(response).map_err(|rejected| {
+    let (sasl, initial_response) = initial.receive_initial(response).map_err(|rejected| {
         let (conn, _) = *rejected;
         let _transport = conn.into_transport();
         std::io::Error::other("invalid SASL initial response")
@@ -198,17 +198,18 @@ where
         .as_deref()
         .ok_or_else(|| std::io::Error::other("client omitted SCRAM initial data"))?;
     let (exchange, challenge) = verifier.start(&initial_response.mechanism, client_first)?;
-    let (next, frame) = sasl.continue_with(challenge)?;
-    sasl = next;
-    sasl.push_frame(frame)?;
-    sasl.flush().await?;
+    let (mut sasl_response, frame) = sasl.continue_with(challenge)?;
+    sasl_response.push_frame(frame)?;
+    sasl_response.flush().await?;
 
-    let response = sasl.receive_frontend_wire().await?;
-    let (sasl, client_final) = sasl.receive_response(response).map_err(|rejected| {
-        let (conn, _) = *rejected;
-        let _transport = conn.into_transport();
-        std::io::Error::other("invalid SASL response")
-    })?;
+    let response = sasl_response.receive_frontend_wire().await?;
+    let (sasl, client_final) = sasl_response
+        .receive_response(response)
+        .map_err(|rejected| {
+            let (conn, _) = *rejected;
+            let _transport = conn.into_transport();
+            std::io::Error::other("invalid SASL response")
+        })?;
     let server_final = exchange.finish(&client_final)?;
     let (auth, final_frame) = sasl.finish(server_final)?;
     let (mut startup_ready, ok_frame) = auth.authentication_ok()?;

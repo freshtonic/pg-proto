@@ -1,8 +1,9 @@
-use std::{error::Error, io, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, error::Error, io, net::SocketAddr, sync::Arc};
 
 use pg_proto::{
     Conn,
     codec::{Backend, BackendMessage, Frontend, FrontendMessage},
+    middleware::{MessageMiddleware, MessageMiddlewareExt as _, Middleware, Then},
     pre_startup::{PreStartup, PreStartupMessage, PreStartupOffer, Startup},
     tls::ServerTls,
     transport::Buffered,
@@ -39,7 +40,161 @@ pub enum Observation {
     },
 }
 
-pub type Observer = Arc<dyn Fn(Observation) + Send + Sync>;
+pub type Reporter = Arc<dyn Fn(Observation) + Send + Sync>;
+
+struct ExampleState {
+    connection: u64,
+    rows: usize,
+    reporter: Reporter,
+    pre_startup_direction: &'static str,
+}
+
+#[derive(Clone)]
+struct ProtocolLogger(Reporter);
+
+#[derive(Clone)]
+struct SqlLogger(Reporter);
+
+#[derive(Clone)]
+struct RowStatistics(Reporter);
+
+type ExampleHandler = Then<Then<ProtocolLogger, SqlLogger>, RowStatistics>;
+type ExampleMiddleware = Middleware<ExampleState, ExampleHandler>;
+
+fn middleware(connection: u64, reporter: Reporter) -> ExampleMiddleware {
+    Middleware::new(
+        ExampleState {
+            connection,
+            rows: 0,
+            reporter: Arc::clone(&reporter),
+            pre_startup_direction: "client -> server",
+        },
+        ProtocolLogger(Arc::clone(&reporter))
+            .then(SqlLogger(Arc::clone(&reporter)))
+            .then(RowStatistics(reporter)),
+    )
+}
+
+macro_rules! pass_through {
+    ($handler:ty, $message:ty) => {
+        impl MessageMiddleware<$message, ExampleState> for $handler {
+            type Error = Infallible;
+
+            async fn intercept(
+                &mut self,
+                _state: &mut ExampleState,
+                message: $message,
+            ) -> Result<$message, Self::Error> {
+                Ok(message)
+            }
+        }
+    };
+}
+
+impl MessageMiddleware<PreStartupMessage, ExampleState> for ProtocolLogger {
+    type Error = Infallible;
+
+    async fn intercept(
+        &mut self,
+        state: &mut ExampleState,
+        message: PreStartupMessage,
+    ) -> Result<PreStartupMessage, Self::Error> {
+        (self.0)(Observation::Protocol {
+            connection: state.connection,
+            direction: state.pre_startup_direction,
+            message: format!("{message:?}"),
+        });
+        Ok(message)
+    }
+}
+
+impl MessageMiddleware<FrontendMessage, ExampleState> for ProtocolLogger {
+    type Error = Infallible;
+
+    async fn intercept(
+        &mut self,
+        state: &mut ExampleState,
+        message: FrontendMessage,
+    ) -> Result<FrontendMessage, Self::Error> {
+        (self.0)(Observation::Protocol {
+            connection: state.connection,
+            direction: "client -> server",
+            message: format!("{message:?}"),
+        });
+        Ok(message)
+    }
+}
+
+impl MessageMiddleware<BackendMessage, ExampleState> for ProtocolLogger {
+    type Error = Infallible;
+
+    async fn intercept(
+        &mut self,
+        state: &mut ExampleState,
+        message: BackendMessage,
+    ) -> Result<BackendMessage, Self::Error> {
+        (self.0)(Observation::Protocol {
+            connection: state.connection,
+            direction: "server -> client",
+            message: format!("{message:?}"),
+        });
+        Ok(message)
+    }
+}
+
+pass_through!(SqlLogger, PreStartupMessage);
+pass_through!(SqlLogger, BackendMessage);
+
+impl MessageMiddleware<FrontendMessage, ExampleState> for SqlLogger {
+    type Error = Infallible;
+
+    async fn intercept(
+        &mut self,
+        state: &mut ExampleState,
+        message: FrontendMessage,
+    ) -> Result<FrontendMessage, Self::Error> {
+        let statement = match &message {
+            FrontendMessage::Query(sql) => Some(sql),
+            FrontendMessage::Parse(parse) => Some(&parse.query),
+            _ => None,
+        };
+        if let Some(statement) = statement {
+            (self.0)(Observation::Sql {
+                connection: state.connection,
+                statement: String::from_utf8_lossy(statement).into_owned(),
+            });
+        }
+        Ok(message)
+    }
+}
+
+pass_through!(RowStatistics, PreStartupMessage);
+pass_through!(RowStatistics, FrontendMessage);
+
+impl MessageMiddleware<BackendMessage, ExampleState> for RowStatistics {
+    type Error = Infallible;
+
+    async fn intercept(
+        &mut self,
+        state: &mut ExampleState,
+        message: BackendMessage,
+    ) -> Result<BackendMessage, Self::Error> {
+        match &message {
+            BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
+            BackendMessage::CommandComplete(tag) => {
+                (self.0)(Observation::RowCount {
+                    connection: state.connection,
+                    rows: state.rows,
+                    command: String::from_utf8_lossy(tag).into_owned(),
+                });
+                state.rows = 0;
+            }
+            BackendMessage::ErrorResponse(_) => state.rows = 0,
+            _ => {}
+        }
+        Ok(message)
+    }
+}
 
 #[derive(Clone)]
 pub struct ExampleTlsIdentity {
@@ -125,18 +280,17 @@ pub async fn serve(
     listener: TcpListener,
     upstream: SocketAddr,
     tls: ExampleTlsIdentity,
-    observer: Observer,
+    reporter: Reporter,
 ) -> io::Result<()> {
     let mut next_connection = 1_u64;
     loop {
         let (client, _) = listener.accept().await?;
         let connection = next_connection;
         next_connection = next_connection.wrapping_add(1);
-        let observer = Arc::clone(&observer);
+        let middleware = middleware(connection, Arc::clone(&reporter));
         let tls = tls.clone();
         tokio::spawn(async move {
-            if let Err(error) = proxy_connection(client, upstream, tls, connection, observer).await
-            {
+            if let Err(error) = proxy_connection(client, upstream, tls, middleware).await {
                 eprintln!("connection {connection}: {error}");
             }
         });
@@ -147,34 +301,31 @@ async fn proxy_connection(
     client: TcpStream,
     upstream: SocketAddr,
     tls: ExampleTlsIdentity,
-    connection: u64,
-    observer: Observer,
+    mut middleware: ExampleMiddleware,
 ) -> io::Result<()> {
     let mut pre_startup = Conn::new(Buffered::new_frontend(client));
     loop {
-        let message = pre_startup.receive_pre_startup_wire().await?;
-        observer(Observation::Protocol {
-            connection,
-            direction: "client -> server",
-            message: format!("{message:?}"),
-        });
+        let message = middleware
+            .intercept(pre_startup.receive_pre_startup_wire().await?)
+            .await
+            .expect("example middleware is infallible");
         match pre_startup.offer_pre_startup(message) {
             PreStartupOffer::Ssl(decision) => {
                 let mut handshake = decision.approve_ssl();
                 handshake.flush().await?;
-                observer(Observation::Protocol {
-                    connection,
+                (middleware.state().reporter)(Observation::Protocol {
+                    connection: middleware.state().connection,
                     direction: "server -> client",
                     message: "SslAccepted".to_owned(),
                 });
                 let encrypted = handshake.accept_tls(tls.config, tls.certificate).await?;
-                return encrypted_startup(encrypted, upstream, connection, observer).await;
+                return encrypted_startup(encrypted, upstream, middleware).await;
             }
             PreStartupOffer::Gss(decision) => {
                 pre_startup = decision.decline_gss();
                 pre_startup.flush().await?;
-                observer(Observation::Protocol {
-                    connection,
+                (middleware.state().reporter)(Observation::Protocol {
+                    connection: middleware.state().connection,
                     direction: "server -> client",
                     message: "GssEncryptionRejected".to_owned(),
                 });
@@ -195,7 +346,7 @@ async fn proxy_connection(
                 .await;
             }
             PreStartupOffer::Startup { conn, message } => {
-                return begin_forwarding(conn, message, upstream, connection, observer).await;
+                return begin_forwarding(conn, message, upstream, middleware).await;
             }
         }
     }
@@ -204,18 +355,16 @@ async fn proxy_connection(
 async fn encrypted_startup(
     mut pre_startup: Conn<Buffered<ServerTls<TcpStream>, Frontend>, PreStartup>,
     upstream: SocketAddr,
-    connection: u64,
-    observer: Observer,
+    mut middleware: ExampleMiddleware,
 ) -> io::Result<()> {
-    let message = pre_startup.receive_pre_startup_wire().await?;
-    observer(Observation::Protocol {
-        connection,
-        direction: "client -> server (TLS plaintext)",
-        message: format!("{message:?}"),
-    });
+    middleware.state_mut().pre_startup_direction = "client -> server (TLS plaintext)";
+    let message = middleware
+        .intercept(pre_startup.receive_pre_startup_wire().await?)
+        .await
+        .expect("example middleware is infallible");
     match pre_startup.offer_pre_startup(message) {
         PreStartupOffer::Startup { conn, message } => {
-            begin_forwarding(conn, message, upstream, connection, observer).await
+            begin_forwarding(conn, message, upstream, middleware).await
         }
         PreStartupOffer::Cancel {
             conn,
@@ -257,8 +406,7 @@ async fn begin_forwarding<S>(
     conn: Conn<Buffered<S, Frontend>, Startup>,
     message: pg_proto::startup::StartupMessage,
     upstream: SocketAddr,
-    connection: u64,
-    observer: Observer,
+    middleware: ExampleMiddleware,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -268,42 +416,26 @@ where
     server
         .write_all(&PreStartupMessage::Startup(message).to_packet()?)
         .await?;
-    forward_tagged(client, server, connection, observer).await
+    forward_tagged(client, server, middleware).await
 }
 
 async fn forward_tagged<S>(
     client: S,
     server: TcpStream,
-    connection: u64,
-    observer: Observer,
+    mut middleware: ExampleMiddleware,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut downstream: Buffered<_, Frontend> = Buffered::new_frontend(client);
     let mut upstream: Buffered<_, Backend> = Buffered::new(server);
-    let mut rows = 0_usize;
-
     loop {
         tokio::select! {
             frontend = downstream.receive_wire() => {
-                let frontend = frontend?;
-                observer(Observation::Protocol {
-                    connection,
-                    direction: "client -> server",
-                    message: format!("{frontend:?}"),
-                });
-                match &frontend {
-                    FrontendMessage::Query(sql) => observer(Observation::Sql {
-                        connection,
-                        statement: String::from_utf8_lossy(sql).into_owned(),
-                    }),
-                    FrontendMessage::Parse(parse) => observer(Observation::Sql {
-                        connection,
-                        statement: String::from_utf8_lossy(&parse.query).into_owned(),
-                    }),
-                    _ => {}
-                }
+                let frontend = middleware
+                    .intercept(frontend?)
+                    .await
+                    .expect("example middleware is infallible");
                 let terminate = matches!(frontend, FrontendMessage::Terminate);
                 upstream.push(frontend.to_frame()?)?;
                 upstream.flush().await?;
@@ -312,25 +444,10 @@ where
                 }
             }
             backend = upstream.receive_wire() => {
-                let backend = backend?;
-                observer(Observation::Protocol {
-                    connection,
-                    direction: "server -> client",
-                    message: format!("{backend:?}"),
-                });
-                match &backend {
-                    BackendMessage::DataRow(_) => rows = rows.saturating_add(1),
-                    BackendMessage::CommandComplete(tag) => {
-                        observer(Observation::RowCount {
-                            connection,
-                            rows,
-                            command: String::from_utf8_lossy(tag).into_owned(),
-                        });
-                        rows = 0;
-                    }
-                    BackendMessage::ErrorResponse(_) => rows = 0,
-                    _ => {}
-                }
+                let backend = middleware
+                    .intercept(backend?)
+                    .await
+                    .expect("example middleware is infallible");
                 downstream.push(backend.to_frame()?)?;
                 downstream.flush().await?;
             }

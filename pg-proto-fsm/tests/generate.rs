@@ -2,6 +2,25 @@
 
 use pg_proto_fsm::protocol;
 
+enum Inbound {}
+enum Outbound {}
+enum TestRole {}
+
+trait PhaseAssociation<Direction, Role, Wire>:
+    private::PhaseAssociationSeal<Direction, Role, Wire>
+{
+    type ProtocolPhase;
+    type Message;
+}
+
+mod private {
+    pub trait PhaseAssociationSeal<Direction, Role, Wire> {}
+}
+
+struct Wrapped<Message>(Message);
+struct ConnectionA;
+struct ConnectionB;
+
 enum TestInternal {
     Query(u8),
     Parse,
@@ -31,6 +50,75 @@ protocol! {
             Sync(sync) => Ready <= crate::TestInternal::Sync,
         }
     }
+}
+
+protocol! {
+    mod associated {
+        initial Open;
+        messages {
+            internal: crate::TestInternal,
+            external: crate::TestExternal,
+        }
+        associations {
+            interface: crate::PhaseAssociation;
+            seal: crate::private::PhaseAssociationSeal;
+            inbound {
+                direction: crate::Inbound;
+                role: crate::TestRole;
+                wire: crate::TestExternal;
+                message: crate::Wrapped<external>;
+            }
+            outbound {
+                direction: crate::Outbound;
+                role: crate::TestRole;
+                wire: crate::TestInternal;
+                message: internal;
+            }
+        }
+        Open internal {
+            associate {
+                inbound: [crate::ConnectionA, crate::ConnectionB];
+                outbound: crate::ConnectionA;
+            }
+            Query(query: u8) => Closed <= crate::TestInternal::Query(_),
+        }
+        Closed external {
+            associate {
+                inbound: none;
+                outbound: none;
+            }
+        }
+    }
+}
+
+#[test]
+fn grammar_owns_connection_phase_associations() {
+    fn assert_inbound<Connection>()
+    where
+        Connection: PhaseAssociation<
+                Inbound,
+                TestRole,
+                TestExternal,
+                ProtocolPhase = associated::Open,
+                Message = Wrapped<associated::OpenExternalMessage>,
+            >,
+    {
+    }
+    fn assert_outbound<Connection>()
+    where
+        Connection: PhaseAssociation<
+                Outbound,
+                TestRole,
+                TestInternal,
+                ProtocolPhase = associated::Open,
+                Message = associated::OpenInternalMessage,
+            >,
+    {
+    }
+
+    assert_inbound::<ConnectionA>();
+    assert_inbound::<ConnectionB>();
+    assert_outbound::<ConnectionA>();
 }
 
 protocol! {
@@ -304,4 +392,59 @@ fn grammar_emits_directional_state_aware_message_projection() {
         query::project_external(query::RuntimeState::Simple, &TestExternal::Complete),
         Some(query::Event::Complete)
     );
+}
+
+#[test]
+fn generated_phase_messages_only_admit_legal_wire_variants() {
+    let Ok(typed) = query::ReadyInternalMessage::try_from(TestInternal::Query(42)) else {
+        panic!("query is legal while ready");
+    };
+    assert_eq!(typed.event(), query::Event::Query);
+    assert!(matches!(typed.as_wire(), TestInternal::Query(42)));
+    assert!(matches!(typed.into_wire(), TestInternal::Query(42)));
+
+    let illegal = query::ReadyInternalMessage::try_from(TestInternal::Sync);
+    assert!(matches!(illegal, Err(TestInternal::Sync)));
+
+    let Ok(replacement) = query::ReadyInternalMessage::try_from(TestInternal::Parse) else {
+        panic!("parse is legal while ready");
+    };
+    assert_eq!(replacement.event(), query::Event::Parse);
+}
+
+#[test]
+fn generated_message_projection_selects_the_typed_next_connection() {
+    struct Clean;
+
+    let ready: query::TypedSession<Vec<u8>, query::Ready, Clean> =
+        query::TypedSession::with_transport(vec![1]);
+    let Ok(message) = query::ReadyInternalMessage::try_from(TestInternal::Query(7)) else {
+        panic!("query is legal while ready");
+    };
+
+    match ready.project_internal_message(message) {
+        query::ReadyInternalProjection::Query {
+            connection,
+            message,
+            ..
+        } => {
+            let simple: query::Conn<Vec<u8>, query::Simple, query::Dirty> = connection;
+            assert!(matches!(message.as_wire(), TestInternal::Query(7)));
+            assert_eq!(simple.complete().into_transport(), [1]);
+        }
+        _ => panic!("query replacement must select the simple-query transition"),
+    }
+
+    let ready: query::TypedSession<Vec<u8>, query::Ready, Clean> =
+        query::TypedSession::with_transport(vec![2]);
+    let Ok(message) = query::ReadyInternalMessage::try_from(TestInternal::Parse) else {
+        panic!("parse is legal while ready");
+    };
+    match ready.project_internal_message(message) {
+        query::ReadyInternalProjection::Parse { connection, .. } => {
+            let building: query::TypedSession<Vec<u8>, query::Building, Clean> = connection;
+            assert_eq!(building.into_transport(), [2]);
+        }
+        _ => panic!("parse replacement must select the building transition"),
+    }
 }

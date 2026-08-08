@@ -1,0 +1,5 @@
+error: association message type requires exactly one bare `internal` or `external` placeholder
+  --> tests/ui/missing_message_placeholder.rs:16:99
+   |
+16 |             inbound { direction: crate::Direction; role: crate::Role; wire: crate::Wire; message: crate::Wire; }
+   |                                                                                                   ^^^^^^^^^^^

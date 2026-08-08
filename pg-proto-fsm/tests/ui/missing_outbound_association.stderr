@@ -1,0 +1,5 @@
+error: unexpected end of input, expected `outbound`
+  --> tests/ui/missing_outbound_association.rs:20:40
+   |
+20 |             associate { inbound: none; }
+   |                                        ^

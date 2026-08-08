@@ -1475,7 +1475,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pg-proto"
-version = "0.2.1"
+version = "0.5.0"
 dependencies = [
  "base64 0.23.0",
  "bytes",
@@ -1486,6 +1486,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "sha2",
+ "socket2",
  "stringprep",
  "subtle",
  "testcontainers-modules",
@@ -1500,12 +1501,13 @@ dependencies = [
 
 [[package]]
 name = "pg-proto-fsm"
-version = "0.2.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "railroad",
  "syn 3.0.3",
+ "trybuild",
 ]
 
 [[package]]

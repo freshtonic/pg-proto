@@ -1,0 +1,5 @@
+error: unexpected end of input, association list cannot be empty; use `none`
+  --> tests/ui/empty_association_list.rs:20:35
+   |
+20 |             associate { inbound: []; outbound: none; }
+   |                                   ^

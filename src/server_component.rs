@@ -801,7 +801,7 @@ pub struct ServerConnection<
 }
 
 #[derive(Debug)]
-pub(crate) struct ServerConnectionCore<Transport, Peer, Identity, Handler> {
+pub struct ServerConnectionCore<Transport, Peer, Identity, Handler> {
     conn: ServerConnectionInner<Transport>,
     startup: StartupMessage,
     handler: Handler,
@@ -846,33 +846,6 @@ impl<Transport, State, Peer, Identity, Handler>
         State,
     ) {
         (self.core, self.state)
-    }
-
-    /// Receives through middleware using facade-owned state.
-    pub(crate) async fn receive_wire_external(
-        &mut self,
-        state: &mut State,
-    ) -> io::Result<FrontendMessage>
-    where
-        Transport: AsyncRead + AsyncWrite + Unpin,
-        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
-    {
-        let message = self.core.receive_wire_raw().await?;
-        Ok(self.core.intercept_frontend(state, message))
-    }
-
-    /// Sends through middleware using facade-owned state.
-    pub(crate) async fn send_wire_external(
-        &mut self,
-        state: &mut State,
-        message: BackendMessage,
-    ) -> io::Result<()>
-    where
-        Transport: AsyncRead + AsyncWrite + Unpin,
-        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
-    {
-        let message = self.core.intercept_backend(state, message);
-        self.core.send_wire_raw(message).await
     }
 
     /// Returns the accepted startup parameters.

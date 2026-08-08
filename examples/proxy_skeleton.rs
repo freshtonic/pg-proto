@@ -9,7 +9,7 @@ use pg_proto::{
     codec::FrontendMessage,
     demux::CancelKey,
     grammar::{backend, frontend},
-    intermediary::Intermediary,
+    intermediary::SessionPair,
 };
 
 #[derive(Default)]
@@ -32,7 +32,7 @@ fn main() {
     // typed sessions here. Neither side's phase or policy constrains the other.
     let downstream = backend::RuntimeFsm::new();
     let upstream = frontend::RuntimeFsm::new();
-    let mut sessions = Intermediary::new(downstream, upstream);
+    let mut sessions = SessionPair::new(downstream, upstream);
 
     let message = FrontendMessage::Query(Bytes::from_static(b"select public_report()"));
     let inspected = sessions

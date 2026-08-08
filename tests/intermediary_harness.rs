@@ -6,7 +6,7 @@ use pg_proto::{
     codec::{FrontendMessage, Parse},
     demux::CancelKey,
     grammar::{authentication, backend, frontend, server_authentication},
-    intermediary::Intermediary,
+    intermediary::SessionPair,
     replication::{BackendReplication, FrontendReplication},
 };
 
@@ -14,7 +14,7 @@ use pg_proto::{
 fn neutral_intermediary_capabilities_compose_without_application_policy() {
     // Client-facing and upstream authentication deliberately choose different
     // mechanisms and advance independently.
-    let mut authentication = Intermediary::new(
+    let mut authentication = SessionPair::new(
         server_authentication::RuntimeFsm::new(),
         authentication::RuntimeFsm::new(),
     );
@@ -53,7 +53,7 @@ fn neutral_intermediary_capabilities_compose_without_application_policy() {
     parse.to_frame().unwrap();
 
     // COPY BOTH carries typed replication payloads in each direction.
-    let mut copy = Intermediary::new(backend::RuntimeFsm::new(), frontend::RuntimeFsm::new());
+    let mut copy = SessionPair::new(backend::RuntimeFsm::new(), frontend::RuntimeFsm::new());
     for event in [
         backend::Event::Query,
         backend::Event::CopyBoth,

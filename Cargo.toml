@@ -48,7 +48,7 @@ sha2 = "0.11.0"
 stringprep = "0.1.5"
 subtle = "2.6.1"
 socket2 = "0.6.1"
-tokio = { version = "1.53.1", features = ["io-util", "net", "time"] }
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "time"] }
 tokio-rustls = "0.26.4"
 tokio-util = { version = "0.7.19", features = ["codec"] }
 x509-parser = "0.18.1"

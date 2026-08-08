@@ -6,7 +6,7 @@ use bytes::Bytes;
 use pg_proto::{
     codec::{BackendMessage, DiagnosticResponse, FrontendMessage, Parse, TransactionStatus},
     grammar::backend,
-    intermediary::Intermediary,
+    intermediary::SessionPair,
     middleware::Middleware,
     pipeline::{
         BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
@@ -45,7 +45,7 @@ impl BackendPipelineMiddleware<usize> for Statistics {
 
 #[tokio::main]
 async fn main() {
-    let mut proxy = Intermediary::new((), ())
+    let mut proxy = SessionPair::new((), ())
         .with_pipeline(BoundedPipeline::new(16).expect("non-zero pipeline limit"));
     let mut middleware = Middleware::new(0, Statistics);
 

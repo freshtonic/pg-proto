@@ -190,6 +190,10 @@ neutral composition harnesses and examples.
 - [x] Make builder middleware operational across client and server connection
   establishment, authentication, cancellation, generated responses, and live
   protocol traffic with fresh handlers, progressive context, and caller state.
+- [x] Compose the complete server and client roles into a routed intermediary
+  with pre-authentication startup resolution, optional authenticated routing,
+  one shared state value, ordered boundary middleware, legal forwarding,
+  explicit cancellation posture, and bounded backpressure.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 

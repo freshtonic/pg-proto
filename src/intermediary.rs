@@ -17,13 +17,13 @@ pub type IntermediaryTransition<Current, Next, Output, Error> =
 /// bounded pipelining without changing either session type.
 #[must_use = "dropping an intermediary abandons both PostgreSQL sessions"]
 #[derive(Debug)]
-pub struct Intermediary<Downstream, Upstream, Policy = NoPipeline> {
+pub struct SessionPair<Downstream, Upstream, Policy = NoPipeline> {
     downstream: Downstream,
     upstream: Upstream,
     pipeline: Pipeline<Policy>,
 }
 
-impl<Downstream, Upstream> Intermediary<Downstream, Upstream, NoPipeline> {
+impl<Downstream, Upstream> SessionPair<Downstream, Upstream, NoPipeline> {
     /// Pairs two independently established protocol sessions.
     pub fn new(downstream: Downstream, upstream: Upstream) -> Self {
         Self {
@@ -34,7 +34,7 @@ impl<Downstream, Upstream> Intermediary<Downstream, Upstream, NoPipeline> {
     }
 }
 
-impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upstream, Policy> {
+impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstream, Policy> {
     /// Replaces the pipeline policy while no pipeline operations are outstanding.
     ///
     /// # Panics
@@ -43,7 +43,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
     pub fn with_pipeline<Next: PipelinePolicy>(
         self,
         policy: Next,
-    ) -> Intermediary<Downstream, Upstream, Next> {
+    ) -> SessionPair<Downstream, Upstream, Next> {
         let Self {
             downstream,
             upstream,
@@ -53,7 +53,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
             pipeline.is_empty(),
             "pipeline policy cannot change with outstanding operations"
         );
-        Intermediary {
+        SessionPair {
             downstream,
             upstream,
             pipeline: Pipeline::new(policy),
@@ -103,7 +103,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
     pub fn transition_downstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Downstream) -> Result<(Next, Output), (Downstream, Error)>,
-    ) -> IntermediaryTransition<Self, Intermediary<Next, Upstream, Policy>, Output, Error> {
+    ) -> IntermediaryTransition<Self, SessionPair<Next, Upstream, Policy>, Output, Error> {
         let Self {
             downstream,
             upstream,
@@ -111,7 +111,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
         } = self;
         match transition(downstream) {
             Ok((downstream, output)) => Ok((
-                Intermediary {
+                SessionPair {
                     downstream,
                     upstream,
                     pipeline,
@@ -139,7 +139,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
     pub fn transition_upstream<Next, Output, Error>(
         self,
         transition: impl FnOnce(Upstream) -> Result<(Next, Output), (Upstream, Error)>,
-    ) -> IntermediaryTransition<Self, Intermediary<Downstream, Next, Policy>, Output, Error> {
+    ) -> IntermediaryTransition<Self, SessionPair<Downstream, Next, Policy>, Output, Error> {
         let Self {
             downstream,
             upstream,
@@ -147,7 +147,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
         } = self;
         match transition(upstream) {
             Ok((upstream, output)) => Ok((
-                Intermediary {
+                SessionPair {
                     downstream,
                     upstream,
                     pipeline,
@@ -205,7 +205,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> Intermediary<Downstream, Upst
 mod tests {
     use bytes::Bytes;
 
-    use super::Intermediary;
+    use super::SessionPair;
     use crate::{
         Conn, Pristine,
         auth::{Auth, AuthOffer, SaslInitial, TlsServerEndPoint},
@@ -241,7 +241,7 @@ mod tests {
             backend::TypedSession::with_transport(());
         let upstream: frontend::TypedSession<(), frontend::Ready, Clean> =
             frontend::TypedSession::with_transport(());
-        let intermediary = Intermediary::new(downstream, upstream);
+        let intermediary = SessionPair::new(downstream, upstream);
 
         let (intermediary, downstream_query) = intermediary
             .transition_downstream(|session| {
@@ -288,10 +288,10 @@ mod tests {
         assert_eq!(cleartext_request.tag, b'R');
         assert_eq!(mechanisms, [Bytes::from_static(b"SCRAM-SHA-256-PLUS")]);
 
-        let intermediary: Intermediary<
+        let intermediary: SessionPair<
             Conn<ClientFacingTls, ServerPassword, Pristine>,
             Conn<UpstreamTls, SaslInitial, Pristine>,
-        > = Intermediary::new(downstream, upstream);
+        > = SessionPair::new(downstream, upstream);
         assert_eq!(
             intermediary.downstream().tls_server_end_point(),
             b"client-facing-certificate"
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn rejected_transition_reconstructs_both_original_sides() {
-        let intermediary = Intermediary::new(vec![1_u8], vec![2_u8]);
+        let intermediary = SessionPair::new(vec![1_u8], vec![2_u8]);
         let (intermediary, error) = intermediary
             .transition_downstream(|downstream| Err::<(Vec<u8>, ()), _>((downstream, "reject")))
             .unwrap_err();
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn asynchronous_policy_can_modify_or_replace_a_typed_message() {
-        let mut intermediary = Intermediary::new(Vec::<Bytes>::new(), Vec::<Bytes>::new());
+        let mut intermediary = SessionPair::new(Vec::<Bytes>::new(), Vec::<Bytes>::new());
         let rewritten = intermediary
             .inspect_async(
                 Bytes::from_static(b"select secret"),

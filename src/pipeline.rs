@@ -587,7 +587,12 @@ impl<P: PipelinePolicy> Pipeline<P> {
         &self,
         message: &FrontendMessage,
     ) -> Result<PreparedFrontend, FrontendProjectionError> {
-        if self.operations.len() == self.policy.operation_limit() {
+        if self.operations.len() == self.policy.operation_limit()
+            && !matches!(
+                self.request_state,
+                RequestState::CopyIn | RequestState::CopyBoth
+            )
+        {
             return Err(FrontendProjectionError::Capacity(Box::new(message.clone())));
         }
         if project_frontend(self.request_state, message).is_none() {

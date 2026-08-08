@@ -12,6 +12,7 @@ pub mod erased;
 pub mod grammar;
 pub mod integrations;
 pub mod intermediary;
+mod intermediary_component;
 pub mod middleware;
 pub mod net;
 pub mod pipeline;
@@ -37,6 +38,14 @@ pub use client_component::{
     ProtocolLimitError, ProtocolLimits, QueryError, ReloadableClientTls, StartupParameterError,
     StartupParameters, TrustClientAuthentication,
 };
+pub use intermediary_component::{
+    AllowAuthenticatedRoute, AuthenticatedRouteContext, AuthenticatedRoutePolicy,
+    CancellationPolicy, ForwardError, ForwardedMessage, IdentityIntermediaryMiddleware,
+    InitialServerContext, Intermediary, IntermediaryAcceptError, IntermediaryBuildError,
+    IntermediaryBuilder, IntermediaryConnection, IntermediaryContexts, IntermediaryMiddleware,
+    IntermediaryMiddlewareFactory, StartupResolutionError, StartupRouteResolver,
+};
+pub use pipeline::{BoundedPipeline, NoPipeline};
 pub use pre_startup::SslMode;
 pub use runtime_middleware::{
     ClientMiddleware, IdentityMiddleware, MiddlewareChain, MiddlewareFactory, ServerMiddleware,

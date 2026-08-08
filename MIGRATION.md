@@ -141,6 +141,16 @@ distinct cancellation branch. TLS-provider and authentication-policy failures
 retain their concrete error types in `AcceptError`, and successful connection
 context exposes immutable negotiated-TLS and typed-identity facts.
 
+## Intermediary composition
+
+The old low-level `intermediary::Intermediary::new(downstream, upstream)` pair
+is now named `intermediary::SessionPair::new(...)`. New proxy code should use
+the root `Intermediary::builder()` facade, supplying complete `Server` and
+`Client` components, a `StartupRouteResolver`, an explicit cancellation policy,
+and optional authenticated routing and boundary-middleware factories. The
+operational connection owns one caller state and provides `forward_next()` for
+duplex asynchronous, extended, COPY, and replication traffic.
+
 ## Errors, COPY, and pooling
 
 After `ErrorResponse`, keep the returned `Draining` connection and consume only

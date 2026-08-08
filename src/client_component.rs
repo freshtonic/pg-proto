@@ -1032,7 +1032,7 @@ pub struct ClientConnection<
     state: State,
 }
 
-pub(crate) struct ClientConnectionCore<Transport, Cleanliness, Evidence, Handler> {
+pub struct ClientConnectionCore<Transport, Cleanliness, Evidence, Handler> {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
     handler: Handler,
     context: ClientConnectionContext<Evidence>,
@@ -1052,42 +1052,6 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
     #[must_use]
     pub const fn state(&self) -> &State {
         &self.state
-    }
-
-    pub(crate) fn into_core_and_state(
-        self,
-    ) -> (
-        ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>,
-        State,
-    ) {
-        (self.core, self.state)
-    }
-
-    /// Receives through middleware using facade-owned state.
-    pub(crate) async fn receive_wire_external(
-        &mut self,
-        state: &mut State,
-    ) -> io::Result<crate::codec::BackendMessage>
-    where
-        Transport: AsyncRead + Unpin,
-        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
-    {
-        let message = self.core.receive_wire_raw().await?;
-        Ok(self.core.intercept_backend(state, message))
-    }
-
-    /// Sends through middleware using facade-owned state.
-    pub(crate) async fn send_wire_external(
-        &mut self,
-        state: &mut State,
-        message: FrontendMessage,
-    ) -> io::Result<()>
-    where
-        Transport: AsyncWrite + Unpin,
-        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
-    {
-        let message = self.core.intercept_frontend(state, message);
-        self.core.send_wire_raw(message).await
     }
 
     /// Receives one backend message at the operational inspection boundary.
@@ -1685,6 +1649,7 @@ where
     /// Returns an error for invalid query text, I/O or framing failure, an
     /// illegal peer transition, COPY entry, or a backend error response.
     ///
+    #[allow(clippy::too_many_lines)]
     pub async fn simple_query(
         self,
         query: &[u8],

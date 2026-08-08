@@ -25,7 +25,8 @@ pub type ServerAuthenticationFuture<'a, Identity, Error> =
     Pin<Box<dyn Future<Output = Result<Identity, Error>> + 'a>>;
 
 /// Async startup routing hook used by the intermediary facade.
-pub(crate) trait StartupResolver<State, Peer, Identity> {
+#[allow(clippy::type_complexity)]
+pub trait StartupResolver<State, Peer, Identity> {
     type Route;
     type Error;
 
@@ -39,7 +40,7 @@ pub(crate) trait StartupResolver<State, Peer, Identity> {
 
 /// Failure from either server establishment or application startup routing.
 #[derive(Debug)]
-pub(crate) enum RoutedAcceptError<TlsError, AuthenticationError, RouteError> {
+pub enum RoutedAcceptError<TlsError, AuthenticationError, RouteError> {
     Accept(AcceptError<TlsError, AuthenticationError>),
     Route(RouteError),
 }
@@ -795,9 +796,14 @@ pub struct ServerConnection<
     Identity = TrustIdentity,
     Handler = IdentityServerHandler,
 > {
+    core: ServerConnectionCore<Transport, Peer, Identity, Handler>,
+    state: State,
+}
+
+#[derive(Debug)]
+pub(crate) struct ServerConnectionCore<Transport, Peer, Identity, Handler> {
     conn: ServerConnectionInner<Transport>,
     startup: StartupMessage,
-    state: Option<State>,
     handler: Handler,
     context: ServerConnectionContext<Peer, Identity>,
 }
@@ -823,45 +829,26 @@ impl<Transport, State, Peer, Identity, Handler>
     /// Returns immutable connection facts.
     #[must_use]
     pub const fn context(&self) -> &ServerConnectionContext<Peer, Identity> {
-        &self.context
+        &self.core.context
     }
 
     /// Returns the caller-owned connection state.
+    ///
     #[must_use]
     pub const fn state(&self) -> &State {
-        match &self.state {
-            Some(state) => state,
-            None => panic!("connection state is temporarily owned by its facade"),
-        }
+        &self.state
     }
 
-    /// Transfers state ownership to an intermediary facade.
-    pub(crate) fn take_state(&mut self) -> State {
-        self.state
-            .take()
-            .expect("connection state is already owned by its facade")
-    }
-
-    pub(crate) fn teardown_external(
+    pub(crate) fn into_core_and_state(
         self,
     ) -> (
-        AcceptedServerTransport<Transport>,
-        Handler,
-        ServerConnectionContext<Peer, Identity>,
+        ServerConnectionCore<Transport, Peer, Identity, Handler>,
+        State,
     ) {
-        debug_assert!(self.state.is_none());
-        let transport = match self.conn {
-            ServerConnectionInner::Plaintext(conn) => {
-                AcceptedServerTransport::Plaintext(conn.into_transport().into_inner())
-            }
-            ServerConnectionInner::Tls(conn) => {
-                AcceptedServerTransport::Tls(Box::new(conn.into_transport().into_inner()))
-            }
-        };
-        (transport, self.handler, self.context)
+        (self.core, self.state)
     }
 
-    /// Receives through middleware using state temporarily owned by a facade.
+    /// Receives through middleware using facade-owned state.
     pub(crate) async fn receive_wire_external(
         &mut self,
         state: &mut State,
@@ -870,14 +857,11 @@ impl<Transport, State, Peer, Identity, Handler>
         Transport: AsyncRead + AsyncWrite + Unpin,
         Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
     {
-        let message = match &mut self.conn {
-            ServerConnectionInner::Plaintext(conn) => conn.receive_frontend_wire().await,
-            ServerConnectionInner::Tls(conn) => conn.receive_frontend_wire().await,
-        }?;
-        Ok(self.handler.frontend(&self.context, state, message))
+        let message = self.core.receive_wire_raw().await?;
+        Ok(self.core.intercept_frontend(state, message))
     }
 
-    /// Sends through middleware using state temporarily owned by a facade.
+    /// Sends through middleware using facade-owned state.
     pub(crate) async fn send_wire_external(
         &mut self,
         state: &mut State,
@@ -887,24 +871,14 @@ impl<Transport, State, Peer, Identity, Handler>
         Transport: AsyncRead + AsyncWrite + Unpin,
         Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
     {
-        let message = self.handler.backend(&self.context, state, message);
-        let frame = message.to_frame()?;
-        match &mut self.conn {
-            ServerConnectionInner::Plaintext(conn) => {
-                conn.push_frame(frame)?;
-                conn.flush().await
-            }
-            ServerConnectionInner::Tls(conn) => {
-                conn.push_frame(frame)?;
-                conn.flush().await
-            }
-        }
+        let message = self.core.intercept_backend(state, message);
+        self.core.send_wire_raw(message).await
     }
 
     /// Returns the accepted startup parameters.
     #[must_use]
     pub const fn startup(&self) -> &StartupMessage {
-        &self.startup
+        &self.core.startup
     }
 
     /// Receives one operational frontend wire message without advancing the
@@ -916,22 +890,14 @@ impl<Transport, State, Peer, Identity, Handler>
     /// # Errors
     ///
     /// Returns a transport, decoding, or configured frame-limit error.
+    ///
     pub async fn receive_wire(&mut self) -> io::Result<FrontendMessage>
     where
         Transport: AsyncRead + AsyncWrite + Unpin,
         Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
     {
-        let message = match &mut self.conn {
-            ServerConnectionInner::Plaintext(conn) => conn.receive_frontend_wire().await,
-            ServerConnectionInner::Tls(conn) => conn.receive_frontend_wire().await,
-        }?;
-        Ok(self.handler.frontend(
-            &self.context,
-            self.state
-                .as_mut()
-                .expect("connection state is temporarily owned by its facade"),
-            message,
-        ))
+        let message = self.core.receive_wire_raw().await?;
+        Ok(self.core.intercept_frontend(&mut self.state, message))
     }
 
     /// Sends one operational backend message after middleware interception.
@@ -941,18 +907,73 @@ impl<Transport, State, Peer, Identity, Handler>
     /// # Errors
     ///
     /// Returns an encoding, configured frame-limit, or transport error.
+    ///
     pub async fn send_wire(&mut self, message: BackendMessage) -> io::Result<()>
     where
         Transport: AsyncRead + AsyncWrite + Unpin,
         Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
     {
-        let message = self.handler.backend(
-            &self.context,
-            self.state
-                .as_mut()
-                .expect("connection state is temporarily owned by its facade"),
-            message,
-        );
+        let message = self.core.intercept_backend(&mut self.state, message);
+        self.core.send_wire_raw(message).await
+    }
+
+    /// Deliberately ends typed ownership and recovers every connection part.
+    ///
+    #[must_use]
+    pub fn teardown(
+        self,
+    ) -> (
+        AcceptedServerTransport<Transport>,
+        State,
+        Handler,
+        ServerConnectionContext<Peer, Identity>,
+    ) {
+        let (transport, handler, context) = self.core.into_parts();
+        (transport, self.state, handler, context)
+    }
+}
+
+impl<Transport, Peer, Identity, Handler> ServerConnectionCore<Transport, Peer, Identity, Handler> {
+    pub(crate) const fn context(&self) -> &ServerConnectionContext<Peer, Identity> {
+        &self.context
+    }
+
+    pub(crate) async fn receive_wire_raw(&mut self) -> io::Result<FrontendMessage>
+    where
+        Transport: AsyncRead + AsyncWrite + Unpin,
+    {
+        match &mut self.conn {
+            ServerConnectionInner::Plaintext(conn) => conn.receive_frontend_wire().await,
+            ServerConnectionInner::Tls(conn) => conn.receive_frontend_wire().await,
+        }
+    }
+
+    pub(crate) fn intercept_frontend<State>(
+        &mut self,
+        state: &mut State,
+        message: FrontendMessage,
+    ) -> FrontendMessage
+    where
+        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
+    {
+        self.handler.frontend(&self.context, state, message)
+    }
+
+    pub(crate) fn intercept_backend<State>(
+        &mut self,
+        state: &mut State,
+        message: BackendMessage,
+    ) -> BackendMessage
+    where
+        Handler: crate::ServerMiddleware<State, ServerConnectionContext<Peer, Identity>>,
+    {
+        self.handler.backend(&self.context, state, message)
+    }
+
+    pub(crate) async fn send_wire_raw(&mut self, message: BackendMessage) -> io::Result<()>
+    where
+        Transport: AsyncRead + AsyncWrite + Unpin,
+    {
         let frame = message.to_frame()?;
         match &mut self.conn {
             ServerConnectionInner::Plaintext(conn) => {
@@ -966,13 +987,10 @@ impl<Transport, State, Peer, Identity, Handler>
         }
     }
 
-    /// Deliberately ends typed ownership and recovers every connection part.
-    #[must_use]
-    pub fn teardown(
+    pub(crate) fn into_parts(
         self,
     ) -> (
         AcceptedServerTransport<Transport>,
-        State,
         Handler,
         ServerConnectionContext<Peer, Identity>,
     ) {
@@ -984,13 +1002,7 @@ impl<Transport, State, Peer, Identity, Handler>
                 AcceptedServerTransport::Tls(Box::new(conn.into_transport().into_inner()))
             }
         };
-        (
-            transport,
-            self.state
-                .expect("connection state is temporarily owned by its facade"),
-            self.handler,
-            self.context,
-        )
+        (transport, self.handler, self.context)
     }
 }
 
@@ -1279,11 +1291,13 @@ where
                     .await?;
                     return Ok((
                         ServerAccept::Session(ServerConnection {
-                            conn: ServerConnectionInner::Plaintext(Box::new(ready)),
-                            startup: message,
-                            state: Some(state),
-                            handler,
-                            context,
+                            core: ServerConnectionCore {
+                                conn: ServerConnectionInner::Plaintext(Box::new(ready)),
+                                startup: message,
+                                handler,
+                                context,
+                            },
+                            state,
                         }),
                         Some(route),
                     ));
@@ -1420,11 +1434,13 @@ where
                 .await?;
                 return Ok((
                     ServerAccept::Session(ServerConnection {
-                        conn: ServerConnectionInner::Tls(Box::new(ready)),
-                        startup: message,
-                        state: Some(state),
-                        handler,
-                        context,
+                        core: ServerConnectionCore {
+                            conn: ServerConnectionInner::Tls(Box::new(ready)),
+                            startup: message,
+                            handler,
+                            context,
+                        },
+                        state,
                     }),
                     Some(route),
                 ));

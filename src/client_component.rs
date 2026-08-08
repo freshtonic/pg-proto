@@ -1028,8 +1028,12 @@ pub struct ClientConnection<
     Evidence = (),
     Handler = IdentityHandler,
 > {
+    core: ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>,
+    state: State,
+}
+
+pub(crate) struct ClientConnectionCore<Transport, Cleanliness, Evidence, Handler> {
     connection: Conn<Buffered<Transport, Backend>, Ready, Cleanliness>,
-    state: Option<State>,
     handler: Handler,
     context: ClientConnectionContext<Evidence>,
 }
@@ -1040,37 +1044,26 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
     /// Returns immutable connection facts.
     #[must_use]
     pub const fn context(&self) -> &ClientConnectionContext<Evidence> {
-        &self.context
+        &self.core.context
     }
 
     /// Returns the caller-owned connection state.
+    ///
     #[must_use]
     pub const fn state(&self) -> &State {
-        match &self.state {
-            Some(state) => state,
-            None => panic!("connection state is temporarily owned by its facade"),
-        }
+        &self.state
     }
 
-    /// Transfers state ownership to an intermediary facade.
-    pub(crate) fn take_state(&mut self) -> State {
-        self.state
-            .take()
-            .expect("connection state is already owned by its facade")
-    }
-
-    pub(crate) fn into_parts_external(
+    pub(crate) fn into_core_and_state(
         self,
-    ) -> (Transport, Handler, ClientConnectionContext<Evidence>) {
-        debug_assert!(self.state.is_none());
-        (
-            self.connection.into_transport().into_inner(),
-            self.handler,
-            self.context,
-        )
+    ) -> (
+        ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>,
+        State,
+    ) {
+        (self.core, self.state)
     }
 
-    /// Receives through middleware using state temporarily owned by a facade.
+    /// Receives through middleware using facade-owned state.
     pub(crate) async fn receive_wire_external(
         &mut self,
         state: &mut State,
@@ -1079,11 +1072,11 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
         Transport: AsyncRead + Unpin,
         Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
     {
-        let message = self.connection.receive_backend_wire().await?;
-        Ok(self.handler.backend(&self.context, state, message))
+        let message = self.core.receive_wire_raw().await?;
+        Ok(self.core.intercept_backend(state, message))
     }
 
-    /// Sends through middleware using state temporarily owned by a facade.
+    /// Sends through middleware using facade-owned state.
     pub(crate) async fn send_wire_external(
         &mut self,
         state: &mut State,
@@ -1093,9 +1086,8 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
         Transport: AsyncWrite + Unpin,
         Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
     {
-        let message = self.handler.frontend(&self.context, state, message);
-        self.connection.push_frame(message.to_frame()?)?;
-        self.connection.flush().await
+        let message = self.core.intercept_frontend(state, message);
+        self.core.send_wire_raw(message).await
     }
 
     /// Receives one backend message at the operational inspection boundary.
@@ -1103,25 +1095,74 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
     /// # Errors
     ///
     /// Returns a transport, decoding, or configured frame-limit error.
+    ///
     pub async fn receive_wire(&mut self) -> io::Result<crate::codec::BackendMessage>
     where
         Transport: AsyncRead + Unpin,
         Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
     {
-        let message = self.connection.receive_backend_wire().await?;
-        let state = self
-            .state
-            .as_mut()
-            .expect("connection state is temporarily owned by its facade");
-        Ok(self.handler.backend(&self.context, state, message))
+        let message = self.core.receive_wire_raw().await?;
+        Ok(self.core.intercept_backend(&mut self.state, message))
     }
 
     /// Recovers every owned connection part deliberately.
+    ///
     pub fn into_parts(self) -> (Transport, State, Handler, ClientConnectionContext<Evidence>) {
         (
+            self.core.connection.into_transport().into_inner(),
+            self.state,
+            self.core.handler,
+            self.core.context,
+        )
+    }
+}
+
+impl<Transport, Cleanliness, Evidence, Handler>
+    ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>
+{
+    pub(crate) const fn context(&self) -> &ClientConnectionContext<Evidence> {
+        &self.context
+    }
+    pub(crate) async fn receive_wire_raw(&mut self) -> io::Result<crate::codec::BackendMessage>
+    where
+        Transport: AsyncRead + Unpin,
+    {
+        self.connection.receive_backend_wire().await
+    }
+
+    pub(crate) fn intercept_backend<State>(
+        &mut self,
+        state: &mut State,
+        message: crate::codec::BackendMessage,
+    ) -> crate::codec::BackendMessage
+    where
+        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
+    {
+        self.handler.backend(&self.context, state, message)
+    }
+
+    pub(crate) fn intercept_frontend<State>(
+        &mut self,
+        state: &mut State,
+        message: FrontendMessage,
+    ) -> FrontendMessage
+    where
+        Handler: crate::ClientMiddleware<State, ClientConnectionContext<Evidence>>,
+    {
+        self.handler.frontend(&self.context, state, message)
+    }
+
+    pub(crate) async fn send_wire_raw(&mut self, message: FrontendMessage) -> io::Result<()>
+    where
+        Transport: AsyncWrite + Unpin,
+    {
+        self.connection.push_frame(message.to_frame()?)?;
+        self.connection.flush().await
+    }
+
+    pub(crate) fn into_parts(self) -> (Transport, Handler, ClientConnectionContext<Evidence>) {
+        (
             self.connection.into_transport().into_inner(),
-            self.state
-                .expect("connection state is temporarily owned by its facade"),
             self.handler,
             self.context,
         )
@@ -1643,6 +1684,7 @@ where
     ///
     /// Returns an error for invalid query text, I/O or framing failure, an
     /// illegal peer transition, COPY entry, or a backend error response.
+    ///
     pub async fn simple_query(
         self,
         query: &[u8],
@@ -1654,12 +1696,14 @@ where
         QueryError,
     > {
         let Self {
-            connection,
-            state,
-            mut handler,
-            context,
+            core:
+                ClientConnectionCore {
+                    connection,
+                    mut handler,
+                    context,
+                },
+            mut state,
         } = self;
-        let mut state = state.expect("connection state is temporarily owned by its facade");
         let outbound = handler.frontend(
             &context,
             &mut state,
@@ -1710,10 +1754,12 @@ where
                 )) => {
                     return Ok((
                         ClientConnection {
-                            connection,
-                            state: Some(state),
-                            handler,
-                            context,
+                            core: ClientConnectionCore {
+                                connection,
+                                handler,
+                                context,
+                            },
+                            state,
                         },
                         messages,
                     ));
@@ -1793,6 +1839,34 @@ where
         <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler:
             crate::ClientMiddleware<State, ClientConnectionContext<Authentication::Evidence>>,
     {
+        let core = self.connect_core(target, overrides, &mut state).await?;
+        Ok(ClientConnection { core, state })
+    }
+
+    /// Establishes a client role while borrowing facade-owned state, ensuring
+    /// the state remains recoverable on every connection failure.
+    pub(crate) async fn connect_core<State>(
+        &self,
+        target: ConnectTarget,
+        overrides: StartupParameters,
+        state: &mut State,
+    ) -> Result<
+        ClientConnectionCore<
+            ClientTransport<Transport>,
+            Pristine,
+            Authentication::Evidence,
+            <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler,
+        >,
+        ConnectError<
+            Error,
+            ClientTlsError<<Tls::Provider as ClientTlsProvider>::Error>,
+            ClientAuthenticationError<Authentication::Error>,
+        >,
+    >
+    where
+        <Middleware as crate::MiddlewareFactory<ClientInitialContext>>::Handler:
+            crate::ClientMiddleware<State, ClientConnectionContext<Authentication::Evidence>>,
+    {
         let mut handler = self.middleware.create(&ClientInitialContext {
             target: target.clone(),
         });
@@ -1822,13 +1896,13 @@ where
                 provider,
                 &target,
                 &mut context,
-                &mut state,
+                state,
                 &mut handler,
             )
             .await
             .map_err(ConnectError::Tls)?,
         };
-        let first_startup = handler.startup(&context, &mut state, startup.clone());
+        let first_startup = handler.startup(&context, state, startup.clone());
         let first = establish_client_session(
             transport,
             &first_startup,
@@ -1836,7 +1910,7 @@ where
             &self.authentication,
             self.limits.max_frame_len,
             &context,
-            &mut state,
+            state,
             &mut handler,
         )
         .await;
@@ -1860,12 +1934,12 @@ where
                 provider,
                 &target,
                 &mut context,
-                &mut state,
+                state,
                 &mut handler,
             )
             .await
             .map_err(ConnectError::Tls)?;
-            let retry_startup = handler.startup(&context, &mut state, startup);
+            let retry_startup = handler.startup(&context, state, startup);
             establish_client_session(
                 transport,
                 &retry_startup,
@@ -1873,7 +1947,7 @@ where
                 &self.authentication,
                 self.limits.max_frame_len,
                 &context,
-                &mut state,
+                state,
                 &mut handler,
             )
             .await
@@ -1881,9 +1955,8 @@ where
         } else {
             first.map_err(map_session_error)?
         };
-        Ok(ClientConnection {
+        Ok(ClientConnectionCore {
             connection: ready,
-            state: Some(state),
             handler,
             context: {
                 context.identity = Some(identity);

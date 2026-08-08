@@ -6,7 +6,6 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use railroad::{
     Choice, Diagram, Empty, End, Node, NonTerminal, Repeat, Sequence, Start, Stylesheet, Terminal,
-    VerticalGrid,
     svg::{self, HDir},
 };
 use syn::{
@@ -894,7 +893,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             }
         }
     });
-    let svg = railroad_svg(&states);
+    let svg = railroad_svg(&initial, &states);
     let diagram_name = format_ident!("{}_RAILROAD_SVG", module.to_string().to_uppercase());
     let module_doc = format!(
         "Generated `{module}` protocol grammar.\n\n\
@@ -1421,46 +1420,19 @@ impl VisitMut for MessagePlaceholderReplacer {
     }
 }
 
-fn railroad_svg(states: &[State]) -> String {
+fn railroad_svg(initial: &Ident, states: &[State]) -> String {
     const SVG_GUTTER: i64 = 12;
 
-    let productions = states
+    let states_by_name = states
         .iter()
-        .map(|state| {
-            let self_loops = state
-                .transitions
-                .iter()
-                .filter(|transition| transition.target == state.name)
-                .map(|transition| transition_node(transition, state.choice))
-                .collect::<Vec<_>>();
-            let exits = state
-                .transitions
-                .iter()
-                .filter(|transition| transition.target != state.name)
-                .map(|transition| {
-                    Box::new(Sequence::new(vec![
-                        transition_node(transition, state.choice),
-                        Box::new(NonTerminal::new(transition.target.to_string())),
-                    ])) as Box<dyn Node>
-                })
-                .collect::<Vec<_>>();
-            let mut nodes = vec![
-                Box::new(Start) as Box<dyn Node>,
-                Box::new(NonTerminal::new(state.name.to_string())),
-            ];
-            if !self_loops.is_empty() {
-                nodes.push(Box::new(Repeat::new(Choice::new(self_loops), Empty)));
-            }
-            if exits.is_empty() {
-                nodes.push(Box::new(Terminal::new("end".to_owned())));
-            } else {
-                nodes.push(Box::new(Choice::new(exits)));
-            }
-            nodes.push(Box::new(End));
-            Box::new(Sequence::new(nodes)) as Box<dyn Node>
-        })
-        .collect::<Vec<_>>();
-    let root = VerticalGrid::new(productions);
+        .map(|state| (state.name.to_string(), state))
+        .collect::<BTreeMap<_, _>>();
+    let mut expanded = BTreeSet::new();
+    let root = Sequence::new(vec![
+        Box::new(Start) as Box<dyn Node>,
+        railroad_state_node(initial, &states_by_name, &mut expanded),
+        Box::new(End),
+    ]);
     let mut diagram = Diagram::new_with_stylesheet(root, &Stylesheet::Light);
     diagram.add_css(
         "svg.railroad a.link tspan { text-decoration: underline; } \
@@ -1496,6 +1468,49 @@ fn railroad_svg(states: &[State]) -> String {
     // producing invalid CSS. Keeping the embedded SVG on one line makes it a
     // single raw HTML block while retaining intrinsic dimensions for scrolling.
     svg.replace(['\r', '\n'], " ")
+}
+
+fn railroad_state_node(
+    name: &Ident,
+    states: &BTreeMap<String, &State>,
+    expanded: &mut BTreeSet<String>,
+) -> Box<dyn Node> {
+    let name = name.to_string();
+    if !expanded.insert(name.clone()) {
+        return Box::new(NonTerminal::new(name));
+    }
+
+    let state = states
+        .get(&name)
+        .expect("validated transition target has a protocol phase");
+    let self_loops = state
+        .transitions
+        .iter()
+        .filter(|transition| transition.target == state.name)
+        .map(|transition| transition_node(transition, state.choice))
+        .collect::<Vec<_>>();
+    let mut exits = Vec::new();
+    for transition in state
+        .transitions
+        .iter()
+        .filter(|transition| transition.target != state.name)
+    {
+        exits.push(Box::new(Sequence::new(vec![
+            transition_node(transition, state.choice),
+            railroad_state_node(&transition.target, states, expanded),
+        ])) as Box<dyn Node>);
+    }
+
+    let mut nodes = vec![Box::new(NonTerminal::new(name)) as Box<dyn Node>];
+    if !self_loops.is_empty() {
+        nodes.push(Box::new(Repeat::new(Choice::new(self_loops), Empty)));
+    }
+    if exits.is_empty() {
+        nodes.push(Box::new(Terminal::new("end".to_owned())));
+    } else {
+        nodes.push(Box::new(Choice::new(exits)));
+    }
+    Box::new(Sequence::new(nodes))
 }
 
 fn transition_node(transition: &Transition, state_choice: ChoiceKind) -> Box<dyn Node> {

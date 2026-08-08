@@ -167,10 +167,10 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
     pub fn request_cleartext(self) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::CleartextPassword)?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::CleartextPassword),
+        )
     }
 
     /// Requests a `PostgreSQL` MD5 password response from the client.
@@ -179,10 +179,10 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the authentication message cannot be encoded.
     pub fn request_md5(self, salt: [u8; 4]) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Md5Password { salt })?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::Md5Password { salt }),
+        )
     }
 
     /// Offers one or more SASL mechanisms to the client.
@@ -194,10 +194,10 @@ impl<S, C> Conn<S, ServerAuth, C> {
         self,
         mechanisms: Vec<Bytes>,
     ) -> io::Result<(Conn<S, ServerSaslInitial, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Sasl { mechanisms })?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::Sasl { mechanisms }),
+        )
     }
 
     /// Requests Kerberos V5 authentication.
@@ -206,10 +206,7 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
     pub fn request_kerberos_v5(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::KerberosV5)?,
-        ))
+        transition_with_frame(self, authentication_frame(Authentication::KerberosV5))
     }
 
     /// Requests GSSAPI authentication.
@@ -218,10 +215,7 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
     pub fn request_gss(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Gss)?,
-        ))
+        transition_with_frame(self, authentication_frame(Authentication::Gss))
     }
 
     /// Requests SSPI authentication.
@@ -230,10 +224,7 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
     pub fn request_sspi(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Sspi)?,
-        ))
+        transition_with_frame(self, authentication_frame(Authentication::Sspi))
     }
 
     /// Confirms authentication and enters the startup-completion phase.
@@ -242,7 +233,7 @@ impl<S, C> Conn<S, ServerAuth, C> {
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
     pub fn authentication_ok(self) -> io::Result<(Conn<S, ServerStartupReady, C>, Frame)> {
-        Ok((self.transition(), authentication_frame(Authentication::Ok)?))
+        transition_with_frame(self, authentication_frame(Authentication::Ok))
     }
 }
 
@@ -300,10 +291,10 @@ impl<S, C> Conn<S, ServerSasl, C> {
         self,
         challenge: Bytes,
     ) -> io::Result<(Conn<S, ServerSaslResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::SaslContinue(challenge))?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::SaslContinue(challenge)),
+        )
     }
 
     /// Sends verified server-final data and returns to authentication completion.
@@ -312,10 +303,10 @@ impl<S, C> Conn<S, ServerSasl, C> {
     ///
     /// Returns an error only if the authentication message cannot be encoded.
     pub fn finish(self, server_final: Bytes) -> io::Result<(Conn<S, ServerAuth, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::SaslFinal(server_final))?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::SaslFinal(server_final)),
+        )
     }
 }
 
@@ -364,10 +355,10 @@ impl<S, C> Conn<S, ServerAuthPolicy, C> {
     ///
     /// Returns an error only if the authentication message cannot be encoded.
     pub fn continue_gss(self, token: Bytes) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::GssContinue(token))?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::GssContinue(token)),
+        )
     }
 
     /// Returns to policy evaluation after the mechanism verifies its response.
@@ -441,6 +432,19 @@ impl<S, C> Conn<S, ServerStartupReady, C> {
             self.transition(),
             BackendMessage::ReadyForQuery(TransactionStatus::Idle).to_frame()?,
         ))
+    }
+}
+
+fn transition_with_frame<S, Phase, Next, C>(
+    conn: Conn<S, Phase, C>,
+    frame: io::Result<Frame>,
+) -> io::Result<(Conn<S, Next, C>, Frame)> {
+    match frame {
+        Ok(frame) => Ok((conn.transition(), frame)),
+        Err(error) => {
+            let _ = conn.into_transport();
+            Err(error)
+        }
     }
 }
 

@@ -184,6 +184,9 @@ neutral composition harnesses and examples.
 - [x] Add a reusable server-role builder which requires explicit plaintext and
   trust policies, owns startup orchestration, and returns operational or
   cancellation branches while preserving caller-owned connection parts.
+- [x] Extend the server-role builder with disabled, optional, and required TLS,
+  per-connection reloadable identities, protocol-orchestrated application
+  authentication, and typed authenticated connection context.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 

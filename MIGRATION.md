@@ -108,6 +108,28 @@ Do not carry a single mechanism or credential enum across both sides. For
 SCRAM-SHA-256-PLUS, retain the TLS transport wrapper so authentication can query
 its `tls-server-end-point` binding.
 
+Server-role construction now goes through `Server::builder()`. Select one of
+`ServerTlsPolicy::Disabled`, `Optional(provider)`, or `Required(provider)` and
+provide a `ServerAuthenticationProvider`; omission is a build error. TLS
+identity providers are resolved for every accepted TLS connection, so an
+application-owned reloadable provider can rotate certificates without rebuilding
+the server component.
+
+Replace manual server authentication typestate driving with a fresh
+`ServerAuthentication` conversation per connection. Its asynchronous `start`
+and `respond` methods return `ServerAuthenticationAction` values. pg-proto
+orchestrates Trust, cleartext, MD5, recursive SASL/SCRAM, Kerberos, GSSAPI,
+recursive GSS continuation, and SSPI wire transitions; application policy owns
+credential lookup, verification, continuation state, rejection, and the typed
+identity evidence returned by `Accept` or `SaslFinal`. Responses are delivered
+as owned `ServerAuthenticationResponse` values, while immutable startup, TLS,
+and peer facts remain available through `ServerAuthenticationRequest`.
+
+`Server::accept` returns either an operational `ServerAccept::Session` or the
+distinct cancellation branch. TLS-provider and authentication-policy failures
+retain their concrete error types in `AcceptError`, and successful connection
+context exposes immutable negotiated-TLS and typed-identity facts.
+
 ## Errors, COPY, and pooling
 
 After `ErrorResponse`, keep the returned `Draining` connection and consume only

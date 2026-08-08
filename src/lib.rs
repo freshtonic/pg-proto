@@ -37,9 +37,14 @@ pub use client_component::{
 };
 pub use pre_startup::SslMode;
 pub use server_component::{
-    AcceptError, BuildServerError, CancellationRequest, IdentityServerHandler, Server,
-    ServerAccept, ServerBuilder, ServerCancellation, ServerConnection, ServerConnectionContext,
-    ServerProtocolLimits, ServerTlsPolicy, TrustServerAuthentication,
+    AcceptError, AcceptedServerTransport, BuildServerError, CancellationRequest, DisabledServerTls,
+    IdentityServerHandler, NegotiatedServerTls, NoServerIdentityProvider, OptionalServerTls,
+    RequiredServerTls, Server, ServerAccept, ServerAcceptFuture, ServerAuthentication,
+    ServerAuthenticationAction, ServerAuthenticationFuture, ServerAuthenticationProvider,
+    ServerAuthenticationRequest, ServerAuthenticationResponse, ServerBuilder, ServerCancellation,
+    ServerConnection, ServerConnectionContext, ServerIdentity, ServerIdentityProvider,
+    ServerProtocolLimits, ServerTlsConfiguration, ServerTlsPolicy, TrustIdentity,
+    TrustServerAuthentication,
 };
 
 use std::marker::PhantomData;

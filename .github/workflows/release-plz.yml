@@ -17,13 +17,13 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install development Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Publish release
         uses: release-plz/action@v0.5
@@ -43,13 +43,13 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install development Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Prepare release pull request
         uses: release-plz/action@v0.5

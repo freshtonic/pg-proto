@@ -12,6 +12,6 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.100.0
       - run: cargo doc --workspace --no-deps

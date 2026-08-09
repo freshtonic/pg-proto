@@ -24,6 +24,38 @@ operations are visible in function signatures, illegal compositions are rejected
 at compile time, and proxy policy can still inspect, replace, or reject complete
 typed messages.
 
+## Modes of operation
+
+`pg-proto` supports three role-composition archetypes. “External” means a real
+PostgreSQL database, an established driver, or any other participant that speaks
+the PostgreSQL frontend/backend wire protocol.
+
+### Client role
+
+![pg-proto client connected to an external server](docs/images/client-mode.svg)
+
+`pg-proto` initiates the connection and acts as the protocol client. The external
+server is commonly PostgreSQL itself, but may be any compatible server.
+
+### Server role
+
+![external client connected to a pg-proto server](docs/images/server-mode.svg)
+
+An external client initiates the connection and `pg-proto` acts as the protocol
+server. This mode suits PostgreSQL-compatible services, test backends, recorders,
+and protocol conformance tools.
+
+### Intermediary role
+
+![external client connected through a pg-proto intermediary to an external server](docs/images/intermediary-mode.svg)
+
+`pg-proto` terminates both protocol roles around an intermediary: its server side
+accepts the external client, while its client side establishes an independent
+connection to the external server. Middleware can inspect, edit, replace, or
+reject messages in either direction. Startup and authenticated routing policies
+can select or refine the destination for sharding, tenancy isolation, regional
+routing, or other application-owned placement decisions.
+
 ## What it provides
 
 - Direction-parameterised frontend and backend codecs. Ambiguous tags such as

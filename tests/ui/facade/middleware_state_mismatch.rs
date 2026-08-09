@@ -1,7 +1,4 @@
-use pg_proto::{
-    Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
-    ConnectTarget, FrontendMessage, StartupParameters, TrustClientAuthentication,
-};
+use pg_proto::{ClientConnectionContext, ClientMiddleware, FrontendMessage};
 
 struct Handler;
 struct ExpectedState;
@@ -18,21 +15,12 @@ impl ClientMiddleware<ExpectedState, ClientConnectionContext> for Handler {
     }
 }
 
-async fn mismatch() {
-    let client = Client::builder()
-        .connector(|_| async { Ok::<_, std::io::Error>(tokio::io::duplex(64).0) })
-        .tls(ClientTlsPolicy::Disabled)
-        .authentication(TrustClientAuthentication)
-        .middleware(|_: &ClientInitialContext| Handler)
-        .build()
-        .unwrap();
-    let _ = client
-        .connect(
-            ConnectTarget::new("test"),
-            StartupParameters::new("test"),
-            WrongState,
-        )
-        .await;
+fn require_wrong_state_middleware<M>()
+where
+    M: ClientMiddleware<WrongState, ClientConnectionContext>,
+{
 }
 
-fn main() {}
+fn main() {
+    require_wrong_state_middleware::<Handler>();
+}

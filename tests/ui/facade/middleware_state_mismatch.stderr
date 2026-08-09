@@ -1,23 +1,21 @@
-error[E0308]: mismatched types
-  --> tests/ui/facade/middleware_state_mismatch.rs:33:13
+error[E0277]: the trait bound `Handler: ClientMiddleware<WrongState, ClientConnectionContext>` is not satisfied
+  --> tests/ui/facade/middleware_state_mismatch.rs:25:38
    |
-30 |         .connect(
-   |          ------- arguments to this method are incorrect
-...
-33 |             WrongState,
-   |             ^^^^^^^^^^ expected `ExpectedState`, found `WrongState`
+25 |     require_wrong_state_middleware::<Handler>();
+   |                                      ^^^^^^^ unsatisfied trait bound
    |
-help: the return type of this call is `WrongState` due to the type of the argument passed
-  --> tests/ui/facade/middleware_state_mismatch.rs:29:13
+help: the trait `ClientMiddleware<WrongState, ClientConnectionContext>` is not implemented for `Handler`
+      but trait `ClientMiddleware<ExpectedState, ClientConnectionContext>` is implemented for it
+  --> tests/ui/facade/middleware_state_mismatch.rs:7:1
    |
-29 |       let _ = client
-   |  _____________^
-30 | |         .connect(
-31 | |             ConnectTarget::new("test"),
-32 | |             StartupParameters::new("test"),
-33 | |             WrongState,
-   | |             ---------- this argument influences the return type of `connect`
-34 | |         )
-   | |_________^
-note: method defined here
-  --> <WORKSPACE>/src/client_component.rs:1837:17
+ 7 | impl ClientMiddleware<ExpectedState, ClientConnectionContext> for Handler {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `ExpectedState`, found `WrongState`
+note: required by a bound in `require_wrong_state_middleware`
+  --> tests/ui/facade/middleware_state_mismatch.rs:20:8
+   |
+18 | fn require_wrong_state_middleware<M>()
+   |    ------------------------------ required by a bound in this function
+19 | where
+20 |     M: ClientMiddleware<WrongState, ClientConnectionContext>,
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `require_wrong_state_middleware`

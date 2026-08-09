@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.6.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.5.0...pg-proto-v0.6.0) - 2026-08-09
+
+### Added
+
+- add operational client builder
+- add plaintext trust server builder ([#32](https://github.com/freshtonic/pg-proto/pull/32))
+- add client TLS and pluggable authentication ([#31](https://github.com/freshtonic/pg-proto/pull/31))
+- add server TLS and pluggable authentication ([#33](https://github.com/freshtonic/pg-proto/pull/33))
+- run role middleware across connection lifecycle
+- add intermediary role connection seams
+- add operational intermediary forwarding
+- forward intermediary cancellation safely
+- migrate examples to builder facade
+
+### Changed
+
+- Merge branch 'main' into dependabot/cargo/base64-0.23.0
+- Merge branch 'main' into dependabot/cargo/tokio-postgres-rustls-0.14.0
+- refactor connections around state-free cores
+- make builders the only public API
+- make logging proxies builder-native
+
+### Documentation
+
+- centre builder facade and release gates
+- preserve builder domain decisions
+- verify and label code snippets
+
+### Fixed
+
+- connect generated railroad diagrams
+- align CI with builder-only test layout
+- close and pipeline logging proxy sessions
+
+### Testing
+
+- initialize rustls provider independently
+
 ## [0.5.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.4.0...pg-proto-v0.5.0) - 2026-08-07
 
 ### Added

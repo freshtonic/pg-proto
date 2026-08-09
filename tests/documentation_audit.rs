@@ -149,6 +149,89 @@ fn readme_leads_with_all_complete_builder_workflows_and_guardrails() {
 }
 
 #[test]
+fn readme_message_support_matches_public_message_facade() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    let codec = fs::read_to_string(root.join("src/codec.rs")).unwrap();
+    let pre_startup = fs::read_to_string(root.join("src/pre_startup.rs")).unwrap();
+
+    let documented_facade = [
+        ("SSLRequest", "SslRequest"),
+        ("GSSENCRequest", "GssEncRequest"),
+        ("StartupMessage", "Startup(StartupMessage)"),
+        ("CancelRequest", "CancelRequest"),
+    ];
+    for (wire_name, facade_name) in documented_facade {
+        assert!(readme.contains(&format!("`{wire_name}`")));
+        assert!(pre_startup.contains(facade_name));
+    }
+
+    for variant in [
+        "Parse",
+        "Bind",
+        "Describe",
+        "Close",
+        "Execute",
+        "FunctionCall",
+        "Query",
+        "Flush",
+        "Sync",
+        "Terminate",
+        "CopyData",
+        "CopyDone",
+        "CopyFail",
+        "PasswordResponse",
+    ] {
+        assert!(readme.contains(variant));
+        assert!(codec.contains(&format!("    {variant}")));
+    }
+    for variant in [
+        "Ok",
+        "KerberosV5",
+        "CleartextPassword",
+        "Md5Password",
+        "Gss",
+        "GssContinue",
+        "Sspi",
+        "Sasl",
+        "SaslContinue",
+        "SaslFinal",
+    ] {
+        assert!(readme.contains(&format!("Authentication::{variant}`")));
+        assert!(codec.contains(&format!("    {variant}")));
+    }
+    for variant in [
+        "RowDescription",
+        "Authentication",
+        "ParseComplete",
+        "BindComplete",
+        "CloseComplete",
+        "CommandComplete",
+        "CopyData",
+        "CopyDone",
+        "CopyInResponse",
+        "CopyOutResponse",
+        "CopyBothResponse",
+        "DataRow",
+        "EmptyQueryResponse",
+        "ErrorResponse",
+        "NoData",
+        "ParameterStatus",
+        "NoticeResponse",
+        "NotificationResponse",
+        "BackendKeyData",
+        "ReadyForQuery",
+        "ParameterDescription",
+        "PortalSuspended",
+        "FunctionCallResponse",
+        "NegotiateProtocolVersion",
+    ] {
+        assert!(readme.contains(variant));
+        assert!(codec.contains(&format!("    {variant}")));
+    }
+}
+
+#[test]
 fn documentation_code_fences_specify_a_language() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();

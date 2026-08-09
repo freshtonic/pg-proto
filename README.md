@@ -310,6 +310,109 @@ PG_PROTO_POSTGRES_VERSION=18 \
 See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
 matrix.
 
+## Message support
+
+The checklist below follows PostgreSQL's official
+[message-format catalogue](https://www.postgresql.org/docs/current/protocol-message-formats.html)
+and groups messages by protocol phase and sender. A checked item has a typed,
+lossless representation reachable through the public facade and can be decoded
+and reconstructed; contextual aliases which share a wire tag name the public
+`pg-proto` representation in parentheses. An unchecked item would identify a
+known PostgreSQL protocol message which is not yet supported. There are currently
+no unchecked protocol-version-3 message types.
+
+- [x] Pre-startup and startup
+  - [x] Frontend
+    - [x] `SSLRequest`
+    - [x] `GSSENCRequest` (`PreStartupMessage::GssEncRequest`)
+    - [x] `StartupMessage` (`PreStartupMessage::Startup`)
+    - [x] `CancelRequest` (`PreStartupMessage::CancelRequest`)
+  - [x] Backend transport negotiation replies
+    - [x] SSL accepted (`S`), rejected (`N`), and legacy error (`E`)
+    - [x] GSS encryption accepted (`G`) and rejected (`N`)
+- [x] Authentication and startup completion
+  - [x] Frontend
+    - [x] `PasswordMessage` (`FrontendMessage::PasswordResponse`)
+    - [x] `GSSResponse` (`FrontendMessage::PasswordResponse`)
+    - [x] `SASLInitialResponse` (`FrontendMessage::PasswordResponse`)
+    - [x] `SASLResponse` (`FrontendMessage::PasswordResponse`)
+  - [x] Backend
+    - [x] `AuthenticationOk` (`Authentication::Ok`)
+    - [x] `AuthenticationKerberosV5` (`Authentication::KerberosV5`)
+    - [x] `AuthenticationCleartextPassword` (`Authentication::CleartextPassword`)
+    - [x] `AuthenticationMD5Password` (`Authentication::Md5Password`)
+    - [x] `AuthenticationGSS` (`Authentication::Gss`)
+    - [x] `AuthenticationGSSContinue` (`Authentication::GssContinue`)
+    - [x] `AuthenticationSSPI` (`Authentication::Sspi`)
+    - [x] `AuthenticationSASL` (`Authentication::Sasl`)
+    - [x] `AuthenticationSASLContinue` (`Authentication::SaslContinue`)
+    - [x] `AuthenticationSASLFinal` (`Authentication::SaslFinal`)
+    - [x] `BackendKeyData`
+    - [x] `NegotiateProtocolVersion`
+    - [x] `ParameterStatus`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Simple query and legacy function calls
+  - [x] Frontend
+    - [x] `Query`
+    - [x] `FunctionCall`
+  - [x] Backend
+    - [x] `RowDescription`
+    - [x] `DataRow`
+    - [x] `CommandComplete`
+    - [x] `EmptyQueryResponse`
+    - [x] `FunctionCallResponse`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Extended query
+  - [x] Frontend
+    - [x] `Parse`
+    - [x] `Bind`
+    - [x] `Describe`
+    - [x] `Execute`
+    - [x] `Close`
+    - [x] `Flush`
+    - [x] `Sync`
+  - [x] Backend
+    - [x] `ParseComplete`
+    - [x] `BindComplete`
+    - [x] `CloseComplete`
+    - [x] `ParameterDescription`
+    - [x] `RowDescription`
+    - [x] `NoData`
+    - [x] `DataRow`
+    - [x] `PortalSuspended`
+    - [x] `CommandComplete`
+    - [x] `EmptyQueryResponse`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] `COPY` and replication streaming
+  - [x] Frontend
+    - [x] `CopyData`
+    - [x] `CopyDone`
+    - [x] `CopyFail`
+  - [x] Backend
+    - [x] `CopyInResponse`
+    - [x] `CopyOutResponse`
+    - [x] `CopyBothResponse`
+    - [x] `CopyData`
+    - [x] `CopyDone`
+    - [x] `CommandComplete`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Asynchronous backend messages
+  - [x] `NoticeResponse`
+  - [x] `NotificationResponse`
+  - [x] `ParameterStatus`
+- [x] Session termination and out-of-band cancellation
+  - [x] Frontend `Terminate`
+  - [x] Frontend pre-startup `CancelRequest`
+
+Authentication mechanism engines and encrypted transports are separate from
+message support. In particular, Kerberos V5, GSSAPI, and SSPI messages are fully
+represented, while applications must supply their platform credential engines;
+applications must also supply a production GSS encryption transport adapter.
+
 ## PostgreSQL wire protocol documentation
 
 The primary reference for the wire protocol is PostgreSQL's official

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" role="img" aria-labelledby="title description">
+  <title id="title">pg-proto client connected to an external server</title>
+  <desc id="description">A labelled pg-proto Client circle connected by bidirectional arrows to a labelled external Server circle.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+    <style>
+      .node { fill: #f6f8fa; stroke: #24292f; stroke-width: 3; }
+      .link { stroke: #57606a; stroke-width: 4; marker-start: url(#arrow); marker-end: url(#arrow); }
+      .role { fill: #24292f; font: 600 22px system-ui, sans-serif; text-anchor: middle; }
+      .owner { fill: #57606a; font: 17px system-ui, sans-serif; text-anchor: middle; }
+      @media (prefers-color-scheme: dark) {
+        .node { fill: #161b22; stroke: #f0f6fc; }
+        .link { stroke: #8c959f; }
+        .role { fill: #f0f6fc; }
+        .owner { fill: #b1bac4; }
+      }
+    </style>
+  </defs>
+  <line class="link" x1="295" y1="110" x2="605" y2="110"/>
+  <circle class="node" cx="190" cy="110" r="92"/>
+  <circle class="node" cx="710" cy="110" r="92"/>
+  <text class="role" x="190" y="104">Client</text>
+  <text class="owner" x="190" y="133">pg-proto</text>
+  <text class="role" x="710" y="104">Server</text>
+  <text class="owner" x="710" y="133">external</text>
+</svg>

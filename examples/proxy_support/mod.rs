@@ -1,9 +1,9 @@
 use std::{convert::Infallible, error::Error, io, net::SocketAddr, sync::Arc};
 
 use pg_proto::{
-    BackendMessage, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
-    ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
-    IntermediaryMiddleware, Server, ServerConnectionContext, ServerIdentity,
+    BackendMessage, BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext,
+    ClientTlsPolicy, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
+    Intermediary, IntermediaryMiddleware, Server, ServerConnectionContext, ServerIdentity,
     ServerIdentityProvider, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
     TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
@@ -255,6 +255,7 @@ async fn proxy_connection(
         .client(client)
         .startup_resolver(Route(upstream))
         .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(64).expect("non-zero proxy pipeline capacity"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
              _: &ClientConnectionContext<()>| Logger,
@@ -275,9 +276,16 @@ async fn proxy_connection(
     let mut session = accepted.into_session();
     loop {
         match session.forward_next().await {
-            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => return Ok(()),
+            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                let _ = session.teardown();
+                return Ok(());
+            }
             Ok(_) => {}
-            Err(error) => return Err(other(error)),
+            Err(error) => {
+                let error = other(error);
+                let _ = session.teardown();
+                return Err(error);
+            }
         }
     }
 }

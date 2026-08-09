@@ -443,7 +443,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
     ///
     /// A pending negotiation cannot send a startup message:
     ///
-    /// ```compile_fail
+    /// ```rust,compile_fail
     /// use pg_proto::Conn;
     /// let (pending, _) = Conn::new(()).ssl_request();
     /// let _ = pending.startup();

@@ -105,7 +105,7 @@ fn rustdoc_without_compile_fail_examples(source: &str) -> String {
                 .or_else(|| trimmed.strip_prefix("//!"))
                 .unwrap()
                 .trim_start();
-            if content.starts_with("```compile_fail") {
+            if content.starts_with("```rust,compile_fail") {
                 in_compile_fail = true;
                 return None;
             }
@@ -127,7 +127,7 @@ fn readme_leads_with_all_complete_builder_workflows_and_guardrails() {
     let server = readme.find("## Server: accept PostgreSQL clients").unwrap();
     let intermediary = readme.find("## Intermediary: compose both roles").unwrap();
     assert!(security < client && client < server && server < intermediary);
-    assert_eq!(readme.matches("```no_run").count(), 3);
+    assert_eq!(readme.matches("```rust,no_run").count(), 3);
     for entry in [
         "Client::builder()",
         "Server::builder()",
@@ -145,6 +145,55 @@ fn readme_leads_with_all_complete_builder_workflows_and_guardrails() {
             readme.contains(guardrail),
             "README is missing `{guardrail}` guardrail"
         );
+    }
+}
+
+#[test]
+fn documentation_code_fences_specify_a_language() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut paths = Vec::new();
+    collect_markdown(root, &mut paths);
+    collect_files(&root.join("src"), &mut paths);
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        let source = fs::read_to_string(&path).expect("documentation must be readable");
+        let mut in_fence = false;
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let trimmed = if path.extension().is_some_and(|extension| extension == "rs") {
+                let Some(documentation) = trimmed
+                    .strip_prefix("///")
+                    .or_else(|| trimmed.strip_prefix("//!"))
+                else {
+                    continue;
+                };
+                documentation.trim_start()
+            } else {
+                trimmed
+            };
+            if !trimmed.starts_with("```") {
+                continue;
+            }
+            if in_fence {
+                assert_eq!(
+                    trimmed,
+                    "```",
+                    "{}:{} has an invalid closing fence",
+                    path.display(),
+                    index + 1
+                );
+            } else {
+                assert!(
+                    trimmed.len() > 3,
+                    "{}:{} has a code fence without a language",
+                    path.display(),
+                    index + 1
+                );
+            }
+            in_fence = !in_fence;
+        }
+        assert!(!in_fence, "{} has an unclosed code fence", path.display());
     }
 }
 
@@ -175,7 +224,7 @@ fn collect_markdown(root: &Path, paths: &mut Vec<std::path::PathBuf>) {
     for path in entries {
         if path.is_dir() {
             let name = path.file_name().and_then(|value| value.to_str());
-            if !matches!(name, Some(".git" | "target" | "fuzz" | "tests")) {
+            if !matches!(name, Some(".git" | "target" | "tests")) {
                 collect_markdown(&path, paths);
             }
         } else if path.extension().is_some_and(|extension| extension == "md") {

@@ -4,7 +4,7 @@ The budget harness models two hot paths present in pgcat and CipherStash Proxy:
 decoding/reconstructing inspected frontend messages, and repeatedly advancing a
 short pooled query session. Run it with:
 
-```console
+```bash
 cargo bench --bench protocol_budget
 ```
 

@@ -111,7 +111,7 @@ provide less assurance than `VerifyFull`, and must be selected deliberately.
 Build one reusable upstream-facing component, then establish operational
 connections with caller-owned state and per-call startup parameters.
 
-```no_run
+```rust,no_run
 use pg_proto::{
     Client, ClientTlsPolicy, ConnectTarget, StartupParameters,
     TrustClientAuthentication,
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 The server builder owns reusable client-facing policy. The application owns the
 listener, peer metadata, per-connection state, credentials, and authorisation.
 
-```no_run
+```rust,no_run
 use pg_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
 
 #[tokio::main]
@@ -181,7 +181,7 @@ An intermediary takes complete server and client components. Startup routing,
 authenticated routing, cancellation storage, middleware, and failure disclosure
 remain explicit application policies.
 
-```no_run
+```rust,no_run
 use std::{convert::Infallible, future::Future, pin::Pin};
 use pg_proto::{
     CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
@@ -289,7 +289,7 @@ operational connection types, and root message vocabulary.
 
 Build the same documentation locally with:
 
-```console
+```bash
 cargo doc --workspace --no-deps --open
 ```
 
@@ -302,9 +302,9 @@ Both behaviours are covered explicitly.
 
 Run a selected version locally with a Docker-compatible runtime:
 
-```console
+```bash
 PG_PROTO_POSTGRES_VERSION=18 \
-  cargo test --test postgres_container -- --ignored
+  cargo test --lib internal_tests::postgres_container -- --ignored
 ```
 
 See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
@@ -340,14 +340,14 @@ Contribution instructions and community expectations are in
 The ordinary suite includes unit, fixture, property-style differential,
 compile-fail, and documentation tests:
 
-```console
+```bash
 cargo test --workspace
 ```
 
 Live PostgreSQL tests require a Docker-compatible runtime:
 
-```console
-cargo test --test postgres_container -- --ignored
+```bash
+cargo test --lib internal_tests::postgres_container -- --ignored
 ```
 
 ## Licence

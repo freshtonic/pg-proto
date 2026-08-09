@@ -455,6 +455,7 @@ async fn tls_identity_provider_errors_remain_typed() {
 
 #[tokio::test]
 async fn optional_tls_accepts_plaintext_without_resolving_an_identity() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let generated = generate_simple_self_signed(["localhost".into()]).unwrap();
     let certificate = CertificateDer::from(generated.cert.der().to_vec());
     let key = PrivateKeyDer::try_from(generated.signing_key.serialize_der()).unwrap();

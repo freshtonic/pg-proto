@@ -56,6 +56,32 @@ fn named_intermediary_examples_drive_the_operational_facade() {
     assert!(pipeline.contains("session.forward_frontend().await?"));
 }
 
+#[test]
+fn logging_proxies_build_roles_directly() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    for name in [
+        "protocol_logging_proxy/main.rs",
+        "sql_logging_proxy/main.rs",
+    ] {
+        let source = fs::read_to_string(root.join(name)).unwrap();
+        for builder in [
+            "Server::builder()",
+            "Client::builder()",
+            "Intermediary::builder()",
+        ] {
+            assert!(
+                source.contains(builder),
+                "{name} must call `{builder}` directly"
+            );
+        }
+        assert!(
+            !source.contains("proxy_support"),
+            "{name} must remain a self-contained builder example"
+        );
+    }
+    assert!(!root.join("proxy_support").exists());
+}
+
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut sources = Vec::new();
     for entry in fs::read_dir(root).unwrap() {

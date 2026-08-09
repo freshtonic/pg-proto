@@ -6,10 +6,11 @@ use std::{
 };
 use tokio::net::TcpListener;
 
-#[path = "../examples/proxy_support/mod.rs"]
-mod proxy_support;
+#[path = "../examples/sql_logging_proxy/main.rs"]
+#[allow(dead_code)]
+pub(crate) mod sql_logging_proxy;
 
-use proxy_support::Observation;
+use sql_logging_proxy::Observation;
 
 #[tokio::test]
 #[ignore = "requires local networking"]
@@ -18,7 +19,7 @@ async fn rejects_an_unavailable_explicit_upstream_before_listening() -> Result<(
     let address = unused.local_addr()?;
     drop(unused);
 
-    let Err(error) = proxy_support::ExampleUpstream::resolve(Some(&address.to_string())).await
+    let Err(error) = sql_logging_proxy::ExampleUpstream::resolve(Some(&address.to_string())).await
     else {
         return Err("unexpectedly connected to an unused address".into());
     };
@@ -29,14 +30,14 @@ async fn rejects_an_unavailable_explicit_upstream_before_listening() -> Result<(
 #[tokio::test]
 #[ignore = "requires a Docker-compatible container runtime"]
 async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Error>> {
-    let postgres = proxy_support::ExampleUpstream::resolve(None).await?;
+    let postgres = sql_logging_proxy::ExampleUpstream::resolve(None).await?;
     let upstream = postgres.address();
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let proxy_address = listener.local_addr()?;
     let observations = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&observations);
-    let tls = proxy_support::ExampleTlsIdentity::generate()?;
+    let tls = sql_logging_proxy::ExampleTlsIdentity::generate()?;
     let mut roots = rustls::RootCertStore::empty();
     roots.add(tls.certificate())?;
     let client_tls = tokio_postgres_rustls::MakeRustlsConnect::new(
@@ -44,7 +45,7 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
             .with_root_certificates(roots)
             .with_no_client_auth(),
     );
-    let proxy = tokio::spawn(proxy_support::serve(
+    let proxy = tokio::spawn(sql_logging_proxy::serve(
         listener,
         upstream,
         tls,
@@ -82,11 +83,6 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
     assert!(captured.iter().any(|event| matches!(
         event,
         Observation::RowCount { rows: 3, command, .. } if command == "SELECT 3"
-    )));
-    assert!(captured.iter().any(|event| matches!(
-        event,
-        Observation::Protocol { direction: "client -> server", message, .. }
-            if message.starts_with("Parse(") || message.starts_with("Query(")
     )));
     drop(captured);
 

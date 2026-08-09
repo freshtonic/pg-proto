@@ -208,25 +208,45 @@ impl
         ClientConnectionContext<()>,
     > for BoundaryOrder
 {
-    fn frontend(
-        &mut self,
-        _: &ServerConnectionContext<String, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut Vec<&'static str>,
+    type Error = Infallible;
+
+    fn frontend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut Vec<&'static str>,
         message: FrontendMessage,
-    ) -> FrontendMessage {
-        state.push("boundary-frontend");
-        message
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
+                > + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            state.push("boundary-frontend");
+            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        })
     }
-    fn backend(
-        &mut self,
-        _: &ServerConnectionContext<String, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut Vec<&'static str>,
+
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut Vec<&'static str>,
         message: BackendMessage,
-    ) -> BackendMessage {
-        state.push("boundary-backend");
-        message
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            state.push("boundary-backend");
+            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        })
     }
 }
 
@@ -475,7 +495,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     let traffic_entries = session.state().len();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        FrontendMessage::Query(query) if query == "SELECT 1"
+        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 1"
     ));
     assert!(matches!(
         session.forward_frontend().await,
@@ -485,39 +505,39 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        BackendMessage::CommandComplete(tag) if tag == "SELECT 1"
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 1"
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        BackendMessage::ReadyForQuery(_)
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
     ));
     assert!(
-        matches!(session.forward_frontend().await.unwrap(), FrontendMessage::Query(query) if query == "SELECT 2")
+        matches!(session.forward_frontend().await.unwrap(), pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 2")
     );
     assert!(
-        matches!(session.forward_backend().await.unwrap(), BackendMessage::CommandComplete(tag) if tag == "SELECT 2")
+        matches!(session.forward_backend().await.unwrap(), pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 2")
     );
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        BackendMessage::ReadyForQuery(_)
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
     ));
     for (frontend, backend) in [(b'P', b'1'), (b'B', b'2'), (b'E', b'C'), (b'S', b'Z')] {
         assert_eq!(
-            frontend_bytes(&session.forward_frontend().await.unwrap())[0],
+            frontend_bytes(&session.forward_frontend().await.unwrap().into_message())[0],
             frontend
         );
         assert_eq!(
-            backend_bytes(&session.forward_backend().await.unwrap())[0],
+            backend_bytes(&session.forward_backend().await.unwrap().into_message())[0],
             backend
         );
     }
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        FrontendMessage::Query(_)
+        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        BackendMessage::CopyBothResponse(_)
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::CopyBothResponse(_))
     ));
     assert!(
         matches!(session.forward_next().await.unwrap(), pg_proto::ForwardedMessage::Backend(BackendMessage::CopyData(data)) if data == "w-replication")
@@ -526,28 +546,214 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         matches!(session.forward_next().await.unwrap(), pg_proto::ForwardedMessage::Frontend(FrontendMessage::CopyData(data)) if data == "r-standby-status")
     );
     let (_downstream, _upstream, state, _boundary, _handlers, contexts) = session.teardown();
-    assert!(state[traffic_entries..].starts_with(&[
-        "server-frontend",
-        "boundary-frontend",
-        "client-frontend",
-        "server-frontend",
-        "boundary-frontend",
-        "client-frontend",
-        "client-backend",
-        "boundary-backend",
-        "server-backend",
-        "client-backend",
-        "boundary-backend",
-        "server-backend",
-        "client-backend",
-        "boundary-backend",
-        "server-backend",
-        "client-backend",
-        "boundary-backend",
-        "server-backend",
-    ]));
+    assert!(
+        state[traffic_entries..].starts_with(&[
+            "server-frontend",
+            "boundary-frontend",
+            "client-frontend",
+            "server-frontend",
+            "boundary-frontend",
+            "client-frontend",
+            "client-backend",
+            "boundary-backend",
+            "server-backend",
+            "client-backend",
+            "boundary-backend",
+            "server-backend",
+            "client-backend",
+            "boundary-backend",
+            "server-backend",
+            "client-backend",
+            "boundary-backend",
+            "server-backend",
+        ]),
+        "traffic order: {:?}",
+        &state[traffic_entries..]
+    );
     assert_eq!(contexts.server().peer(), "downstream-peer");
     assert_eq!(contexts.client().target().name(), "tenant-a");
+    downstream.await.unwrap();
+    upstream.await.unwrap();
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct BoundaryFailure;
+
+impl std::fmt::Display for BoundaryFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("boundary failure")
+    }
+}
+
+impl std::error::Error for BoundaryFailure {}
+
+struct AsyncDecisions;
+
+impl
+    IntermediaryMiddleware<
+        (),
+        ServerConnectionContext<String, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for AsyncDecisions
+{
+    type Error = BoundaryFailure;
+
+    fn frontend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        (): &'a mut (),
+        message: FrontendMessage,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
+                > + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            match &message {
+                FrontendMessage::Query(query) if query == "LOCAL" => {
+                    Ok(pg_proto::FrontendMiddlewareOutput::Respond {
+                        request: message,
+                        responses: vec![
+                            BackendMessage::CommandComplete(Bytes::from_static(b"LOCAL")),
+                            BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
+                        ],
+                    })
+                }
+                FrontendMessage::Query(query) if query == "DROP" => {
+                    Ok(pg_proto::FrontendMiddlewareOutput::Suppress(message))
+                }
+                FrontendMessage::Query(query) if query == "FAIL" => Err(BoundaryFailure),
+                _ => Ok(pg_proto::FrontendMiddlewareOutput::Forward(message)),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn async_middleware_suppresses_and_emits_local_responses_in_pipeline_order() {
+    let (downstream_transport, mut downstream_peer) = tokio::io::duplex(16 * 1024);
+    let (upstream_transport, mut upstream_peer) = tokio::io::duplex(16 * 1024);
+    let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
+
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .unwrap();
+    let client = Client::builder()
+        .connector(move |_| {
+            let transport = upstream_transport.lock().unwrap().take().unwrap();
+            async move { Ok::<_, Infallible>(transport) }
+        })
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .unwrap();
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(CandidateResolver)
+        .authenticated_route(RefineRoute)
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(2).unwrap())
+        .middleware(
+            |_: &ServerConnectionContext<String, TrustIdentity>,
+             _: &ClientConnectionContext<()>| AsyncDecisions,
+        )
+        .build()
+        .unwrap();
+
+    let downstream = tokio::spawn(async move {
+        let startup = pg_proto::StartupMessage {
+            version: pg_proto::ProtocolVersion::V3_0,
+            parameters: std::iter::once((
+                Bytes::from_static(b"user"),
+                Bytes::from_static(b"alice"),
+            ))
+            .collect(),
+        };
+        downstream_peer
+            .write_all(&startup.encode().unwrap())
+            .await
+            .unwrap();
+        let mut authentication_and_ready = [0; 15];
+        downstream_peer
+            .read_exact(&mut authentication_and_ready)
+            .await
+            .unwrap();
+        for query in [b"FIRST".as_slice(), b"LOCAL", b"DROP", b"FAIL"] {
+            downstream_peer
+                .write_all(&frontend_bytes(&FrontendMessage::Query(
+                    Bytes::copy_from_slice(query),
+                )))
+                .await
+                .unwrap();
+        }
+        for expected in [b"FIRST\0".as_slice(), b"LOCAL\0"] {
+            let (tag, body) = read_tagged(&mut downstream_peer).await;
+            assert_eq!((tag, body.as_slice()), (b'C', expected));
+            assert_eq!(read_tagged(&mut downstream_peer).await.0, b'Z');
+        }
+    });
+    let upstream = tokio::spawn(async move {
+        let length = upstream_peer.read_u32().await.unwrap();
+        let mut startup = vec![0; usize::try_from(length).unwrap() - 4];
+        upstream_peer.read_exact(&mut startup).await.unwrap();
+        upstream_peer
+            .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+            .await
+            .unwrap();
+        let (tag, body) = read_tagged(&mut upstream_peer).await;
+        assert_eq!((tag, body.as_slice()), (b'Q', b"FIRST\0".as_slice()));
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::CommandComplete(
+                Bytes::from_static(b"FIRST"),
+            )))
+            .await
+            .unwrap();
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
+                pg_proto::TransactionStatus::Idle,
+            )))
+            .await
+            .unwrap();
+        let unexpected = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            upstream_peer.read_u8(),
+        )
+        .await;
+        assert!(!matches!(unexpected, Ok(Ok(_))));
+    });
+
+    let mut session =
+        Box::pin(intermediary.accept(downstream_transport, "downstream-peer".to_owned(), ()))
+            .await
+            .unwrap()
+            .into_session();
+    assert!(matches!(
+        session.forward_frontend().await.unwrap(),
+        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "FIRST"
+    ));
+    assert!(matches!(
+        session.forward_frontend().await.unwrap(),
+        pg_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Query(query)) if query == "LOCAL"
+    ));
+    session.forward_backend().await.unwrap();
+    session.forward_backend().await.unwrap();
+    assert!(matches!(
+        session.forward_frontend().await.unwrap(),
+        pg_proto::FrontendForwarding::Suppressed(FrontendMessage::Query(query)) if query == "DROP"
+    ));
+    assert!(matches!(
+        session.forward_frontend().await,
+        Err(pg_proto::ForwardError::Middleware(BoundaryFailure))
+    ));
+    let _ = session.teardown();
     downstream.await.unwrap();
     upstream.await.unwrap();
 }

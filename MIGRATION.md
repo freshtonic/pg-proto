@@ -137,6 +137,21 @@ Cancellation resolves this mapping directly, without startup routing. Call
 Establishment failures close silently by default; `SafeDiagnostic` emits one
 fixed, non-disclosing error through outbound server middleware before closing.
 
+Forwarding-boundary middleware is now asynchronous and fallible. Implement
+`IntermediaryMiddleware::frontend` and `backend` by returning a borrowed boxed
+future and declare the handler's `Error` type. Return
+`FrontendMiddlewareOutput::Forward` for replacement, `Suppress` to consume a
+message, or `Respond` to register a locally handled operation and provide its
+ordered backend responses. Backend middleware returns
+`BackendMiddlewareOutput::Forward` or `Suppress`.
+
+`forward_frontend` and `forward_backend` now return `FrontendForwarding` and
+`BackendForwarding`, respectively. Match these outcomes when application code
+needs the forwarding decision, or call `into_message` when only the owned
+message matters. A middleware failure is preserved as `ForwardError::Middleware`;
+locally generated responses remain owned by the connection and are emitted only
+when the pipeline ledger reaches their operation.
+
 ## Errors, COPY, and pooling
 
 After `ErrorResponse`, keep the returned `Draining` connection and consume only

@@ -34,26 +34,43 @@ impl
         ClientConnectionContext<()>,
     > for ProtocolLogger
 {
-    fn frontend(
-        &mut self,
-        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut ProtocolState,
+    type Error = std::convert::Infallible;
+
+    fn frontend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut ProtocolState,
         message: FrontendMessage,
-    ) -> FrontendMessage {
-        println!("[{}] client -> server: {message:?}", state.connection);
-        message
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
+                > + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            println!("[{}] client -> server: {message:?}", state.connection);
+            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        })
     }
 
-    fn backend(
-        &mut self,
-        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut ProtocolState,
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut ProtocolState,
         message: BackendMessage,
-    ) -> BackendMessage {
-        println!("[{}] server -> client: {message:?}", state.connection);
-        message
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            println!("[{}] server -> client: {message:?}", state.connection);
+            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        })
     }
 }
 

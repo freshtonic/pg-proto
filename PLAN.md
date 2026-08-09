@@ -281,6 +281,14 @@ neutral composition harnesses and examples.
 
 ## Stateful message middleware
 
+- [x] Expose asynchronous, fallible intermediary-boundary middleware through
+  the builder facade.
+  - [x] Support owned forward, suppress, and locally respond decisions.
+  - [x] Preserve application errors in the public forwarding error layer.
+  - [x] Admit local operations and emit generated responses through the
+    connection-owned pipeline without allowing response reordering.
+  - [x] Report forwarding outcomes through the duplex and directional drivers.
+
 - [x] Move the examples' protocol observation and rewriting mechanism into a
   policy-neutral core `middleware` module.
   - [x] Define direction-specific middleware for owned `FrontendMessage` and

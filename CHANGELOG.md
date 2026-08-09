@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.7.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.6.2...pg-proto-v0.7.0) - 2026-08-09
+
+### Added
+
+- expose async intermediary middleware decisions
+
+### Documentation
+
+- illustrate modes of operation
+
 ## [0.6.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.6.1...pg-proto-v0.6.2) - 2026-08-09
 
 ### Documentation

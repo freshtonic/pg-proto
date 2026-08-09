@@ -310,6 +310,26 @@ PG_PROTO_POSTGRES_VERSION=18 \
 See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
 matrix.
 
+## PostgreSQL wire protocol documentation
+
+The primary reference for the wire protocol is PostgreSQL's official
+[Frontend/Backend Protocol documentation](https://www.postgresql.org/docs/current/protocol.html).
+Its key sections are:
+
+- [Message flow](https://www.postgresql.org/docs/current/protocol-flow.html) —
+  connections, authentication, queries, `COPY`, and cancellation.
+- [Message formats](https://www.postgresql.org/docs/current/protocol-message-formats.html) —
+  byte-level packet layouts.
+- [Message data types](https://www.postgresql.org/docs/current/protocol-message-types.html) —
+  integer, string, and byte encodings.
+- [SASL/SCRAM authentication](https://www.postgresql.org/docs/current/sasl-authentication.html) —
+  modern password authentication.
+
+> **Compatibility note:** PostgreSQL 18 introduced protocol 3.2, but most
+> clients still negotiate version 3.0 for compatibility. Read the documentation
+> for the oldest PostgreSQL version you intend to support, and use an
+> established driver's source code as an executable reference.
+
 ## Known limitations
 
 - The API is pre-1.0 and may change as it is integrated into a production proxy.

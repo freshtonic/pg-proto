@@ -1,5 +1,13 @@
 # PostgreSQL session-typed protocol implementation plan
 
+Current integration: issue #38 makes the root builder facade the crate's only
+public API, migrates all external consumers, and retains low-level protocol
+coverage as crate-internal tests.
+
+Issue #39 puts that facade front and centre in the README and crate Rustdoc,
+adds complete compile-checked workflows for all three roles, and names the
+documentation, example, and public-surface release gates in CI.
+
 This plan tracks the route from the current protocol library to a production
 implementation suitable for `cipherstash/proxy`. A checked item is implemented
 and covered by proportionate tests; it does not imply that all later integration
@@ -175,6 +183,28 @@ neutral composition harnesses and examples.
 
 ## Current work
 
+- [x] Establish reusable plaintext trust-authenticated client-role sessions
+  through an explicit-security builder, with structured startup overrides,
+  conservative limits, caller-owned connection state, and complete teardown.
+- [x] Extend the client-role builder with libpq-compatible TLS negotiation,
+  reloadable per-connection TLS material, and asynchronous application-defined
+  authentication which returns typed identity evidence.
+- [x] Add a reusable server-role builder which requires explicit plaintext and
+  trust policies, owns startup orchestration, and returns operational or
+  cancellation branches while preserving caller-owned connection parts.
+- [x] Extend the server-role builder with disabled, optional, and required TLS,
+  per-connection reloadable identities, protocol-orchestrated application
+  authentication, and typed authenticated connection context.
+- [x] Make builder middleware operational across client and server connection
+  establishment, authentication, cancellation, generated responses, and live
+  protocol traffic with fresh handlers, progressive context, and caller state.
+- [x] Compose the complete server and client roles into a routed intermediary
+  with pre-authentication startup resolution, optional authenticated routing,
+  one shared state value, ordered boundary middleware, legal forwarding,
+  explicit cancellation posture, and bounded backpressure.
+- [x] Record and explicitly detach application-owned cancellation mappings,
+  resolve later cancellation without startup routing, forward one-shot raw
+  packets, and provide conservative non-disclosing establishment failures.
 - [x] Reject counted message collections whose minimum encoding cannot fit in
   the remaining frame body, preventing fuzz-discovered allocation amplification.
 
@@ -183,6 +213,11 @@ neutral composition harnesses and examples.
 - [x] Configure release-plz with crates.io trusted publishing through GitHub OIDC,
   grouped workspace versions, release PRs, changelog updates, and GitHub releases.
 - [x] Add CI, docs.rs, and crates.io status badges to the README.
+- [x] Cut over to a builder-only root facade, make implementation modules and
+  connection typestates crate-private, and freeze the reviewed public surface.
+- [x] Lead README/crate documentation with complete client, server, and
+  intermediary builder workflows, explicit security guardrails, migration
+  guidance, and deterministic documentation/release audits.
 
 - [x] Allow railroad-diagram Rustdoc pages to exceed Rustdoc's standard
   `width-limiter` cap without changing the width of ordinary documentation pages.

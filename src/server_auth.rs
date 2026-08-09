@@ -18,47 +18,47 @@ use crate::{
 
 #[derive(Debug)]
 /// The proxy is selecting how to authenticate its client.
-pub enum ServerAuth {}
+pub(crate) enum ServerAuth {}
 
 #[derive(Debug)]
 /// The client's startup protocol version is supported.
-pub enum ServerStartupValidated {}
+pub(crate) enum ServerStartupValidated {}
 
 #[derive(Debug)]
 /// The client's startup protocol version must be rejected.
-pub enum ServerStartupRejected {}
+pub(crate) enum ServerStartupRejected {}
 
 #[derive(Debug)]
 /// A password response is expected from the client.
-pub enum ServerPassword {}
+pub(crate) enum ServerPassword {}
 
 #[derive(Debug)]
 /// A SASL initial response is expected from the client.
-pub enum ServerSaslInitial {}
+pub(crate) enum ServerSaslInitial {}
 
 #[derive(Debug)]
 /// A recursive SASL response exchange is in progress.
-pub enum ServerSasl {}
+pub(crate) enum ServerSasl {}
 
 #[derive(Debug)]
 /// A recursive SASL response is expected from the client.
-pub enum ServerSaslResponse {}
+pub(crate) enum ServerSaslResponse {}
 
 #[derive(Debug)]
 /// A GSS, SSPI, or Kerberos response token is expected.
-pub enum ServerAuthResponse {}
+pub(crate) enum ServerAuthResponse {}
 
 #[derive(Debug)]
 /// Policy is selecting the next GSS, SSPI, or Kerberos authentication action.
-pub enum ServerAuthPolicy {}
+pub(crate) enum ServerAuthPolicy {}
 
 #[derive(Debug)]
 /// Authentication succeeded and startup metadata may be sent before readiness.
-pub enum ServerStartupReady {}
+pub(crate) enum ServerStartupReady {}
 
 /// Result of validating a client's requested protocol version.
 #[derive(Debug)]
-pub enum ServerProtocolOffer<S, C> {
+pub(crate) enum ServerProtocolOffer<S, C> {
     /// The major version is supported, with optional minor-version negotiation.
     Supported {
         /// Connection authorised to begin authentication.
@@ -79,7 +79,7 @@ pub enum ServerProtocolOffer<S, C> {
 
 /// A decoded SASL initial response selected by the client.
 #[derive(Clone, Eq, PartialEq)]
-pub struct SaslInitialResponse {
+pub(crate) struct SaslInitialResponse {
     /// SASL mechanism selected by the client.
     pub mechanism: Bytes,
     /// Optional mechanism-specific initial response.
@@ -97,25 +97,26 @@ impl std::fmt::Debug for SaslInitialResponse {
 }
 
 /// A rejected frontend message paired with the unchanged authentication state.
-pub type ServerProjection<T, S, Phase, C> = Result<T, Box<(Conn<S, Phase, C>, FrontendMessage)>>;
+pub(crate) type ServerProjection<T, S, Phase, C> =
+    Result<T, Box<(Conn<S, Phase, C>, FrontendMessage)>>;
 
 /// Projection of a valid password body or the unchanged server-password state.
-pub type PasswordProjection<S, C> =
+pub(crate) type PasswordProjection<S, C> =
     ServerProjection<(Conn<S, ServerAuth, C>, Bytes), S, ServerPassword, C>;
 
 /// Projection of a valid SASL initial response or the unchanged initial state.
-pub type SaslInitialProjection<S, C> =
+pub(crate) type SaslInitialProjection<S, C> =
     ServerProjection<(Conn<S, ServerSasl, C>, SaslInitialResponse), S, ServerSaslInitial, C>;
 /// Projection of a recursive SASL response into the next policy decision.
-pub type SaslResponseProjection<S, C> =
+pub(crate) type SaslResponseProjection<S, C> =
     ServerProjection<(Conn<S, ServerSasl, C>, Bytes), S, ServerSaslResponse, C>;
 /// Projection of a token response into the next authentication policy decision.
-pub type TokenResponseProjection<S, C> =
+pub(crate) type TokenResponseProjection<S, C> =
     ServerProjection<(Conn<S, ServerAuthPolicy, C>, Bytes), S, ServerAuthResponse, C>;
 
 impl<S, C> Conn<S, Startup, C> {
     /// Validates the startup protocol before authentication can begin.
-    pub fn validate_protocol(
+    pub(crate) fn validate_protocol(
         self,
         message: StartupMessage,
         newest: ProtocolVersion,
@@ -138,7 +139,7 @@ impl<S, C> Conn<S, Startup, C> {
 
 impl<S, C> Conn<S, ServerStartupValidated, C> {
     /// Begins proxy-side authentication of a protocol-compatible client.
-    pub fn begin_server_auth(self) -> Conn<S, ServerAuth, C> {
+    pub(crate) fn begin_server_auth(self) -> Conn<S, ServerAuth, C> {
         self.transition()
     }
 }
@@ -149,7 +150,7 @@ impl<S, C> Conn<S, ServerStartupRejected, C> {
     /// # Errors
     ///
     /// Returns an error if a diagnostic field is invalid.
-    pub fn error(
+    pub(crate) fn error(
         self,
         response: DiagnosticResponse,
     ) -> io::Result<(Conn<S, Terminated, C>, Frame)> {
@@ -166,11 +167,11 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
-    pub fn request_cleartext(self) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::CleartextPassword)?,
-        ))
+    pub(crate) fn request_cleartext(self) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::CleartextPassword),
+        )
     }
 
     /// Requests a `PostgreSQL` MD5 password response from the client.
@@ -178,11 +179,14 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn request_md5(self, salt: [u8; 4]) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Md5Password { salt })?,
-        ))
+    pub(crate) fn request_md5(
+        self,
+        salt: [u8; 4],
+    ) -> io::Result<(Conn<S, ServerPassword, C>, Frame)> {
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::Md5Password { salt }),
+        )
     }
 
     /// Offers one or more SASL mechanisms to the client.
@@ -190,14 +194,14 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error if a mechanism contains a NUL byte.
-    pub fn request_sasl(
+    pub(crate) fn request_sasl(
         self,
         mechanisms: Vec<Bytes>,
     ) -> io::Result<(Conn<S, ServerSaslInitial, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Sasl { mechanisms })?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::Sasl { mechanisms }),
+        )
     }
 
     /// Requests Kerberos V5 authentication.
@@ -205,11 +209,8 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
-    pub fn request_kerberos_v5(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::KerberosV5)?,
-        ))
+    pub(crate) fn request_kerberos_v5(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
+        transition_with_frame(self, authentication_frame(Authentication::KerberosV5))
     }
 
     /// Requests GSSAPI authentication.
@@ -217,11 +218,8 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
-    pub fn request_gss(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Gss)?,
-        ))
+    pub(crate) fn request_gss(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
+        transition_with_frame(self, authentication_frame(Authentication::Gss))
     }
 
     /// Requests SSPI authentication.
@@ -229,11 +227,8 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
-    pub fn request_sspi(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::Sspi)?,
-        ))
+    pub(crate) fn request_sspi(self) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
+        transition_with_frame(self, authentication_frame(Authentication::Sspi))
     }
 
     /// Confirms authentication and enters the startup-completion phase.
@@ -241,8 +236,8 @@ impl<S, C> Conn<S, ServerAuth, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed authentication message cannot be encoded.
-    pub fn authentication_ok(self) -> io::Result<(Conn<S, ServerStartupReady, C>, Frame)> {
-        Ok((self.transition(), authentication_frame(Authentication::Ok)?))
+    pub(crate) fn authentication_ok(self) -> io::Result<(Conn<S, ServerStartupReady, C>, Frame)> {
+        transition_with_frame(self, authentication_frame(Authentication::Ok))
     }
 }
 
@@ -252,7 +247,7 @@ impl<S, C> Conn<S, ServerPassword, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not a valid password response.
-    pub fn receive_password(self, message: FrontendMessage) -> PasswordProjection<S, C> {
+    pub(crate) fn receive_password(self, message: FrontendMessage) -> PasswordProjection<S, C> {
         match (
             auth_grammar::project_external(auth_grammar::RuntimeState::PasswordResponse, &message),
             message,
@@ -274,7 +269,7 @@ impl<S, C> Conn<S, ServerSaslInitial, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if the SASL initial response is malformed.
-    pub fn receive_initial(self, message: FrontendMessage) -> SaslInitialProjection<S, C> {
+    pub(crate) fn receive_initial(self, message: FrontendMessage) -> SaslInitialProjection<S, C> {
         match (
             auth_grammar::project_external(auth_grammar::RuntimeState::SaslInitial, &message),
             message,
@@ -296,14 +291,14 @@ impl<S, C> Conn<S, ServerSasl, C> {
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn continue_with(
+    pub(crate) fn continue_with(
         self,
         challenge: Bytes,
     ) -> io::Result<(Conn<S, ServerSaslResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::SaslContinue(challenge))?,
-        ))
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::SaslContinue(challenge)),
+        )
     }
 
     /// Sends verified server-final data and returns to authentication completion.
@@ -311,11 +306,11 @@ impl<S, C> Conn<S, ServerSasl, C> {
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn finish(self, server_final: Bytes) -> io::Result<(Conn<S, ServerAuth, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::SaslFinal(server_final))?,
-        ))
+    pub(crate) fn finish(self, server_final: Bytes) -> io::Result<(Conn<S, ServerAuth, C>, Frame)> {
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::SaslFinal(server_final)),
+        )
     }
 }
 
@@ -325,7 +320,7 @@ impl<S, C> Conn<S, ServerSaslResponse, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not a SASL response.
-    pub fn receive_response(self, message: FrontendMessage) -> SaslResponseProjection<S, C> {
+    pub(crate) fn receive_response(self, message: FrontendMessage) -> SaslResponseProjection<S, C> {
         match (
             auth_grammar::project_external(auth_grammar::RuntimeState::SaslResponse, &message),
             message,
@@ -344,7 +339,10 @@ impl<S, C> Conn<S, ServerAuthResponse, C> {
     /// # Errors
     ///
     /// Returns the unchanged state and message if it is not an authentication token.
-    pub fn receive_response(self, message: FrontendMessage) -> TokenResponseProjection<S, C> {
+    pub(crate) fn receive_response(
+        self,
+        message: FrontendMessage,
+    ) -> TokenResponseProjection<S, C> {
         match (
             auth_grammar::project_external(auth_grammar::RuntimeState::TokenResponse, &message),
             message,
@@ -363,15 +361,18 @@ impl<S, C> Conn<S, ServerAuthPolicy, C> {
     /// # Errors
     ///
     /// Returns an error only if the authentication message cannot be encoded.
-    pub fn continue_gss(self, token: Bytes) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
-        Ok((
-            self.transition(),
-            authentication_frame(Authentication::GssContinue(token))?,
-        ))
+    pub(crate) fn continue_gss(
+        self,
+        token: Bytes,
+    ) -> io::Result<(Conn<S, ServerAuthResponse, C>, Frame)> {
+        transition_with_frame(
+            self,
+            authentication_frame(Authentication::GssContinue(token)),
+        )
     }
 
     /// Returns to policy evaluation after the mechanism verifies its response.
-    pub fn verified(self) -> Conn<S, ServerAuth, C> {
+    pub(crate) fn verified(self) -> Conn<S, ServerAuth, C> {
         self.transition()
     }
 }
@@ -382,7 +383,7 @@ impl<S, C> Conn<S, ServerStartupReady, C> {
     /// # Errors
     ///
     /// Returns an error if either value contains a NUL byte.
-    pub fn parameter_status(self, name: Bytes, value: Bytes) -> io::Result<(Self, Frame)> {
+    pub(crate) fn parameter_status(self, name: Bytes, value: Bytes) -> io::Result<(Self, Frame)> {
         Ok((
             self,
             BackendMessage::ParameterStatus { name, value }.to_frame()?,
@@ -394,7 +395,11 @@ impl<S, C> Conn<S, ServerStartupReady, C> {
     /// # Errors
     ///
     /// Returns an error if the key is outside the protocol's 4–256 byte range.
-    pub fn backend_key_data(self, process_id: u32, secret_key: Bytes) -> io::Result<(Self, Frame)> {
+    pub(crate) fn backend_key_data(
+        self,
+        process_id: u32,
+        secret_key: Bytes,
+    ) -> io::Result<(Self, Frame)> {
         if !(4..=256).contains(&secret_key.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -416,7 +421,7 @@ impl<S, C> Conn<S, ServerStartupReady, C> {
     /// # Errors
     ///
     /// Returns an error if an option name contains a NUL byte or counts overflow.
-    pub fn negotiate_protocol(
+    pub(crate) fn negotiate_protocol(
         self,
         newest: ProtocolVersion,
         unsupported_options: Vec<Bytes>,
@@ -436,11 +441,24 @@ impl<S, C> Conn<S, ServerStartupReady, C> {
     /// # Errors
     ///
     /// Returns an error only if the fixed message cannot be encoded.
-    pub fn ready(self) -> io::Result<(Conn<S, Ready, C>, Frame)> {
+    pub(crate) fn ready(self) -> io::Result<(Conn<S, Ready, C>, Frame)> {
         Ok((
             self.transition(),
             BackendMessage::ReadyForQuery(TransactionStatus::Idle).to_frame()?,
         ))
+    }
+}
+
+fn transition_with_frame<S, Phase, Next, C>(
+    conn: Conn<S, Phase, C>,
+    frame: io::Result<Frame>,
+) -> io::Result<(Conn<S, Next, C>, Frame)> {
+    match frame {
+        Ok(frame) => Ok((conn.transition(), frame)),
+        Err(error) => {
+            let _ = conn.into_transport();
+            Err(error)
+        }
     }
 }
 

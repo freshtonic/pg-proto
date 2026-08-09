@@ -1,0 +1,16 @@
+error[E0382]: borrow of moved value: `connection`
+  --> tests/ui/facade/operation_owns_protocol_phase.rs:13:13
+   |
+ 7 |     mut connection: ClientConnection<T, S, ConnectionClean, E, H>,
+   |     -------------- move occurs because `connection` has type `ClientConnection<T, S, ConnectionClean, E, H>`, which does not implement the `Copy` trait
+...
+12 |     let query = run_query(connection);
+   |                           ---------- value moved here
+13 |     let _ = connection.receive_wire().await;
+   |             ^^^^^^^^^^ value borrowed here after move
+   |
+note: consider changing this parameter type in function `run_query` to borrow instead if owning the value isn't necessary
+  --> tests/ui/facade/operation_owns_protocol_phase.rs:17:44
+   |
+17 | async fn run_query<T, S, E, H>(connection: ClientConnection<T, S, ConnectionClean, E, H>)
+   |          --------- in this function        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this parameter takes ownership of the value

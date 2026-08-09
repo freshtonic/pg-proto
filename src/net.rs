@@ -21,7 +21,7 @@ use crate::{
 
 /// A PostgreSQL network transport after optional TLS negotiation.
 #[derive(Debug)]
-pub enum NetworkStream<S> {
+pub(crate) enum NetworkStream<S> {
     /// An unencrypted transport.
     Plain(S),
     /// TLS initiated by this endpoint as a client.
@@ -32,27 +32,27 @@ pub enum NetworkStream<S> {
 
 impl<S> NetworkStream<S> {
     /// Wraps an unencrypted transport.
-    pub const fn plain(stream: S) -> Self {
+    pub(crate) const fn plain(stream: S) -> Self {
         Self::Plain(stream)
     }
 
     /// Wraps a completed client-side TLS upgrade.
-    pub const fn client_tls(stream: ClientTls<S>) -> Self {
+    pub(crate) const fn client_tls(stream: ClientTls<S>) -> Self {
         Self::ClientTls(stream)
     }
 
     /// Wraps a completed server-side TLS upgrade.
-    pub const fn server_tls(stream: ServerTls<S>) -> Self {
+    pub(crate) const fn server_tls(stream: ServerTls<S>) -> Self {
         Self::ServerTls(stream)
     }
 
     /// Reports whether the transport is encrypted.
-    pub const fn is_tls(&self) -> bool {
+    pub(crate) const fn is_tls(&self) -> bool {
         !matches!(self, Self::Plain(_))
     }
 
     /// Reports whether the transport is unencrypted.
-    pub const fn is_plain(&self) -> bool {
+    pub(crate) const fn is_plain(&self) -> bool {
         matches!(self, Self::Plain(_))
     }
 
@@ -61,7 +61,7 @@ impl<S> NetworkStream<S> {
     /// # Errors
     ///
     /// Returns [`AlreadyTls`] for either negotiated TLS variant.
-    pub fn into_plain(self) -> Result<S, AlreadyTls> {
+    pub(crate) fn into_plain(self) -> Result<S, AlreadyTls> {
         match self {
             Self::Plain(stream) => Ok(stream),
             Self::ClientTls(_) | Self::ServerTls(_) => Err(AlreadyTls),
@@ -69,7 +69,7 @@ impl<S> NetworkStream<S> {
     }
 
     /// Returns RFC 5929 `tls-server-end-point` bytes for an encrypted stream.
-    pub fn tls_server_end_point(&self) -> Option<&[u8]> {
+    pub(crate) fn tls_server_end_point(&self) -> Option<&[u8]> {
         match self {
             Self::Plain(_) => None,
             Self::ClientTls(stream) => Some(stream.tls_server_end_point()),
@@ -90,14 +90,14 @@ impl<S> TlsServerEndPoint for NetworkStream<S> {
 
 impl<S: AsyncRead + AsyncWrite + Unpin> NetworkStream<S> {
     /// Splits the negotiated transport into independently owned read and write halves.
-    pub fn split(self) -> (tokio::io::ReadHalf<Self>, tokio::io::WriteHalf<Self>) {
+    pub(crate) fn split(self) -> (tokio::io::ReadHalf<Self>, tokio::io::WriteHalf<Self>) {
         tokio::io::split(self)
     }
 }
 
 /// A plain transport was requested after TLS had already been negotiated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AlreadyTls;
+pub(crate) struct AlreadyTls;
 
 impl fmt::Display for AlreadyTls {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -153,7 +153,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for NetworkStream<S> {
 
 /// Retry policy for establishing an outbound TCP connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ConnectRetry {
+pub(crate) struct ConnectRetry {
     /// Number of retries after the initial attempt.
     pub max_retries: u32,
     /// Initial exponential-backoff delay.
@@ -177,7 +177,10 @@ impl Default for ConnectRetry {
 /// # Errors
 ///
 /// Returns the final connection error after the configured attempts are exhausted.
-pub async fn connect_with_retry(address: &str, retry: ConnectRetry) -> io::Result<TcpStream> {
+pub(crate) async fn connect_with_retry(
+    address: &str,
+    retry: ConnectRetry,
+) -> io::Result<TcpStream> {
     let mut retries = 0_u32;
     loop {
         match TcpStream::connect(address).await {
@@ -199,7 +202,7 @@ pub async fn connect_with_retry(address: &str, retry: ConnectRetry) -> io::Resul
 
 /// Best-effort TCP socket configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TcpSettings {
+pub(crate) struct TcpSettings {
     /// Whether to disable Nagle's algorithm.
     pub no_delay: bool,
     /// Optional TCP user timeout on supported operating systems.
@@ -226,7 +229,7 @@ impl Default for TcpSettings {
 
 /// One socket option which could not be applied.
 #[derive(Debug)]
-pub struct TcpConfigurationError {
+pub(crate) struct TcpConfigurationError {
     /// Stable socket-option name.
     pub option: &'static str,
     /// Operating-system error returned while applying the option.
@@ -251,7 +254,10 @@ impl std::error::Error for TcpConfigurationError {
 
 /// Applies every configured TCP option and reports individual failures.
 #[must_use]
-pub fn configure_tcp(stream: &TcpStream, settings: TcpSettings) -> Vec<TcpConfigurationError> {
+pub(crate) fn configure_tcp(
+    stream: &TcpStream,
+    settings: TcpSettings,
+) -> Vec<TcpConfigurationError> {
     let mut errors = Vec::new();
     if let Err(source) = stream.set_nodelay(settings.no_delay) {
         errors.push(TcpConfigurationError {

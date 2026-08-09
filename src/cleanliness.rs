@@ -6,7 +6,7 @@ use crate::codec::TransactionStatus;
 
 /// Observable facts which may affect whether an upstream connection is reusable.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CleanlinessEvent {
+pub(crate) enum CleanlinessEvent {
     /// The backend reported its current transaction state.
     TransactionStatus(TransactionStatus),
     /// A reportable run-time parameter changed.
@@ -65,7 +65,7 @@ pub enum CleanlinessEvent {
 ///
 /// The protocol library reports facts; the application decides whether they
 /// prohibit pooling and what reset operation, if any, restores reusability.
-pub trait CleanlinessPolicy {
+pub(crate) trait CleanlinessPolicy {
     /// Incorporates one observed fact into the policy's state.
     fn observe(&mut self, event: &CleanlinessEvent);
 
@@ -75,7 +75,7 @@ pub trait CleanlinessPolicy {
 
 /// A no-op policy for applications which do not pool upstream connections.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct IgnoreCleanliness;
+pub(crate) struct IgnoreCleanliness;
 
 impl CleanlinessPolicy for IgnoreCleanliness {
     fn observe(&mut self, _event: &CleanlinessEvent) {}

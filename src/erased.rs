@@ -11,7 +11,7 @@ use crate::Conn;
 /// runtime identities rather than generic parameters.
 #[must_use = "dropping an erased connection abandons the PostgreSQL session"]
 #[derive(Debug)]
-pub struct ErasedConn<S> {
+pub(crate) struct ErasedConn<S> {
     transport: Option<S>,
     phase: TypeId,
     phase_name: &'static str,
@@ -22,25 +22,25 @@ pub struct ErasedConn<S> {
 impl<S> ErasedConn<S> {
     /// Reports the erased phase marker for diagnostics.
     #[must_use]
-    pub const fn phase_name(&self) -> &'static str {
+    pub(crate) const fn phase_name(&self) -> &'static str {
         self.phase_name
     }
 
     /// Reports the erased cleanliness marker for diagnostics.
     #[must_use]
-    pub const fn cleanliness_name(&self) -> &'static str {
+    pub(crate) const fn cleanliness_name(&self) -> &'static str {
         self.cleanliness_name
     }
 
     /// Checks whether the exact requested phase marker was erased.
     #[must_use]
-    pub fn phase_is<P: 'static>(&self) -> bool {
+    pub(crate) fn phase_is<P: 'static>(&self) -> bool {
         self.phase == TypeId::of::<P>()
     }
 
     /// Checks whether the exact requested cleanliness marker was erased.
     #[must_use]
-    pub fn cleanliness_is<C: 'static>(&self) -> bool {
+    pub(crate) fn cleanliness_is<C: 'static>(&self) -> bool {
         self.cleanliness == TypeId::of::<C>()
     }
 
@@ -51,7 +51,7 @@ impl<S> ErasedConn<S> {
     /// # Errors
     ///
     /// Returns the unchanged connection when either requested marker differs.
-    pub fn try_reenter<P: 'static, C: 'static>(mut self) -> Result<Conn<S, P, C>, Self> {
+    pub(crate) fn try_reenter<P: 'static, C: 'static>(mut self) -> Result<Conn<S, P, C>, Self> {
         if !self.phase_is::<P>() || !self.cleanliness_is::<C>() {
             return Err(self);
         }
@@ -67,7 +67,7 @@ impl<S> ErasedConn<S> {
     /// # Panics
     ///
     /// Panics only if an earlier internal operation has moved the transport.
-    pub fn map_transport<T>(mut self, map: impl FnOnce(S) -> T) -> ErasedConn<T> {
+    pub(crate) fn map_transport<T>(mut self, map: impl FnOnce(S) -> T) -> ErasedConn<T> {
         ErasedConn {
             transport: Some(map(self
                 .transport
@@ -85,7 +85,7 @@ impl<S> ErasedConn<S> {
     /// # Panics
     ///
     /// Panics only if an earlier internal operation has moved the transport.
-    pub fn into_transport(mut self) -> S {
+    pub(crate) fn into_transport(mut self) -> S {
         self.transport
             .take()
             .expect("live erased connection has a transport")
@@ -95,7 +95,7 @@ impl<S> ErasedConn<S> {
 impl<S, P: 'static, C: 'static> Conn<S, P, C> {
     /// Erases monomorphised state markers while retaining their exact runtime
     /// identities for checked re-entry.
-    pub fn erase(mut self) -> ErasedConn<S> {
+    pub(crate) fn erase(mut self) -> ErasedConn<S> {
         ErasedConn {
             transport: self.transport.take(),
             phase: TypeId::of::<P>(),

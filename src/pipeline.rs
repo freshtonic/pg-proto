@@ -26,7 +26,7 @@ use crate::{
 
 /// Stable identity of an accepted frontend operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct OperationId(u64);
+pub(crate) struct OperationId(u64);
 
 /// Pipeline policy which preserves the historical lock-step behaviour.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -74,7 +74,7 @@ mod private {
     pub trait Sealed {}
 }
 
-/// Configuration accepted by [`Pipeline`].
+/// Sealed configuration accepted by the intermediary builder.
 pub trait PipelinePolicy: private::Sealed + Copy {
     /// Maximum number of incomplete operation records.
     fn operation_limit(self) -> usize;
@@ -96,7 +96,7 @@ impl PipelinePolicy for BoundedPipeline {
 
 /// Whether an accepted frontend operation is locally handled or forwarded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendHandling {
+pub(crate) enum FrontendHandling {
     /// Send the returned message to the upstream connection.
     Forward,
     /// Do not send the request upstream; application code will synthesize its response.
@@ -105,7 +105,7 @@ pub enum FrontendHandling {
 
 /// Application action for one successfully projected frontend message.
 #[derive(Debug, Eq, PartialEq)]
-pub enum FrontendAction {
+pub(crate) enum FrontendAction {
     /// Forward the owned message upstream.
     Forward {
         /// Accepted operation identity.
@@ -122,7 +122,7 @@ pub enum FrontendAction {
 
 /// Position of a successfully accepted operation.
 #[derive(Debug, Eq, PartialEq)]
-pub enum FrontendAdmission {
+pub(crate) enum FrontendAdmission {
     /// Nothing earlier prevents this operation's response from being emitted.
     Immediate(FrontendAction),
     /// The operation was accepted but an earlier response must be emitted first.
@@ -132,7 +132,7 @@ pub enum FrontendAdmission {
 impl FrontendAdmission {
     /// Returns the application action, discarding only the positional annotation.
     #[must_use]
-    pub fn into_action(self) -> FrontendAction {
+    pub(crate) fn into_action(self) -> FrontendAction {
         match self {
             Self::Immediate(action) | Self::Waiting(action) => action,
         }
@@ -155,7 +155,7 @@ pub enum FrontendProjectionError {
 
 /// Application action for a backend message.
 #[derive(Debug, Eq, PartialEq)]
-pub enum BackendAction {
+pub(crate) enum BackendAction {
     /// Emit this owned message to the downstream client now.
     Emit(BackendMessage),
     /// An earlier operation must complete; retry this unchanged message later.
@@ -192,7 +192,7 @@ pub enum PipelineState {
 
 /// Error returned while dispatching a pipeline message through typed middleware.
 #[derive(Debug)]
-pub enum PipelineMiddlewareError<MiddlewareError, ProjectionError> {
+pub(crate) enum PipelineMiddlewareError<MiddlewareError, ProjectionError> {
     /// Middleware rejected the phase-typed message.
     Middleware(MiddlewareError),
     /// The pipeline rejected the original or rewritten message.
@@ -265,7 +265,7 @@ macro_rules! declare_pipeline_hooks {
 
 /// Async middleware for frontend messages selected from the runtime ledger phase.
 #[allow(async_fn_in_trait)]
-pub trait FrontendPipelineMiddleware<State> {
+pub(crate) trait FrontendPipelineMiddleware<State> {
     /// An error which prevents the message from continuing through the pipeline.
     type Error;
     frontend_pipeline_phases!(declare_pipeline_hooks);
@@ -273,7 +273,7 @@ pub trait FrontendPipelineMiddleware<State> {
 
 /// Async middleware for backend messages selected from the runtime ledger phase.
 #[allow(async_fn_in_trait)]
-pub trait BackendPipelineMiddleware<State> {
+pub(crate) trait BackendPipelineMiddleware<State> {
     /// An error which prevents the message from continuing through the pipeline.
     type Error;
     backend_pipeline_phases!(declare_pipeline_hooks);
@@ -329,25 +329,25 @@ where
 }
 
 /// Adapts direction-wide async middleware to every typed pipeline hook.
-pub struct PipelineWireAdapter<Handler> {
+pub(crate) struct PipelineWireAdapter<Handler> {
     handler: Handler,
 }
 
 impl<Handler> PipelineWireAdapter<Handler> {
     /// Wraps direction-wide middleware for runtime phase dispatch.
-    pub const fn new(handler: Handler) -> Self {
+    pub(crate) const fn new(handler: Handler) -> Self {
         Self { handler }
     }
 
     /// Returns the wrapped direction-wide middleware.
-    pub fn into_inner(self) -> Handler {
+    pub(crate) fn into_inner(self) -> Handler {
         self.handler
     }
 }
 
 /// Failure from direction-wide middleware adapted to typed pipeline dispatch.
 #[derive(Debug)]
-pub enum FrontendPipelineWireAdapterError<Error> {
+pub(crate) enum FrontendPipelineWireAdapterError<Error> {
     /// The wrapped middleware rejected a message.
     Middleware(Error),
     /// The wrapped middleware returned a frontend message illegal in the selected phase.
@@ -356,7 +356,7 @@ pub enum FrontendPipelineWireAdapterError<Error> {
 
 /// Failure from backend wire middleware adapted to typed pipeline dispatch.
 #[derive(Debug)]
-pub enum BackendPipelineWireAdapterError<Error> {
+pub(crate) enum BackendPipelineWireAdapterError<Error> {
     /// The wrapped middleware rejected a message.
     Middleware(Error),
     /// The wrapped middleware returned a message illegal in the selected phase.
@@ -517,7 +517,7 @@ struct Operation {
 
 /// A bounded ledger coordinating independently owned frontend and backend values.
 #[derive(Debug)]
-pub struct Pipeline<P = NoPipeline> {
+pub(crate) struct Pipeline<P = NoPipeline> {
     policy: P,
     operations: VecDeque<Operation>,
     request_state: RequestState,
@@ -535,7 +535,7 @@ impl Default for Pipeline<NoPipeline> {
 impl<P: PipelinePolicy> Pipeline<P> {
     /// Creates an empty pipeline using `policy`.
     #[must_use]
-    pub fn new(policy: P) -> Self {
+    pub(crate) fn new(policy: P) -> Self {
         Self {
             policy,
             operations: VecDeque::new(),
@@ -548,20 +548,20 @@ impl<P: PipelinePolicy> Pipeline<P> {
 
     /// Returns the projected frontend protocol state.
     #[must_use]
-    pub fn state(&self) -> PipelineState {
+    pub(crate) fn state(&self) -> PipelineState {
         self.response_state
             .unwrap_or_else(|| self.request_state.public())
     }
 
     /// Returns the number of incomplete lightweight operation records.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.operations.len()
     }
 
     /// Reports whether no operations remain outstanding.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.operations.is_empty()
     }
 
@@ -574,7 +574,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ///
     /// Returns the unchanged boxed message when capacity is exhausted or the
     /// message is illegal in the projected state.
-    pub fn accept_frontend(
+    pub(crate) fn accept_frontend(
         &mut self,
         message: FrontendMessage,
         handling: FrontendHandling,
@@ -587,7 +587,12 @@ impl<P: PipelinePolicy> Pipeline<P> {
         &self,
         message: &FrontendMessage,
     ) -> Result<PreparedFrontend, FrontendProjectionError> {
-        if self.operations.len() == self.policy.operation_limit() {
+        if self.operations.len() == self.policy.operation_limit()
+            && !matches!(
+                self.request_state,
+                RequestState::CopyIn | RequestState::CopyBoth
+            )
+        {
             return Err(FrontendProjectionError::Capacity(Box::new(message.clone())));
         }
         if project_frontend(self.request_state, message).is_none() {
@@ -658,7 +663,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ///
     /// Returns a middleware error, an illegal original or replacement message,
     /// or the unchanged message when capacity is exhausted.
-    pub async fn accept_frontend_typed<State, Handler>(
+    pub(crate) async fn accept_frontend_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         message: FrontendMessage,
@@ -691,7 +696,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     /// # Errors
     ///
     /// Returns an unchanged response which cannot belong to any outstanding operation.
-    pub fn accept_backend(
+    pub(crate) fn accept_backend(
         &mut self,
         message: BackendMessage,
     ) -> Result<BackendAction, BackendProjectionError> {
@@ -708,7 +713,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ///
     /// Returns a middleware error or an unchanged response which cannot belong
     /// to any outstanding operation.
-    pub async fn accept_backend_typed<State, Handler>(
+    pub(crate) async fn accept_backend_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         message: BackendMessage,
@@ -727,7 +732,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     /// # Errors
     ///
     /// Returns the unchanged message when it is illegal for the named operation.
-    pub fn try_emit_local(
+    pub(crate) fn try_emit_local(
         &mut self,
         id: OperationId,
         message: BackendMessage,
@@ -743,7 +748,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     /// # Errors
     ///
     /// Returns a middleware error or an illegal response for the named operation.
-    pub async fn try_emit_local_typed<State, Handler>(
+    pub(crate) async fn try_emit_local_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
         id: OperationId,
@@ -760,7 +765,7 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ///
     /// Cancellation is safe: polling this future never reserves or removes a
     /// ledger entry. The caller should then invoke [`Self::try_emit_local`].
-    pub async fn wait_until_emittable(&self, id: OperationId) {
+    pub(crate) async fn wait_until_emittable(&self, id: OperationId) {
         loop {
             let notified = self.changed.notified();
             if self

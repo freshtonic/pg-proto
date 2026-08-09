@@ -2,7 +2,7 @@
 
 Install `cargo-fuzz`, then run any target, for example:
 
-```console
+```bash
 cargo fuzz run frontend_codec
 cargo fuzz run backend_codec
 cargo fuzz run pre_startup

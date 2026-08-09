@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `Handler: ClientMiddleware<WrongState, ClientConnectionContext>` is not satisfied
+  --> tests/ui/facade/middleware_state_mismatch.rs:25:38
+   |
+25 |     require_wrong_state_middleware::<Handler>();
+   |                                      ^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `ClientMiddleware<WrongState, ClientConnectionContext>` is not implemented for `Handler`
+      but trait `ClientMiddleware<ExpectedState, ClientConnectionContext>` is implemented for it
+  --> tests/ui/facade/middleware_state_mismatch.rs:7:1
+   |
+ 7 | impl ClientMiddleware<ExpectedState, ClientConnectionContext> for Handler {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `ExpectedState`, found `WrongState`
+note: required by a bound in `require_wrong_state_middleware`
+  --> tests/ui/facade/middleware_state_mismatch.rs:20:8
+   |
+18 | fn require_wrong_state_middleware<M>()
+   |    ------------------------------ required by a bound in this function
+19 | where
+20 |     M: ClientMiddleware<WrongState, ClientConnectionContext>,
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `require_wrong_state_middleware`

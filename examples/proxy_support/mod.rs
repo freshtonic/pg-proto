@@ -1,12 +1,11 @@
 use std::{convert::Infallible, error::Error, io, net::SocketAddr, sync::Arc};
 
 use pg_proto::{
-    Conn,
-    codec::{Backend, BackendMessage, Frontend, FrontendMessage},
-    middleware::{MessageMiddleware, MessageMiddlewareExt as _, Middleware, Then},
-    pre_startup::{PreStartup, PreStartupMessage, PreStartupOffer, Startup},
-    tls::ServerTls,
-    transport::Buffered,
+    BackendMessage, BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext,
+    ClientTlsPolicy, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
+    Intermediary, IntermediaryMiddleware, Server, ServerConnectionContext, ServerIdentity,
+    ServerIdentityProvider, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use rcgen::generate_simple_self_signed;
 use rustls::{
@@ -17,10 +16,7 @@ use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ContainerAsync, ImageExt as _, runners::AsyncRunner as _},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _},
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Observation {
@@ -39,150 +35,61 @@ pub enum Observation {
         message: String,
     },
 }
-
 pub type Reporter = Arc<dyn Fn(Observation) + Send + Sync>;
 
-struct ExampleState {
+pub struct ExampleState {
     connection: u64,
     rows: usize,
     reporter: Reporter,
-    pre_startup_direction: &'static str,
 }
 
-#[derive(Clone)]
-struct ProtocolLogger(Reporter);
-
-#[derive(Clone)]
-struct SqlLogger(Reporter);
-
-#[derive(Clone)]
-struct RowStatistics(Reporter);
-
-type ExampleHandler = Then<Then<ProtocolLogger, SqlLogger>, RowStatistics>;
-type ExampleMiddleware = Middleware<ExampleState, ExampleHandler>;
-
-fn middleware(connection: u64, reporter: Reporter) -> ExampleMiddleware {
-    Middleware::new(
-        ExampleState {
-            connection,
-            rows: 0,
-            reporter: Arc::clone(&reporter),
-            pre_startup_direction: "client -> server",
-        },
-        ProtocolLogger(Arc::clone(&reporter))
-            .then(SqlLogger(Arc::clone(&reporter)))
-            .then(RowStatistics(reporter)),
-    )
-}
-
-macro_rules! pass_through {
-    ($handler:ty, $message:ty) => {
-        impl MessageMiddleware<$message, ExampleState> for $handler {
-            type Error = Infallible;
-
-            async fn intercept(
-                &mut self,
-                _state: &mut ExampleState,
-                message: $message,
-            ) -> Result<$message, Self::Error> {
-                Ok(message)
-            }
-        }
-    };
-}
-
-impl MessageMiddleware<PreStartupMessage, ExampleState> for ProtocolLogger {
-    type Error = Infallible;
-
-    async fn intercept(
+#[derive(Clone, Copy)]
+struct Logger;
+impl
+    IntermediaryMiddleware<
+        ExampleState,
+        ServerConnectionContext<SocketAddr, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for Logger
+{
+    fn frontend(
         &mut self,
-        state: &mut ExampleState,
-        message: PreStartupMessage,
-    ) -> Result<PreStartupMessage, Self::Error> {
-        (self.0)(Observation::Protocol {
-            connection: state.connection,
-            direction: state.pre_startup_direction,
-            message: format!("{message:?}"),
-        });
-        Ok(message)
-    }
-}
-
-impl MessageMiddleware<FrontendMessage, ExampleState> for ProtocolLogger {
-    type Error = Infallible;
-
-    async fn intercept(
-        &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
         state: &mut ExampleState,
         message: FrontendMessage,
-    ) -> Result<FrontendMessage, Self::Error> {
-        (self.0)(Observation::Protocol {
+    ) -> FrontendMessage {
+        (state.reporter)(Observation::Protocol {
             connection: state.connection,
             direction: "client -> server",
             message: format!("{message:?}"),
         });
-        Ok(message)
+        if let FrontendMessage::Query(sql)
+        | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
+        {
+            (state.reporter)(Observation::Sql {
+                connection: state.connection,
+                statement: String::from_utf8_lossy(sql).into_owned(),
+            });
+        }
+        message
     }
-}
-
-impl MessageMiddleware<BackendMessage, ExampleState> for ProtocolLogger {
-    type Error = Infallible;
-
-    async fn intercept(
+    fn backend(
         &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
         state: &mut ExampleState,
         message: BackendMessage,
-    ) -> Result<BackendMessage, Self::Error> {
-        (self.0)(Observation::Protocol {
+    ) -> BackendMessage {
+        (state.reporter)(Observation::Protocol {
             connection: state.connection,
             direction: "server -> client",
             message: format!("{message:?}"),
         });
-        Ok(message)
-    }
-}
-
-pass_through!(SqlLogger, PreStartupMessage);
-pass_through!(SqlLogger, BackendMessage);
-
-impl MessageMiddleware<FrontendMessage, ExampleState> for SqlLogger {
-    type Error = Infallible;
-
-    async fn intercept(
-        &mut self,
-        state: &mut ExampleState,
-        message: FrontendMessage,
-    ) -> Result<FrontendMessage, Self::Error> {
-        let statement = match &message {
-            FrontendMessage::Query(sql) => Some(sql),
-            FrontendMessage::Parse(parse) => Some(&parse.query),
-            _ => None,
-        };
-        if let Some(statement) = statement {
-            (self.0)(Observation::Sql {
-                connection: state.connection,
-                statement: String::from_utf8_lossy(statement).into_owned(),
-            });
-        }
-        Ok(message)
-    }
-}
-
-pass_through!(RowStatistics, PreStartupMessage);
-pass_through!(RowStatistics, FrontendMessage);
-
-impl MessageMiddleware<BackendMessage, ExampleState> for RowStatistics {
-    type Error = Infallible;
-
-    async fn intercept(
-        &mut self,
-        state: &mut ExampleState,
-        message: BackendMessage,
-    ) -> Result<BackendMessage, Self::Error> {
         match &message {
             BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
             BackendMessage::CommandComplete(tag) => {
-                (self.0)(Observation::RowCount {
+                (state.reporter)(Observation::RowCount {
                     connection: state.connection,
                     rows: state.rows,
                     command: String::from_utf8_lossy(tag).into_owned(),
@@ -192,16 +99,16 @@ impl MessageMiddleware<BackendMessage, ExampleState> for RowStatistics {
             BackendMessage::ErrorResponse(_) => state.rows = 0,
             _ => {}
         }
-        Ok(message)
+        message
     }
 }
 
 #[derive(Clone)]
 pub struct ExampleTlsIdentity {
-    config: Arc<ServerConfig>,
+    identity: ServerIdentity,
+    #[allow(dead_code)]
     certificate: CertificateDer<'static>,
 }
-
 impl ExampleTlsIdentity {
     pub fn generate() -> Result<Self, Box<dyn Error>> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -215,14 +122,19 @@ impl ExampleTlsIdentity {
                 .with_single_cert(vec![certificate.clone()], key)?,
         );
         Ok(Self {
-            config,
+            identity: ServerIdentity::new(config, certificate.clone()),
             certificate,
         })
     }
-
     #[cfg(test)]
     pub fn certificate(&self) -> CertificateDer<'static> {
         self.certificate.clone()
+    }
+}
+impl ServerIdentityProvider for ExampleTlsIdentity {
+    type Error = Infallible;
+    fn resolve(&self) -> Result<ServerIdentity, Self::Error> {
+        Ok(self.identity.clone())
     }
 }
 
@@ -230,25 +142,16 @@ pub struct ExampleUpstream {
     address: SocketAddr,
     _container: Option<ContainerAsync<Postgres>>,
 }
-
 impl ExampleUpstream {
     pub async fn resolve(configured: Option<&str>) -> Result<Self, Box<dyn Error>> {
         if let Some(configured) = configured {
             let address: SocketAddr = configured.parse()?;
-            TcpStream::connect(address).await.map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "cannot connect to PostgreSQL at {address}: {error}; start that server or omit the upstream argument to use the example container"
-                    ),
-                )
-            })?;
+            TcpStream::connect(address).await.map_err(|error| io::Error::new(error.kind(), format!("cannot connect to PostgreSQL at {address}: {error}; start that server or omit the upstream argument to use the example container")))?;
             return Ok(Self {
                 address,
                 _container: None,
             });
         }
-
         let version =
             std::env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
         if !matches!(version.as_str(), "14" | "15" | "16" | "17" | "18") {
@@ -270,9 +173,22 @@ impl ExampleUpstream {
             _container: Some(container),
         })
     }
-
     pub const fn address(&self) -> SocketAddr {
         self.address
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Route(SocketAddr);
+impl StartupRouteResolver<SocketAddr> for Route {
+    type Error = Infallible;
+    fn resolve<'a>(
+        &'a self,
+        _: StartupParameters,
+        _: InitialServerContext<'a, SocketAddr>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
+    {
+        Box::pin(async move { Ok(ConnectTarget::new(self.0.to_string())) })
     }
 }
 
@@ -282,175 +198,98 @@ pub async fn serve(
     tls: ExampleTlsIdentity,
     reporter: Reporter,
 ) -> io::Result<()> {
-    let mut next_connection = 1_u64;
+    let mut next = 1_u64;
+    // The facade intentionally permits non-Send authentication and routing
+    // policies. Bound the application-owned connection workers explicitly.
+    let workers = Arc::new(tokio::sync::Semaphore::new(64));
     loop {
-        let (client, _) = listener.accept().await?;
-        let connection = next_connection;
-        next_connection = next_connection.wrapping_add(1);
-        let middleware = middleware(connection, Arc::clone(&reporter));
+        let (transport, peer) = listener.accept().await?;
+        let worker = Arc::clone(&workers)
+            .acquire_owned()
+            .await
+            .map_err(|_| io::Error::other("connection worker pool closed"))?;
+        let connection = next;
+        next = next.wrapping_add(1);
+        let reporter = Arc::clone(&reporter);
         let tls = tls.clone();
-        tokio::spawn(async move {
-            if let Err(error) = proxy_connection(client, upstream, tls, middleware).await {
-                eprintln!("connection {connection}: {error}");
-            }
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("connection runtime");
+            runtime.block_on(async move {
+                let _worker = worker;
+                if let Err(error) = Box::pin(proxy_connection(
+                    transport, peer, upstream, tls, connection, reporter,
+                ))
+                .await
+                {
+                    eprintln!("connection {connection}: {error}");
+                }
+            });
         });
     }
 }
 
 async fn proxy_connection(
-    client: TcpStream,
+    transport: TcpStream,
+    peer: SocketAddr,
     upstream: SocketAddr,
     tls: ExampleTlsIdentity,
-    mut middleware: ExampleMiddleware,
+    connection: u64,
+    reporter: Reporter,
 ) -> io::Result<()> {
-    let mut pre_startup = Conn::new(Buffered::new_frontend(client));
-    loop {
-        let message = middleware
-            .intercept(pre_startup.receive_pre_startup_wire().await?)
-            .await
-            .expect("example middleware is infallible");
-        match pre_startup.offer_pre_startup(message) {
-            PreStartupOffer::Ssl(decision) => {
-                let mut handshake = decision.approve_ssl();
-                handshake.flush().await?;
-                (middleware.state().reporter)(Observation::Protocol {
-                    connection: middleware.state().connection,
-                    direction: "server -> client",
-                    message: "SslAccepted".to_owned(),
-                });
-                let encrypted = handshake.accept_tls(tls.config, tls.certificate).await?;
-                return encrypted_startup(encrypted, upstream, middleware).await;
-            }
-            PreStartupOffer::Gss(decision) => {
-                pre_startup = decision.decline_gss();
-                pre_startup.flush().await?;
-                (middleware.state().reporter)(Observation::Protocol {
-                    connection: middleware.state().connection,
-                    direction: "server -> client",
-                    message: "GssEncryptionRejected".to_owned(),
-                });
-            }
-            PreStartupOffer::Cancel {
-                conn,
-                process_id,
-                secret_key,
-            } => {
-                drop(conn.into_transport().into_inner());
-                return forward_cancel(
-                    PreStartupMessage::CancelRequest {
-                        process_id,
-                        secret_key,
-                    },
-                    upstream,
-                )
-                .await;
-            }
-            PreStartupOffer::Startup { conn, message } => {
-                return begin_forwarding(conn, message, upstream, middleware).await;
-            }
-        }
-    }
-}
-
-async fn encrypted_startup(
-    mut pre_startup: Conn<Buffered<ServerTls<TcpStream>, Frontend>, PreStartup>,
-    upstream: SocketAddr,
-    mut middleware: ExampleMiddleware,
-) -> io::Result<()> {
-    middleware.state_mut().pre_startup_direction = "client -> server (TLS plaintext)";
-    let message = middleware
-        .intercept(pre_startup.receive_pre_startup_wire().await?)
-        .await
-        .expect("example middleware is infallible");
-    match pre_startup.offer_pre_startup(message) {
-        PreStartupOffer::Startup { conn, message } => {
-            begin_forwarding(conn, message, upstream, middleware).await
-        }
-        PreStartupOffer::Cancel {
-            conn,
-            process_id,
-            secret_key,
-        } => {
-            drop(conn.into_transport().into_inner());
-            forward_cancel(
-                PreStartupMessage::CancelRequest {
-                    process_id,
-                    secret_key,
-                },
-                upstream,
-            )
-            .await
-        }
-        PreStartupOffer::Ssl(conn) => invalid_encrypted_request(conn, "SSLRequest"),
-        PreStartupOffer::Gss(conn) => invalid_encrypted_request(conn, "GSSENCRequest"),
-    }
-}
-
-fn invalid_encrypted_request<S, Phase>(
-    conn: Conn<Buffered<S, Frontend>, Phase>,
-    request: &str,
-) -> io::Result<()> {
-    drop(conn.into_transport().into_inner());
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{request} is not valid inside TLS"),
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Required(tls))
+        .authentication(TrustServerAuthentication)
+        .build()
+        .map_err(other)?;
+    let client = Client::builder()
+        .connector(move |_| TcpStream::connect(upstream))
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .map_err(other)?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route(upstream))
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(64).expect("non-zero proxy pipeline capacity"))
+        .middleware(
+            |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+             _: &ClientConnectionContext<()>| Logger,
+        )
+        .build()
+        .map_err(other)?;
+    let accepted = Box::pin(intermediary.accept(
+        transport,
+        peer,
+        ExampleState {
+            connection,
+            rows: 0,
+            reporter,
+        },
     ))
-}
-
-async fn forward_cancel(message: PreStartupMessage, upstream: SocketAddr) -> io::Result<()> {
-    let mut server = TcpStream::connect(upstream).await?;
-    server.write_all(&message.to_packet()?).await
-}
-
-async fn begin_forwarding<S>(
-    conn: Conn<Buffered<S, Frontend>, Startup>,
-    message: pg_proto::startup::StartupMessage,
-    upstream: SocketAddr,
-    middleware: ExampleMiddleware,
-) -> io::Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let client = conn.into_transport().into_inner();
-    let mut server = TcpStream::connect(upstream).await?;
-    server
-        .write_all(&PreStartupMessage::Startup(message).to_packet()?)
-        .await?;
-    forward_tagged(client, server, middleware).await
-}
-
-async fn forward_tagged<S>(
-    client: S,
-    server: TcpStream,
-    mut middleware: ExampleMiddleware,
-) -> io::Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut downstream: Buffered<_, Frontend> = Buffered::new_frontend(client);
-    let mut upstream: Buffered<_, Backend> = Buffered::new(server);
+    .await
+    .map_err(other)?;
+    let mut session = accepted.into_session();
     loop {
-        tokio::select! {
-            frontend = downstream.receive_wire() => {
-                let frontend = middleware
-                    .intercept(frontend?)
-                    .await
-                    .expect("example middleware is infallible");
-                let terminate = matches!(frontend, FrontendMessage::Terminate);
-                upstream.push(frontend.to_frame()?)?;
-                upstream.flush().await?;
-                if terminate {
-                    return Ok(());
-                }
+        match session.forward_next().await {
+            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                let _ = session.teardown();
+                return Ok(());
             }
-            backend = upstream.receive_wire() => {
-                let backend = middleware
-                    .intercept(backend?)
-                    .await
-                    .expect("example middleware is infallible");
-                downstream.push(backend.to_frame()?)?;
-                downstream.flush().await?;
+            Ok(_) => {}
+            Err(error) => {
+                let error = other(error);
+                let _ = session.teardown();
+                return Err(error);
             }
         }
     }
+}
+
+fn other(error: impl std::fmt::Debug) -> io::Error {
+    io::Error::other(format!("{error:?}"))
 }

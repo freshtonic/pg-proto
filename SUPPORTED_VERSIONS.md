@@ -12,6 +12,7 @@ PostgreSQL 14–17 negotiate a requested protocol 3.2 startup down to protocol
 
 Run one version locally with:
 
-```console
-PG_PROTO_POSTGRES_VERSION=18 cargo test --test postgres_container -- --ignored
+```bash
+PG_PROTO_POSTGRES_VERSION=18 \
+  cargo test --lib internal_tests::postgres_container -- --ignored
 ```

@@ -8,7 +8,7 @@ use tokio_util::codec::Decoder;
 
 #[test]
 fn sanitised_authentication_capture_covers_supported_families() {
-    for fixture in fixtures(include_str!("fixtures/authentication.hex")) {
+    for fixture in fixtures(include_str!("../../tests/fixtures/authentication.hex")) {
         match fixture.direction {
             "backend" => {
                 let message = decode::<Backend>(&fixture.hex);
@@ -49,7 +49,7 @@ fn sanitised_authentication_capture_covers_supported_families() {
 
 #[test]
 fn sanitised_query_capture_covers_simple_extended_and_copy_families() {
-    for fixture in fixtures(include_str!("fixtures/query.hex")) {
+    for fixture in fixtures(include_str!("../../tests/fixtures/query.hex")) {
         match fixture.direction {
             "frontend" => {
                 let message = decode::<Frontend>(&fixture.hex);

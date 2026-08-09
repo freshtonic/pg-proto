@@ -10,7 +10,7 @@ use pg_proto::{
     },
     demux::Demux,
     grammar::backend,
-    intermediary::Intermediary,
+    intermediary::SessionPair,
     middleware::{AsynchronousBackendMessage, MessageMiddleware, MessageMiddlewareExt, Middleware},
     pipeline::{
         BackendAction, BackendPipelineMiddleware, BoundedPipeline, FrontendAction,
@@ -949,7 +949,7 @@ fn no_pipeline_backpressures_until_current_cycle_completes() {
 
 #[test]
 fn intermediary_preserves_old_constructor_and_can_opt_into_bounding() {
-    let old = Intermediary::new(1_u8, 2_u8);
+    let old = SessionPair::new(1_u8, 2_u8);
     assert_eq!(*old.downstream(), 1);
     let mut bounded = old.with_pipeline(BoundedPipeline::new(4).unwrap());
     bounded

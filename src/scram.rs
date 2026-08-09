@@ -10,15 +10,15 @@ use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
 
 /// SASL mechanism name for SCRAM without channel binding.
-pub const SCRAM_SHA_256: &[u8] = b"SCRAM-SHA-256";
+pub(crate) const SCRAM_SHA_256: &[u8] = b"SCRAM-SHA-256";
 /// SASL mechanism name for SCRAM with mandatory channel binding.
-pub const SCRAM_SHA_256_PLUS: &[u8] = b"SCRAM-SHA-256-PLUS";
+pub(crate) const SCRAM_SHA_256_PLUS: &[u8] = b"SCRAM-SHA-256-PLUS";
 /// Default and minimum accepted PBKDF2 iteration count.
-pub const DEFAULT_ITERATIONS: u32 = 4096;
+pub(crate) const DEFAULT_ITERATIONS: u32 = 4096;
 
 /// Channel-binding evidence available to a server-side SCRAM exchange.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ServerChannelBinding {
+pub(crate) enum ServerChannelBinding {
     /// The connection does not provide channel binding.
     None,
     /// RFC 5929 `tls-server-end-point` bytes for the terminated TLS transport.
@@ -26,7 +26,7 @@ pub enum ServerChannelBinding {
 }
 
 /// Reusable server policy holding the credential and channel-binding context.
-pub struct ScramServer {
+pub(crate) struct ScramServer {
     password: Vec<u8>,
     salt: Vec<u8>,
     iterations: u32,
@@ -34,7 +34,7 @@ pub struct ScramServer {
 }
 
 /// One nonce-bound SCRAM exchange awaiting the client-final message.
-pub struct ScramExchange {
+pub(crate) struct ScramExchange {
     salted_password: [u8; 32],
     client_first_bare: String,
     server_first: String,
@@ -45,7 +45,7 @@ pub struct ScramExchange {
 impl ScramServer {
     /// Creates a server policy with a random 16-byte salt.
     #[must_use]
-    pub fn new(password: &[u8], channel_binding: ServerChannelBinding) -> Self {
+    pub(crate) fn new(password: &[u8], channel_binding: ServerChannelBinding) -> Self {
         let mut salt = vec![0; 16];
         rand::rng().fill(&mut salt[..]);
         Self {
@@ -61,7 +61,7 @@ impl ScramServer {
     /// # Errors
     ///
     /// Rejects an iteration count below RFC 7677's recommended minimum.
-    pub fn with_parameters(
+    pub(crate) fn with_parameters(
         password: &[u8],
         salt: Vec<u8>,
         iterations: u32,
@@ -84,7 +84,7 @@ impl ScramServer {
     ///
     /// Rejects unsupported mechanisms, malformed attributes, invalid nonces,
     /// and channel-binding downgrade attempts.
-    pub fn start(
+    pub(crate) fn start(
         &self,
         mechanism: &[u8],
         client_first: &[u8],
@@ -149,7 +149,7 @@ impl ScramExchange {
     ///
     /// Rejects malformed attributes, nonce or channel-binding mismatches, and
     /// invalid client proofs.
-    pub fn finish(self, client_final: &[u8]) -> io::Result<Bytes> {
+    pub(crate) fn finish(self, client_final: &[u8]) -> io::Result<Bytes> {
         let client_final = str::from_utf8(client_final)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let proof_marker = client_final

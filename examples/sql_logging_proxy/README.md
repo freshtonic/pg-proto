@@ -1,5 +1,12 @@
 # SQL logging proxy example
 
+The executable uses only `Server::builder`, `Client::builder`, and
+`Intermediary::builder`; listener acceptance and task placement remain owned by
+the application. Its client-facing role requires TLS, while its upstream role
+explicitly selects plaintext. Both roles use trust authentication solely for
+this local demonstration. Production deployments should provide managed TLS on
+each required leg and independent application authentication policies.
+
 This example is a small, transparent PostgreSQL proxy built with pg-proto's
 direction-parameterised codecs. It prints every inbound simple-query `Query`
 and extended-query `Parse` statement, then prints the number of `DataRow`
@@ -21,14 +28,14 @@ The ignored integration test uses the Rust `testcontainers-modules` crate to
 start the official PostgreSQL image, applies [`customer_orders.sql`](customer_orders.sql),
 runs a query through the proxy, and checks both its rows and logging observations:
 
-```sh
+```bash
 cargo test --test logging_proxy_example -- --ignored --nocapture
 ```
 
 PostgreSQL 18 is used by default. Select any supported major version with, for
 example:
 
-```sh
+```bash
 PG_PROTO_POSTGRES_VERSION=14 \
   cargo test --test logging_proxy_example -- --ignored --nocapture
 ```
@@ -41,13 +48,13 @@ Run the proxy without an upstream argument. It starts PostgreSQL 18 through the
 Rust `testcontainers-modules` crate, retains the container for the life of the
 proxy, and loads the sample schema automatically:
 
-```sh
+```bash
 cargo run --example sql_logging_proxy
 ```
 
 Then query it from another terminal:
 
-```sh
+```bash
 psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=require" \
   -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
 ```
@@ -65,7 +72,7 @@ Set `PG_PROTO_POSTGRES_VERSION` to select PostgreSQL 14, 15, 16, 17, or 18.
 
 Start PostgreSQL with the sample schema mounted as an initialisation script:
 
-```sh
+```bash
 docker run --rm --name pg-proto-orders \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   -p 5432:5432 \
@@ -76,13 +83,13 @@ docker run --rm --name pg-proto-orders \
 In a second terminal, run the proxy. The first address is its listener and the
 second is PostgreSQL:
 
-```sh
+```bash
 cargo run --example sql_logging_proxy -- 127.0.0.1:6432 127.0.0.1:5432
 ```
 
 Then query through it from a third terminal:
 
-```sh
+```bash
 psql "host=127.0.0.1 port=6432 user=postgres dbname=postgres sslmode=require" \
   -c 'SELECT c.name, count(o.id) FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name ORDER BY c.name'
 ```

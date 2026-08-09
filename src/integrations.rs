@@ -8,7 +8,7 @@ use bytes::Bytes;
 ///
 /// Implementations can wrap MIT Kerberos, Heimdal, Windows SSPI, or a remote
 /// credential service without making `pg-proto` select or configure that stack.
-pub trait GssEncUpgrade<Stream> {
+pub(crate) trait GssEncUpgrade<Stream> {
     /// Transport produced after GSS encryption negotiation and handshake.
     type SecuredStream;
     /// Platform-specific negotiation or transport error.
@@ -23,7 +23,7 @@ pub trait GssEncUpgrade<Stream> {
 
 /// One output from a recursive GSSAPI, Kerberos, or SSPI token engine.
 #[derive(Clone, Eq, PartialEq)]
-pub enum TokenStep {
+pub(crate) enum TokenStep {
     /// Send this token and wait for another peer token.
     Continue(Bytes),
     /// Authentication completed, optionally with a final token to send.
@@ -46,7 +46,7 @@ impl std::fmt::Debug for TokenStep {
 }
 
 /// Platform-neutral token exchange consumed by the typed authentication loop.
-pub trait TokenAuthEngine {
+pub(crate) trait TokenAuthEngine {
     /// Platform-specific credential, mechanism, or verification error.
     type Error;
 

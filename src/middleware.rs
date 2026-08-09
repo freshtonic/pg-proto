@@ -19,13 +19,13 @@ use crate::{
 };
 
 /// State-aware validation of one directional protocol message type.
-pub trait AcceptsMessage<Message> {
+pub(crate) trait AcceptsMessage<Message> {
     /// Reports whether `message` is legal without advancing this state.
     fn accepts(&self, message: &Message) -> bool;
 }
 
 /// A protocol message which can verify that it has a valid wire representation.
-pub trait ReconstructableMessage {
+pub(crate) trait ReconstructableMessage {
     /// Reports whether this typed value can be encoded on the wire.
     fn is_reconstructable(&self) -> bool;
 }
@@ -204,7 +204,7 @@ impl AcceptsMessage<FrontendMessage> for backend::RuntimeState {
 /// `FrontendMessage` cannot accidentally return a `BackendMessage`, and vice
 /// versa.
 #[allow(async_fn_in_trait)]
-pub trait MessageMiddleware<Message, State> {
+pub(crate) trait MessageMiddleware<Message, State> {
     /// An error which prevents the message from continuing through the chain.
     type Error;
 
@@ -223,24 +223,24 @@ pub trait MessageMiddleware<Message, State> {
 
 /// Marker for middleware handling messages sent by a PostgreSQL client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientRole {}
+pub(crate) enum ClientRole {}
 
 /// Marker for middleware handling messages sent by a PostgreSQL server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServerRole {}
+pub(crate) enum ServerRole {}
 
 /// Marker selecting associations for messages received from a peer.
-pub enum Inbound {}
+pub(crate) enum Inbound {}
 
 /// Marker selecting associations for messages sent by the local role.
-pub enum Outbound {}
+pub(crate) enum Outbound {}
 
 /// Associates a connection typestate with a generated protocol phase and legal message set.
 ///
 /// Grammar declarations generate all implementations. The direction, sender role, and decoded
 /// wire type remain explicit indices so callers can use one interface for inbound and outbound
 /// capabilities without exposing generated association machinery.
-pub trait PhaseAssociation<Direction, Role, Wire>:
+pub(crate) trait PhaseAssociation<Direction, Role, Wire>:
     phase_association_seal::Sealed<Direction, Role, Wire>
 {
     /// Generated grammar phase corresponding to the connection typestate.
@@ -253,7 +253,7 @@ pub trait PhaseAssociation<Direction, Role, Wire>:
 #[doc(hidden)]
 pub(crate) mod phase_association_seal {
     /// Implemented alongside each generated phase association.
-    pub trait Sealed<Direction, Role, Wire> {}
+    pub(crate) trait Sealed<Direction, Role, Wire> {}
 }
 
 /// Async middleware whose role, protocol phase, and legal message set are type indexed.
@@ -263,7 +263,7 @@ pub(crate) mod phase_association_seal {
 /// wire message has been projected into a legal transition for `Phase`, so an
 /// implementation cannot return a replacement from another role or phase.
 #[allow(async_fn_in_trait)]
-pub trait TypedMiddleware<Role, Phase, Message, State> {
+pub(crate) trait TypedMiddleware<Role, Phase, Message, State> {
     /// An error which prevents the message from continuing through the chain.
     type Error;
 
@@ -286,14 +286,14 @@ pub trait TypedMiddleware<Role, Phase, Message, State> {
 /// phase-specific `Message` type. This provides a pass-through default for
 /// policies which inspect only selected wire families; a replacement which is
 /// illegal in the inferred phase is returned as an error.
-pub struct WireAdapter<Wire, Handler> {
+pub(crate) struct WireAdapter<Wire, Handler> {
     handler: Handler,
     _wire: PhantomData<fn(Wire) -> Wire>,
 }
 
 impl<Wire, Handler> WireAdapter<Wire, Handler> {
     /// Wraps direction-wide wire middleware for use at typed interception points.
-    pub const fn new(handler: Handler) -> Self {
+    pub(crate) const fn new(handler: Handler) -> Self {
         Self {
             handler,
             _wire: PhantomData,
@@ -301,14 +301,14 @@ impl<Wire, Handler> WireAdapter<Wire, Handler> {
     }
 
     /// Returns the wrapped wire middleware.
-    pub fn into_inner(self) -> Handler {
+    pub(crate) fn into_inner(self) -> Handler {
         self.handler
     }
 }
 
 /// Failure from direction-wide middleware adapted to a typed phase.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WireAdapterError<Error, Wire> {
+pub(crate) enum WireAdapterError<Error, Wire> {
     /// The wrapped middleware rejected the message according to its policy.
     Middleware(Error),
     /// The wrapped middleware returned a wire message illegal in the typed phase.
@@ -353,7 +353,7 @@ where
 }
 
 /// Adds composition to every sized middleware implementation.
-pub trait MessageMiddlewareExt: Sized {
+pub(crate) trait MessageMiddlewareExt: Sized {
     /// Runs this value followed by `next` whenever both implement middleware for
     /// the intercepted message and state types.
     fn then<Next>(self, next: Next) -> Then<Self, Next> {
@@ -383,7 +383,7 @@ where
 
 /// Middleware which returns every message unchanged.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Identity;
+pub(crate) struct Identity;
 
 impl<Message, State> MessageMiddleware<Message, State> for Identity {
     type Error = Infallible;
@@ -411,7 +411,7 @@ impl<Role, Phase, Message, State> TypedMiddleware<Role, Phase, Message, State> f
 
 /// Two middleware stages evaluated from `first` to `second`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Then<First, Second> {
+pub(crate) struct Then<First, Second> {
     first: First,
     second: Second,
 }
@@ -473,7 +473,7 @@ where
 
 /// Identifies which stage of a two-part middleware chain failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChainError<First, Second> {
+pub(crate) enum ChainError<First, Second> {
     /// The first stage rejected the message.
     First(First),
     /// The second stage rejected the message.
@@ -482,7 +482,7 @@ pub enum ChainError<First, Second> {
 
 /// Failure while applying or validating middleware output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InterceptError<Error, Message> {
+pub(crate) enum InterceptError<Error, Message> {
     /// Middleware rejected the message according to its own policy.
     Middleware(Error),
     /// Middleware returned a message which is illegal in the supplied state.
@@ -491,7 +491,7 @@ pub enum InterceptError<Error, Message> {
 
 /// I/O or interception failure while receiving a middleware-checked message.
 #[derive(Debug)]
-pub enum ReceiveError<Error, Message> {
+pub(crate) enum ReceiveError<Error, Message> {
     /// Reading or decoding the message failed.
     Io(io::Error),
     /// Middleware rejected the message or produced an illegal replacement.
@@ -500,7 +500,7 @@ pub enum ReceiveError<Error, Message> {
 
 /// Failure while receiving through compile-time phase-checked middleware.
 #[derive(Debug)]
-pub enum TypedReceiveError<Error, Wire> {
+pub(crate) enum TypedReceiveError<Error, Wire> {
     /// Reading or decoding the message failed.
     Io(io::Error),
     /// The peer sent a decoded message which is illegal in the connection phase.
@@ -513,39 +513,39 @@ pub enum TypedReceiveError<Error, Wire> {
 
 /// Owns user state and middleware as one reusable interception unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Middleware<State, Handler> {
+pub(crate) struct Middleware<State, Handler> {
     state: State,
     handler: Handler,
 }
 
 impl<State, Handler> Middleware<State, Handler> {
     /// Creates middleware with its connection- or application-local state.
-    pub const fn new(state: State, handler: Handler) -> Self {
+    pub(crate) const fn new(state: State, handler: Handler) -> Self {
         Self { state, handler }
     }
 
     /// Borrows the accumulated user state.
-    pub const fn state(&self) -> &State {
+    pub(crate) const fn state(&self) -> &State {
         &self.state
     }
 
     /// Mutably borrows the accumulated user state.
-    pub const fn state_mut(&mut self) -> &mut State {
+    pub(crate) const fn state_mut(&mut self) -> &mut State {
         &mut self.state
     }
 
     /// Borrows the middleware implementation.
-    pub const fn handler(&self) -> &Handler {
+    pub(crate) const fn handler(&self) -> &Handler {
         &self.handler
     }
 
     /// Mutably borrows the middleware implementation.
-    pub const fn handler_mut(&mut self) -> &mut Handler {
+    pub(crate) const fn handler_mut(&mut self) -> &mut Handler {
         &mut self.handler
     }
 
     /// Separates the accumulated state from its middleware implementation.
-    pub fn into_parts(self) -> (State, Handler) {
+    pub(crate) fn into_parts(self) -> (State, Handler) {
         (self.state, self.handler)
     }
 
@@ -558,7 +558,10 @@ impl<State, Handler> Middleware<State, Handler> {
     /// # Errors
     ///
     /// Returns the middleware's policy-defined error.
-    pub async fn intercept<Message>(&mut self, message: Message) -> Result<Message, Handler::Error>
+    pub(crate) async fn intercept<Message>(
+        &mut self,
+        message: Message,
+    ) -> Result<Message, Handler::Error>
     where
         Handler: MessageMiddleware<Message, State>,
     {
@@ -575,7 +578,7 @@ impl<State, Handler> Middleware<State, Handler> {
     /// # Errors
     ///
     /// Returns the middleware's policy-defined error.
-    pub async fn intercept_typed<Role, Phase, Message>(
+    pub(crate) async fn intercept_typed<Role, Phase, Message>(
         &mut self,
         message: Message,
     ) -> Result<Message, Handler::Error>
@@ -599,7 +602,7 @@ impl<State, Handler> Middleware<State, Handler> {
     ///
     /// Returns a middleware policy error, or the unchanged replacement when it
     /// is not legal in `protocol_state`.
-    pub async fn intercept_checked<Message, ProtocolState>(
+    pub(crate) async fn intercept_checked<Message, ProtocolState>(
         &mut self,
         protocol_state: &ProtocolState,
         message: Message,
@@ -631,7 +634,7 @@ impl<Transport, Phase, Cleanliness> crate::Conn<Transport, Phase, Cleanliness> {
     /// # Errors
     ///
     /// Returns a middleware policy error or an invalid replacement wire shape.
-    pub async fn intercept_outbound_typed<Role, Wire, State, Handler>(
+    pub(crate) async fn intercept_outbound_typed<Role, Wire, State, Handler>(
         &self,
         middleware: &mut Middleware<State, Handler>,
         message: <Phase as PhaseAssociation<Outbound, Role, Wire>>::Message,

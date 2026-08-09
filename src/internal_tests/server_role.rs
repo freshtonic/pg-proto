@@ -2,16 +2,182 @@
 
 use bytes::Bytes;
 use pg_proto::{
-    Conn,
+    Conn, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
+    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
+    ServerAuthenticationResponse, ServerTlsPolicy,
     codec::{BackendMessage, DataRow, FieldDescription, RowDescription, TransactionStatus},
     credentials::{verify_cleartext, verify_md5_response},
     pre_startup::PreStartupOffer,
-    scram::{SCRAM_SHA_256, ScramServer, ServerChannelBinding},
+    scram::{SCRAM_SHA_256, ScramExchange, ScramServer, ServerChannelBinding},
     server_session::{ServerReadyOffer, ServerReadyState},
     transport::Buffered,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
+
+struct CompatibilityAuthentication;
+
+struct ScramAuthentication {
+    server: ScramServer,
+    exchange: Option<ScramExchange>,
+}
+
+impl ServerAuthenticationProvider for ScramAuthentication {
+    type Authentication = Self;
+
+    fn create(&self) -> Self::Authentication {
+        Self {
+            server: ScramServer::with_parameters(
+                b"secret",
+                b"builder scram salt".to_vec(),
+                pg_proto::scram::DEFAULT_ITERATIONS,
+                ServerChannelBinding::None,
+            )
+            .unwrap(),
+            exchange: None,
+        }
+    }
+}
+
+impl ServerAuthentication<()> for ScramAuthentication {
+    type Identity = &'static str;
+    type Error = std::io::Error;
+
+    fn start<'a>(
+        &'a mut self,
+        _request: ServerAuthenticationRequest<'a, ()>,
+    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
+    {
+        Box::pin(async {
+            Ok(ServerAuthenticationAction::Sasl {
+                mechanisms: vec![Bytes::from_static(SCRAM_SHA_256)],
+            })
+        })
+    }
+
+    fn respond<'a>(
+        &'a mut self,
+        _request: ServerAuthenticationRequest<'a, ()>,
+        response: ServerAuthenticationResponse,
+    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
+    {
+        Box::pin(async move {
+            match response {
+                ServerAuthenticationResponse::SaslInitial {
+                    mechanism,
+                    response: Some(initial),
+                } => {
+                    let (exchange, challenge) = self.server.start(&mechanism, &initial)?;
+                    self.exchange = Some(exchange);
+                    Ok(ServerAuthenticationAction::SaslContinue(challenge))
+                }
+                ServerAuthenticationResponse::Sasl(final_response) => {
+                    let final_data = self.exchange.take().unwrap().finish(&final_response)?;
+                    Ok(ServerAuthenticationAction::SaslFinal {
+                        server_final: final_data,
+                        identity: "proxy_test",
+                    })
+                }
+                _ => Err(std::io::Error::other("unexpected SCRAM response")),
+            }
+        })
+    }
+}
+
+impl ServerAuthenticationProvider for CompatibilityAuthentication {
+    type Authentication = Self;
+
+    fn create(&self) -> Self::Authentication {
+        Self
+    }
+}
+
+impl ServerAuthentication<()> for CompatibilityAuthentication {
+    type Identity = ();
+    type Error = ();
+
+    fn start<'a>(
+        &'a mut self,
+        _request: ServerAuthenticationRequest<'a, ()>,
+    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
+    {
+        Box::pin(async { Ok(ServerAuthenticationAction::CleartextPassword) })
+    }
+
+    fn respond<'a>(
+        &'a mut self,
+        _request: ServerAuthenticationRequest<'a, ()>,
+        response: ServerAuthenticationResponse,
+    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
+    {
+        Box::pin(async move {
+            let ServerAuthenticationResponse::Password(body) = response else {
+                return Err(());
+            };
+            (body == b"secret".as_slice())
+                .then_some(ServerAuthenticationAction::Accept(()))
+                .ok_or(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn builder_server_authenticates_an_independent_postgres_client() {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(CompatibilityAuthentication)
+        .build()
+        .unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server_task = async { server.accept(server_io, (), ()).await };
+    let client_task = async {
+        let mut config = tokio_postgres::Config::new();
+        config.user("proxy_test").password("secret");
+        config.connect_raw(client_io, NoTls).await
+    };
+    let (accepted, client) = tokio::join!(server_task, client_task);
+    let ServerAccept::Session(connection) = accepted.unwrap() else {
+        panic!("expected session")
+    };
+    let (client, connection_driver) = client.unwrap();
+    drop(client);
+    drop(connection_driver);
+    let _ = connection.teardown();
+}
+
+#[tokio::test]
+async fn builder_server_completes_recursive_scram_with_an_independent_client() {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(ScramAuthentication {
+            server: ScramServer::with_parameters(
+                b"secret",
+                b"builder scram salt".to_vec(),
+                pg_proto::scram::DEFAULT_ITERATIONS,
+                ServerChannelBinding::None,
+            )
+            .unwrap(),
+            exchange: None,
+        })
+        .build()
+        .unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server_task = async { server.accept(server_io, (), ()).await };
+    let client_task = async {
+        let mut config = tokio_postgres::Config::new();
+        config.user("proxy_test").password("secret");
+        config.connect_raw(client_io, NoTls).await
+    };
+    let (accepted, client) = tokio::join!(server_task, client_task);
+    let ServerAccept::Session(connection) = accepted.unwrap() else {
+        panic!("expected session")
+    };
+    assert_eq!(connection.context().identity(), &"proxy_test");
+    let (client, driver) = client.unwrap();
+    drop(client);
+    drop(driver);
+    let _ = connection.teardown();
+}
 
 #[tokio::test]
 async fn typed_server_role_serves_an_independent_client() {

@@ -8,11 +8,11 @@ use crate::codec::{BackendMessage, DiagnosticResponse, TransactionStatus};
 
 /// Position of a command within a connection's session.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct CommandIndex(pub u64);
+pub(crate) struct CommandIndex(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A backend notice attributed to the command active when it arrived.
-pub struct TaggedNotice {
+pub(crate) struct TaggedNotice {
     /// Command to which the notice belongs.
     pub command: CommandIndex,
     /// Structured notice fields.
@@ -21,7 +21,7 @@ pub struct TaggedNotice {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A decoded asynchronous notification.
-pub struct Notification {
+pub(crate) struct Notification {
     /// Process identifier of the notifying backend.
     pub process_id: u32,
     /// Notification channel.
@@ -32,7 +32,7 @@ pub struct Notification {
 
 /// One ordered `ParameterStatus` update retained for proxy forwarding.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParameterStatus {
+pub(crate) struct ParameterStatus {
     /// Parameter name.
     pub name: Bytes,
     /// Current parameter value.
@@ -41,7 +41,7 @@ pub struct ParameterStatus {
 
 /// A causally independent backend event retained in its original wire order.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AsyncEvent {
+pub(crate) enum AsyncEvent {
     /// A positionally tagged notice.
     Notice(TaggedNotice),
     /// A run-time parameter update.
@@ -52,7 +52,7 @@ pub enum AsyncEvent {
 
 /// Ordering and command attribution for an asynchronous backend event.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OrderedAsyncEvent {
+pub(crate) struct OrderedAsyncEvent {
     /// Monotonic sequence number across all asynchronous event kinds.
     pub sequence: u64,
     /// Command active when the event arrived.
@@ -82,7 +82,7 @@ impl std::fmt::Debug for CancelKey {
 
 /// A protocol-advancing message, optionally closing a command boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SessionItem {
+pub(crate) enum SessionItem {
     /// An ordinary protocol-advancing backend message.
     Message(BackendMessage),
     /// Readiness together with pooling-relevant state accumulated by the demux.
@@ -111,7 +111,7 @@ impl SessionItem {
     /// needed by application policy before passing the returned message to a
     /// pipeline ledger.
     #[must_use]
-    pub fn into_backend_message(self) -> BackendMessage {
+    pub(crate) fn into_backend_message(self) -> BackendMessage {
         match self {
             Self::Message(message) => message,
             Self::ReadyForQuery { status, .. } => BackendMessage::ReadyForQuery(status),
@@ -122,7 +122,7 @@ impl SessionItem {
 
 /// State owned below the typestate API for causally independent backend messages.
 #[derive(Debug, Default)]
-pub struct Demux {
+pub(crate) struct Demux {
     command: CommandIndex,
     pending_notices: Vec<TaggedNotice>,
     notices: VecDeque<TaggedNotice>,
@@ -143,7 +143,7 @@ impl Demux {
     /// Pipeline orchestration uses this shared classifier rather than defining a
     /// second asynchronous-message taxonomy.
     #[must_use]
-    pub fn is_asynchronous(message: &BackendMessage) -> bool {
+    pub(crate) fn is_asynchronous(message: &BackendMessage) -> bool {
         matches!(
             message,
             BackendMessage::NoticeResponse(_)
@@ -157,7 +157,7 @@ impl Demux {
     ///
     /// Async messages are consumed and recorded; only session-advancing messages
     /// are returned.
-    pub fn route(&mut self, message: BackendMessage) -> Option<SessionItem> {
+    pub(crate) fn route(&mut self, message: BackendMessage) -> Option<SessionItem> {
         match message {
             BackendMessage::NoticeResponse(fields) => {
                 let notice = TaggedNotice {
@@ -232,45 +232,45 @@ impl Demux {
 
     /// Returns the latest value of every reported run-time parameter.
     #[must_use]
-    pub fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
+    pub(crate) fn parameters(&self) -> &BTreeMap<Bytes, Bytes> {
         &self.parameters
     }
 
     /// Reports whether parameters differ from the startup baseline.
     #[must_use]
-    pub const fn parameters_changed(&self) -> bool {
+    pub(crate) const fn parameters_changed(&self) -> bool {
         self.parameters_changed
     }
 
     /// Returns the most recently received cancellation key, if any.
     #[must_use]
-    pub const fn cancel_key(&self) -> Option<&CancelKey> {
+    pub(crate) const fn cancel_key(&self) -> Option<&CancelKey> {
         self.cancel_key.as_ref()
     }
 
     /// Returns the latest backend transaction status, if readiness was observed.
     #[must_use]
-    pub const fn transaction_status(&self) -> Option<TransactionStatus> {
+    pub(crate) const fn transaction_status(&self) -> Option<TransactionStatus> {
         self.transaction_status
     }
 
     /// Removes the next queued asynchronous notification.
-    pub fn pop_notification(&mut self) -> Option<Notification> {
+    pub(crate) fn pop_notification(&mut self) -> Option<Notification> {
         self.notifications.pop_front()
     }
 
     /// Removes the next positionally tagged notice for prompt client forwarding.
-    pub fn pop_notice(&mut self) -> Option<TaggedNotice> {
+    pub(crate) fn pop_notice(&mut self) -> Option<TaggedNotice> {
         self.notices.pop_front()
     }
 
     /// Removes the next ordered status update for forwarding to a client.
-    pub fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
+    pub(crate) fn pop_parameter_status(&mut self) -> Option<ParameterStatus> {
         self.parameter_statuses.pop_front()
     }
 
     /// Removes the next asynchronous event in original backend wire order.
-    pub fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
+    pub(crate) fn pop_async_event(&mut self) -> Option<OrderedAsyncEvent> {
         self.async_events.pop_front()
     }
 

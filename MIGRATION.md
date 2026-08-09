@@ -1,57 +1,72 @@
 # Migration guide
 
-This guide is for proxy implementations moving from a runtime connection-state
-enum to `pg-proto`'s generated and transport-integrated typestate APIs.
+This guide is for proxy implementations moving to `pg-proto`'s builder-only
+root facade. Implementation modules and the low-level `Conn` typestates are no
+longer public; applications configure and operate `Client`, `Server`, or
+`Intermediary` values instead.
 
-## Replace state mutation with ownership transitions
+The three supported construction entry points are `Client::builder()`,
+`Server::builder()`, and `Intermediary::builder()`. There is no low-level public
+escape hatch: if an application requirement is not expressible through these
+builders and their root-level message vocabulary, it should be raised as a
+facade capability rather than implemented by importing an internal module.
 
-Instead of storing `state: ConnectionState` and checking it before every send or
-receive, store `Conn<Transport, Phase, Cleanliness>` at the boundary where its
-phase is known. Each legal operation consumes that value and returns the next
-phase. Illegal operations are absent from the type, and a rejected incoming
-message returns the unchanged connection.
+Security posture is never inferred. Production migrations should pair
+`SslMode::VerifyFull` with an application `ClientTlsProvider`, require server TLS
+with an application `ServerIdentityProvider`, and provide application-owned
+authentication policies on each side. Selecting disabled TLS, trust
+authentication, a non-verifying client SSL mode, or an unbounded protocol frame
+limit is an explicit downgrade and should receive application security review.
 
-At heterogeneous storage boundaries, call `erase()` and later `try_reenter()`.
-This preserves exact phase and cleanliness identities without spreading a large
-generic type through the pool implementation.
+## Adopt reusable server construction
 
-## Split transport work from application policy
+Use `Server::builder()` to configure the client-facing role once and call
+`accept()` for each application-established transport. TLS and authentication
+must both be selected explicitly; intentional plaintext trust deployments use
+the named `ServerTlsPolicy::Disabled` and `TrustServerAuthentication` choices.
+The returned branch distinguishes an operational session from an out-of-band
+cancellation request, and `teardown()` recovers the transport, caller-owned
+connection state, handler, and connection context.
 
-Decode first, inspect or replace the typed message, and only then offer it to the
-session. `Intermediary<Downstream, Upstream>` owns the two independent roles and
-provides synchronous and asynchronous callbacks with access to both. It does not
-route, forward, authorise, or rewrite implicitly.
+## Adopt reusable client construction
 
-Use:
+Use `Client::builder()` to configure the upstream-facing role once. Select
+`ClientTlsPolicy::Disabled` only for deliberate plaintext deployments, or use
+`ClientTlsPolicy::libpq` with an `SslMode` and application-owned
+`ClientTlsProvider`; the provider is resolved for every connection attempt so
+certificate and key rotation do not require rebuilding the component.
 
-- `Buffered::push_frame` followed by cancellation-safe `flush` for batching;
-- `Demux::pop_async_event` for cross-kind ordered asynchronous forwarding;
-- `with_connection_resources` for branded statement/portal namespaces;
-- `CancelKeyMint` and `CancelKeyRegistry` for application-owned cancellation;
-- `CleanlinessPolicy` for application-owned pool release decisions; and
-- `GssEncUpgrade` or `TokenAuthEngine` for platform credential adapters.
+Implement `ClientAuthentication` as a factory for mutable per-connection
+`ClientAuthenticationSession` values. Sessions answer server challenges
+asynchronously and produce typed identity evidence only after the server sends
+`AuthenticationOk`. Routing metadata is available to the factory without
+replacing or rebuilding the configured client component.
 
-## Replace direct phase-association bounds
+## Attach role middleware through builders
 
-Code which names middleware's phase-association traits directly should replace
-`TypedPhase<Role, Wire>` with `PhaseAssociation<Inbound, Role, Wire>` and
-`TypedOutboundPhase<Role, Wire>` with
-`PhaseAssociation<Outbound, Role, Wire>`. The generated protocol grammars now
-own these implementations; application code cannot implement the sealed trait.
+Call `.middleware(factory)` repeatedly on either role builder. Each factory is
+synchronous and infallible and creates one isolated handler from the initial
+connection context. Stages run in declaration order. The same handler receives
+owned pre-startup, startup, authentication, cancellation, generated response,
+and operational messages with immutable progressively enriched context and
+mutable caller-owned state. Narrow handlers may override only the message
+families they use; the default handler remains identity middleware. Teardown
+returns the handler and state for explicit recovery.
 
-Most callers need no explicit bound. Typed receive and outbound interception
-methods infer the association from the connection phase, direction, sender role,
-and wire message type.
+## Replace direct protocol access
+
+Replace imports from `codec`, `transport`, `grammar`, `session`, `auth`, and
+other implementation modules with the root facade vocabulary. Message values
+used by middleware and forwarding are available at the crate root. Establish
+connections only through `Client::connect`, `Server::accept`, or
+`Intermediary::accept`. Recover client parts with `ClientConnection::into_parts`
+and server/intermediary parts with their `teardown` methods.
 
 ## Replace proxy message queues with a bounded pipeline ledger
 
-Opt in with `Intermediary::with_pipeline(BoundedPipeline::new(limit)?)`. Feed
-each decoded frontend message to `pipeline_mut().accept_frontend(...)`. A
-`Forward` action returns the original owned message for upstream encoding; a
-`Discard` action identifies a locally handled operation. `FrontendAdmission`
-wraps either action as `Immediate` or `Waiting`. Capacity and protocol illegality
-return the original message in `FrontendProjectionError`, so the proxy can pause
-downstream reads and retry without cloning a payload.
+Supply `BoundedPipeline::new(limit)?` through `Intermediary::builder()`. The
+operational intermediary applies admission, ordering, and backpressure while
+`forward_next`, `forward_frontend`, and `forward_backend` drive traffic.
 
 The pre-1.0 overlapping entry points have been removed. Replace
 `project_frontend` and `frontend_action` with `accept_frontend`, and replace their
@@ -84,6 +99,44 @@ Do not carry a single mechanism or credential enum across both sides. For
 SCRAM-SHA-256-PLUS, retain the TLS transport wrapper so authentication can query
 its `tls-server-end-point` binding.
 
+Server-role construction now goes through `Server::builder()`. Select one of
+`ServerTlsPolicy::Disabled`, `Optional(provider)`, or `Required(provider)` and
+provide a `ServerAuthenticationProvider`; omission is a build error. TLS
+identity providers are resolved for every accepted TLS connection, so an
+application-owned reloadable provider can rotate certificates without rebuilding
+the server component.
+
+Replace manual server authentication typestate driving with a fresh
+`ServerAuthentication` conversation per connection. Its asynchronous `start`
+and `respond` methods return `ServerAuthenticationAction` values. pg-proto
+orchestrates Trust, cleartext, MD5, recursive SASL/SCRAM, Kerberos, GSSAPI,
+recursive GSS continuation, and SSPI wire transitions; application policy owns
+credential lookup, verification, continuation state, rejection, and the typed
+identity evidence returned by `Accept` or `SaslFinal`. Responses are delivered
+as owned `ServerAuthenticationResponse` values, while immutable startup, TLS,
+and peer facts remain available through `ServerAuthenticationRequest`.
+
+`Server::accept` returns either an operational `ServerAccept::Session` or the
+distinct cancellation branch. TLS-provider and authentication-policy failures
+retain their concrete error types in `AcceptError`, and successful connection
+context exposes immutable negotiated-TLS and typed-identity facts.
+
+## Intermediary composition
+
+Use the root `Intermediary::builder()` facade, supplying complete `Server` and
+`Client` components, a `StartupRouteResolver`, an explicit cancellation policy,
+and optional authenticated routing and boundary-middleware factories. The
+operational connection owns one caller state and provides `forward_next()` for
+duplex asynchronous, extended, COPY, and replication traffic.
+
+Configure forwarding with `IntermediaryBuilder::cancellation_registry`. The
+application-owned handle allocates client keys and stores `CancellationRoute`
+values containing the original `ConnectTarget` metadata and upstream key.
+Cancellation resolves this mapping directly, without startup routing. Call
+`IntermediaryConnection::detach_cancellation` when releasing a live session.
+Establishment failures close silently by default; `SafeDiagnostic` emits one
+fixed, non-disclosing error through outbound server middleware before closing.
+
 ## Errors, COPY, and pooling
 
 After `ErrorResponse`, keep the returned `Draining` connection and consume only
@@ -99,5 +152,3 @@ idle readiness evidence and an application cleanliness policy that permits it.
   modifies reconstructable extended-query and result messages.
 - [`examples/intermediary_pipeline.rs`](examples/intermediary_pipeline.rs)
   combines forwarding, local rejection, backpressure, and ordered emission.
-- [`tests/intermediary_harness.rs`](tests/intermediary_harness.rs) is the neutral
-  capability acceptance harness.

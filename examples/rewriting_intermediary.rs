@@ -1,176 +1,119 @@
-//! Stateful, checked frontend and backend message rewriting.
+//! Wire-visible SQL and result-column rewriting at the intermediary boundary.
 
 use std::convert::Infallible;
 
 use bytes::Bytes;
 use pg_proto::{
-    codec::{
-        BackendMessage, Bind, Describe, DescribeTarget, FieldDescription, FrontendMessage, Parse,
-        RowDescription,
-    },
-    grammar::{backend, frontend},
-    middleware::{ClientRole, Middleware, ServerRole, TypedMiddleware},
+    BackendMessage, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
+    ConnectTarget, FrontendMessage, InitialServerContext, Intermediary, IntermediaryMiddleware,
+    Server, ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 
-#[derive(Default)]
-struct RewriteStatistics {
-    frontend: usize,
-    backend: usize,
-}
-
-struct Rewriter;
-
-impl TypedMiddleware<ClientRole, backend::Ready, backend::ReadyExternalMessage, RewriteStatistics>
-    for Rewriter
-{
+struct Route;
+impl<Peer> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
-
-    async fn intercept_typed(
-        &mut self,
-        statistics: &mut RewriteStatistics,
-        message: backend::ReadyExternalMessage,
-    ) -> Result<backend::ReadyExternalMessage, Self::Error> {
-        statistics.frontend += 1;
-        Ok(match message {
-            backend::ReadyExternalMessage::Parse(message) => {
-                let mapped = message.try_map_wire(|message| match message {
-                    FrontendMessage::Parse(mut parse) => {
-                        parse.query = Bytes::from_static(
-                            b"select amount from ledger where account = $1 and visible = true",
-                        );
-                        FrontendMessage::Parse(parse)
-                    }
-                    _ => unreachable!("typed Parse transition contains Parse"),
-                });
-                match mapped {
-                    Ok(message) => backend::ReadyExternalMessage::Parse(message),
-                    Err(_) => unreachable!("query mutation preserves the Parse transition"),
-                }
-            }
-            message => message,
-        })
+    fn resolve<'a>(
+        &'a self,
+        _: StartupParameters,
+        _: InitialServerContext<'a, Peer>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
+    {
+        Box::pin(async { Ok(ConnectTarget::new("postgres")) })
     }
 }
 
+#[derive(Clone, Copy)]
+struct Rewrite;
 impl
-    TypedMiddleware<
-        ClientRole,
-        backend::Building,
-        backend::BuildingExternalMessage,
-        RewriteStatistics,
-    > for Rewriter
+    IntermediaryMiddleware<
+        (),
+        ServerConnectionContext<(), TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for Rewrite
 {
-    type Error = Infallible;
-
-    async fn intercept_typed(
+    fn frontend(
         &mut self,
-        statistics: &mut RewriteStatistics,
-        message: backend::BuildingExternalMessage,
-    ) -> Result<backend::BuildingExternalMessage, Self::Error> {
-        statistics.frontend += 1;
-        Ok(message)
-    }
-}
-
-impl
-    TypedMiddleware<
-        ServerRole,
-        frontend::Simple,
-        frontend::SimpleExternalMessage,
-        RewriteStatistics,
-    > for Rewriter
-{
-    type Error = Infallible;
-
-    async fn intercept_typed(
-        &mut self,
-        statistics: &mut RewriteStatistics,
-        message: frontend::SimpleExternalMessage,
-    ) -> Result<frontend::SimpleExternalMessage, Self::Error> {
-        statistics.backend += 1;
-        Ok(match message {
-            frontend::SimpleExternalMessage::Continue(message) => {
-                let mapped = message.try_map_wire(|message| match message {
-                    BackendMessage::RowDescription(mut rows) => {
-                        rows.fields[0].name = Bytes::from_static(b"visible_amount");
-                        BackendMessage::RowDescription(rows)
-                    }
-                    message => message,
-                });
-                frontend::SimpleExternalMessage::Continue(match mapped {
-                    Ok(message) => message,
-                    Err(_) => unreachable!("row-description mutation preserves Continue"),
-                })
+        _: &ServerConnectionContext<(), TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
+        message: FrontendMessage,
+    ) -> FrontendMessage {
+        match message {
+            FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
+                b"select amount from ledger where visible = true",
+            )),
+            FrontendMessage::Parse(mut parse) => {
+                parse.query = Bytes::from_static(b"select amount from ledger where visible = true");
+                FrontendMessage::Parse(parse)
             }
-            message => message,
-        })
+            other => other,
+        }
+    }
+    fn backend(
+        &mut self,
+        _: &ServerConnectionContext<(), TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
+        message: BackendMessage,
+    ) -> BackendMessage {
+        match message {
+            BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
+                rows.fields[0].name = Bytes::from_static(b"visible_amount");
+                BackendMessage::RowDescription(rows)
+            }
+            other => other,
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let mut middleware = Middleware::new(RewriteStatistics::default(), Rewriter);
-
-    let parse = FrontendMessage::Parse(Parse {
-        statement: Bytes::from_static(b"report"),
-        query: Bytes::from_static(b"select amount from ledger where account = $1"),
-        parameter_types: vec![25],
-    });
-    let parse = backend::ReadyExternalMessage::try_from(parse).unwrap();
-    let parse = middleware
-        .intercept_typed::<ClientRole, backend::Ready, _>(parse)
+    let upstream: std::net::SocketAddr = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "127.0.0.1:5432".into())
+        .parse()
+        .unwrap();
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .unwrap();
+    let client = Client::builder()
+        .connector(move |_| tokio::net::TcpStream::connect(upstream))
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .unwrap();
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route)
+        .cancellation(CancellationPolicy::Reject)
+        .middleware(
+            |_: &ServerConnectionContext<(), TrustIdentity>, _: &ClientConnectionContext<()>| {
+                Rewrite
+            },
+        )
+        .build()
+        .unwrap();
+    let listen = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:6432".into());
+    let listener = tokio::net::TcpListener::bind(&listen).await.unwrap();
+    let (transport, _) = listener.accept().await.unwrap();
+    let mut session = Box::pin(intermediary.accept(transport, (), ()))
         .await
         .unwrap()
-        .into_wire();
-
-    let bind = FrontendMessage::Bind(Bind {
-        portal: Bytes::from_static(b"page-1"),
-        statement: Bytes::from_static(b"report"),
-        parameter_formats: vec![0],
-        parameters: vec![Some(Bytes::from_static(b"assets"))],
-        result_formats: vec![1],
-    });
-    let bind = backend::BuildingExternalMessage::try_from(bind).unwrap();
-    let bind = middleware
-        .intercept_typed::<ClientRole, backend::Building, _>(bind)
-        .await
-        .unwrap()
-        .into_wire();
-
-    let describe = FrontendMessage::Describe(Describe {
-        target: DescribeTarget::Portal,
-        name: Bytes::from_static(b"page-1"),
-    });
-    let describe = backend::BuildingExternalMessage::try_from(describe).unwrap();
-    let describe = middleware
-        .intercept_typed::<ClientRole, backend::Building, _>(describe)
-        .await
-        .unwrap()
-        .into_wire();
-
-    let rows = BackendMessage::RowDescription(RowDescription {
-        fields: vec![FieldDescription {
-            name: Bytes::from_static(b"amount"),
-            table_oid: 16_384,
-            column: 2,
-            type_oid: 1_700,
-            type_size: -1,
-            type_modifier: -1,
-            format: 1,
-        }],
-    });
-    let rows = frontend::SimpleExternalMessage::try_from(rows).unwrap();
-    let rows = middleware
-        .intercept_typed::<ServerRole, frontend::Simple, _>(rows)
-        .await
-        .unwrap()
-        .into_wire();
-
-    // Every modified value remains reconstructable as a checked wire frame.
-    parse.to_frame().unwrap();
-    bind.to_frame().unwrap();
-    describe.to_frame().unwrap();
-    rows.to_frame().unwrap();
-    assert_eq!(middleware.state().frontend, 3);
-    assert_eq!(middleware.state().backend, 1);
+        .into_session();
+    loop {
+        let forwarded = session.forward_next().await.unwrap();
+        println!("forwarded rewritten message: {forwarded:?}");
+        if matches!(
+            forwarded,
+            pg_proto::ForwardedMessage::Frontend(FrontendMessage::Terminate)
+        ) {
+            break;
+        }
+    }
 }

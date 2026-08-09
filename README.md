@@ -10,12 +10,12 @@
 frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
 and protocol-aware test infrastructure.
 
-Its distinguishing feature is that PostgreSQL's connection state machine is
-represented in Rust's type system. Operations consume a
-`Conn<Transport, Phase, Cleanliness>` and return a connection in its next phase.
-Code which tries to issue a query during `COPY IN`, execute before binding, send
-a startup packet while TLS negotiation is pending, or release a dirty connection
-to a pool does not compile.
+Its distinguishing feature is a builder-only facade over PostgreSQL's typed
+connection state machine. `Client::builder()`, `Server::builder()`, and
+`Intermediary::builder()` require explicit transport-security, authentication,
+middleware, and routing policy before they establish operational connections.
+The internal protocol typestates prevent illegal sequencing without exposing
+the implementation graph as application API.
 
 Most PostgreSQL protocol libraries decode messages but retain the session phase
 in a runtime enum. `pg-proto` is useful when protocol correctness is part of the
@@ -63,7 +63,8 @@ errors.
 The phase index is orthogonal to connection cleanliness. A connection can be
 protocol-ready but unsuitable for unconditional pool release because of an open
 transaction, changed GUC, prepared statement, portal, `LISTEN`, or advisory lock.
-Only `Conn<_, Ready, Pristine>` exposes unconditional release.
+Operational connections return explicit state evidence and preserve caller-owned
+state until teardown.
 
 ## What can be built with it?
 
@@ -82,123 +83,196 @@ message queues.
   conformance harness.
 - A driver or administrative client which benefits from compile-time sequencing.
 
-## Usage
+## Security choices come first
 
-The generated grammar witnesses make the sequencing model easy to see. Every
-method consumes the previous phase; uncommenting an operation which is illegal
-in the current phase produces a compiler error.
+Every role builder requires explicit TLS and authentication policy. The short
+examples below deliberately use **plaintext** (`ClientTlsPolicy::Disabled` and
+`ServerTlsPolicy::Disabled`) and **unverified trust authentication**
+(`TrustClientAuthentication` and `TrustServerAuthentication`) so that their
+insecure posture is visible in code. They are suitable for a protected local
+development network, not an Internet-facing production deployment.
 
-```rust
-use pg_proto::grammar::frontend::Session;
+For production, use `ClientTlsPolicy::libpq` with `SslMode::VerifyFull` and an
+application-owned reloadable `ClientTlsProvider`; use `ServerTlsPolicy::Required`
+with an application-owned `ServerIdentityProvider`. Supply application-defined
+`ClientAuthentication` and `ServerAuthenticationProvider` implementations that
+return typed identity evidence. `pg-proto` orchestrates the protocol but remains
+policy-neutral: it does not store credentials, authorise identities, choose
+authentication mechanisms, or provision certificates.
 
-let ready = Session::new();
-let building = ready.begin_extended().parse().bind().execute();
-let ready = building.sync().ready();
+The default one-mebibyte frame limits are conservative. Raising a limit or
+calling `ProtocolLimits::without_frame_limit` is an explicit resource-exhaustion
+downgrade; production services should instead choose the smallest limit their
+workload needs. Likewise, `SslMode::Allow`, `Prefer`, `Require`, and `VerifyCa`
+provide less assurance than `VerifyFull`, and must be selected deliberately.
 
-// `building.query()` would not compile: Query is unavailable during an
-// extended-query pipeline, which must leave through Sync.
-let _terminated = ready.terminate();
+## Client: connect to PostgreSQL
+
+Build one reusable upstream-facing component, then establish operational
+connections with caller-owned state and per-call startup parameters.
+
+```rust,no_run
+use pg_proto::{
+    Client, ClientTlsPolicy, ConnectTarget, StartupParameters,
+    TrustClientAuthentication,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        // Development-only: plaintext transport and no credential exchange.
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .startup_parameters(StartupParameters::new("application"))
+        .build()?;
+
+    let connection = client
+        .connect(
+            ConnectTarget::new("127.0.0.1:5432"),
+            StartupParameters::default().database("postgres"),
+            Vec::<String>::new(),
+        )
+        .await?;
+    let (_transport, state, _middleware, context) = connection.into_parts();
+    assert!(state.is_empty());
+    assert_eq!(context.target().name(), "127.0.0.1:5432");
+    Ok(())
+}
+```
+
+## Server: accept PostgreSQL clients
+
+The server builder owns reusable client-facing policy. The application owns the
+listener, peer metadata, per-connection state, credentials, and authorisation.
+
+```rust,no_run
+use pg_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        // Development-only: clients are neither encrypted nor authenticated.
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+
+    match server.accept(transport, peer, Vec::<String>::new()).await? {
+        ServerAccept::Session(connection) => {
+            println!("accepted user {:?}", connection.startup().parameters.get(b"user".as_slice()));
+            let (_transport, _state, _middleware, _context) = connection.teardown();
+        }
+        ServerAccept::Cancellation(cancellation) => {
+            println!("cancel process {}", cancellation.request().process_id());
+        }
+    }
+    Ok(())
+}
+```
+
+## Intermediary: compose both roles
+
+An intermediary takes complete server and client components. Startup routing,
+authenticated routing, cancellation storage, middleware, and failure disclosure
+remain explicit application policies.
+
+```rust,no_run
+use std::{convert::Infallible, future::Future, pin::Pin};
+use pg_proto::{
+    CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
+    Intermediary, Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustServerAuthentication,
+};
+
+struct Route;
+impl<Peer> StartupRouteResolver<Peer> for Route {
+    type Error = Infallible;
+    fn resolve<'a>(
+        &'a self,
+        _: StartupParameters,
+        _: InitialServerContext<'a, Peer>,
+    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>> {
+        Box::pin(async { Ok(ConnectTarget::new("127.0.0.1:5432")) })
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        .tls(ClientTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustClientAuthentication)
+        .build()?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route)
+        .cancellation(CancellationPolicy::Reject)
+        .build()?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut connection = Box::pin(intermediary.accept(transport, peer, ()))
+        .await?
+        .into_session();
+    while !matches!(
+        connection.forward_next().await?,
+        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
+    ) {}
+    Ok(())
+}
 ```
 
 ## Stateful message middleware
 
-A proxy can inspect or replace any owned frontend, backend, or pre-startup
-message before reconstructing its checked wire representation. `TypedMiddleware`
-indexes each policy by sender role and generated grammar phase. Its input and
-output enums contain only messages legal in that phase, so a replacement from a
-different role or phase is a compile error. `Conn::receive_frontend_typed`,
-`Conn::receive_backend_typed`, `Conn::receive_pre_startup_typed`, and
-`Conn::receive_encryption_reply_typed` infer those indices from the connection;
-there is no caller-supplied runtime state to mismatch. Locally generated traffic
-uses `Conn::intercept_outbound_typed`: the connection phase selects the generated
-internal message enum before the caller applies its corresponding existing
-typestate transition and encodes it. Server-originated asynchronous traffic is
-included without advancing that phase.
-
-Middleware is async and has mutable access to caller-defined state across
-`.await`, so policy can consult a database, authorization service, or async
-telemetry sink before deciding which message continues. Returning the message
-unchanged is the identity operation, `Identity` supplies a universal pass-through,
-and `MessageMiddlewareExt::then` awaits typed stages deterministically. A
-`WireAdapter` can apply an async direction-wide policy across generated phases
-while rechecking any replacement before it re-enters the typed API.
+A proxy can inspect or replace owned frontend and backend messages through
+builder middleware. Each accepted connection gets a fresh handler with mutable
+access to the application-supplied per-connection state. Repeated `.middleware`
+calls compose stages in declaration order.
 
 ```rust
-use bytes::Bytes;
 use pg_proto::{
-    codec::FrontendMessage,
-    grammar::backend,
-    middleware::{ClientRole, Middleware},
+    Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
+    FrontendMessage, TrustClientAuthentication,
 };
 
-# async fn example() -> Result<(), std::io::Error> {
+#[derive(Clone, Copy)]
+struct CountQueries;
 
-let mut proxy = Middleware::new(0_usize, async |rewrites: &mut usize, _message| {
-    // Async authorization, routing, or storage work can be awaited here.
-    tokio::task::yield_now().await;
-    *rewrites += 1;
-    backend::ReadyExternalMessage::try_from(FrontendMessage::Query(
-        Bytes::from_static(b"select visible_email from customers"),
-    ))
-});
-let message = backend::ReadyExternalMessage::try_from(
-    FrontendMessage::Query(Bytes::from_static(b"select email from customers")),
-).unwrap();
+impl ClientMiddleware<usize, ClientConnectionContext> for CountQueries {
+    fn frontend(
+        &mut self,
+        _context: &ClientConnectionContext,
+        count: &mut usize,
+        message: FrontendMessage,
+    ) -> FrontendMessage {
+        if matches!(message, FrontendMessage::Query(_)) {
+            *count += 1;
+        }
+        message
+    }
+}
 
-let rewritten = proxy
-    .intercept_typed::<ClientRole, backend::Ready, _>(message)
-    .await
-    .unwrap()
-    .into_wire();
-
-let frame = rewritten.to_frame()?;
-assert_eq!(*proxy.state(), 1);
-# Ok::<(), std::io::Error>(())
-# }
+let _client = Client::builder()
+    .connector(|_| async { Ok::<_, std::io::Error>(()) })
+    .tls(ClientTlsPolicy::Disabled)
+    .authentication(TrustClientAuthentication)
+    .middleware(|_: &ClientInitialContext| CountQueries)
+    .build()?;
+# Ok::<(), pg_proto::BuildError>(())
 ```
-
-Protocol legality is compile-time checked, while wire-shape constraints remain
-runtime checked. For example, embedded NUL bytes, oversized frames, and other
-encoding failures are reported as `TypedReceiveError::InvalidWire`. Backend
-asynchronous messages pass through typed middleware in wire order without
-advancing the connection phase; `receive_typed` then records them before
-returning the next protocol-advancing `SessionItem`.
-
-`BoundedPipeline` retains its runtime operation ledger but can dispatch through
-`FrontendPipelineMiddleware` and `BackendPipelineMiddleware` using
-`accept_frontend_typed`, `accept_backend_typed`, and `try_emit_local_typed`.
-Frontend admission reports whether an accepted `Forward` or `Discard` action is
-immediate or waiting; capacity returns the original message in
-`FrontendProjectionError::Capacity` for retry. The ledger chooses the hook at
-runtime, while each hook's owned input and output are restricted to that frontend
-phase or the exact generated backend response subphase of the pending operation.
-The ledger tracks COPY half-closes, function-call readiness, extended responses,
-and error recovery independently for every queued operation. Implementations
-override only the phases they inspect; unimplemented hooks are identity operations, and typed
-pipeline policies compose with `MessageMiddlewareExt::then`. Deferred backend
-messages are not intercepted until retried at the response head.
-`PipelineWireAdapter` adapts an existing async direction-wide policy when
-compile-time specialization is not needed.
-
-When a `Demux` returns a `SessionItem`, first consume any pooling, command, or
-notice evidence the application needs. `SessionItem::into_backend_message` is a
-deliberately lossy adapter; pass its result to `accept_backend_typed` only after
-using that evidence.
-
-### Migrating typed pipeline middleware
-
-The pre-1.0 `TypedPipelineMiddleware<State>` trait has been split by wire
-direction. Move frontend hooks into an implementation of
-`FrontendPipelineMiddleware<State>` and backend hooks into a separate
-`BackendPipelineMiddleware<State>` implementation. A policy handling both
-directions implements both traits; each implementation chooses its own `Error`
-type. Existing directional `.then(...)` composition and `PipelineWireAdapter`
-usage are unchanged.
-
-The older `intercept_checked` and `receive_*_with_middleware` APIs remain
-available for runtime-selected sessions. They validate replacement legality
-against a supplied generated `RuntimeState` at runtime. Prefer the typed receive
-APIs whenever the connection typestate is available.
 
 For a complete networked example, see the TLS-terminating
 [`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion
@@ -207,25 +281,15 @@ decoded message in both directions. More focused examples live in the
 [`examples/`](examples/) directory, including message rewriting and the neutral
 proxy composition boundary.
 
-## Rustdoc entry points
+## Rustdoc entry point
 
-- [Crate overview and `Conn`](https://docs.rs/pg-proto/latest/pg_proto/)
-- [Frontend/backend messages and codecs](https://docs.rs/pg-proto/latest/pg_proto/codec/)
-- [Buffered network transport and interception](https://docs.rs/pg-proto/latest/pg_proto/transport/)
-- [Pre-startup and TLS negotiation](https://docs.rs/pg-proto/latest/pg_proto/pre_startup/)
-- [Upstream/client-role authentication](https://docs.rs/pg-proto/latest/pg_proto/auth/)
-- [Downstream/server-role authentication](https://docs.rs/pg-proto/latest/pg_proto/server_auth/)
-- [Client-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/session/)
-- [Server-role query sessions](https://docs.rs/pg-proto/latest/pg_proto/server_session/)
-- [Proxy-side composition hooks](https://docs.rs/pg-proto/latest/pg_proto/intermediary/)
-- [Stateful message middleware](https://docs.rs/pg-proto/latest/pg_proto/middleware/)
-- [Bounded intermediary pipeline](https://docs.rs/pg-proto/latest/pg_proto/pipeline/)
-- [Prepared-statement and portal resources](https://docs.rs/pg-proto/latest/pg_proto/resources/)
-- [Generated protocol grammars and railroad diagrams](https://docs.rs/pg-proto/latest/pg_proto/grammar/)
+The [crate overview](https://docs.rs/pg-proto/latest/pg_proto/) documents the
+complete root facade: role builders, nested security configuration, middleware,
+operational connection types, and root message vocabulary.
 
 Build the same documentation locally with:
 
-```console
+```bash
 cargo doc --workspace --no-deps --open
 ```
 
@@ -238,9 +302,9 @@ Both behaviours are covered explicitly.
 
 Run a selected version locally with a Docker-compatible runtime:
 
-```console
+```bash
 PG_PROTO_POSTGRES_VERSION=18 \
-  cargo test --test postgres_container -- --ignored
+  cargo test --lib internal_tests::postgres_container -- --ignored
 ```
 
 See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
@@ -255,9 +319,8 @@ matrix.
   remains application work.
 - Pool scheduling, routing, SQL parsing, policy, credential storage, certificate
   provisioning, and cancellation-key persistence are intentionally not included.
-- Rust is affine rather than linear: callers can abandon a session by dropping
-  it. `Conn` is `#[must_use]` and has a debug-only drop bomb, but release builds
-  cannot make deliberate connection abandonment impossible.
+- Rust is affine rather than linear: callers can deliberately abandon an
+  operational connection by dropping it.
 - Unknown future PostgreSQL message tags are rejected by the typed codec until
   their direction and semantics are added.
 - Formal multiparty verification is not provided. Client and server roles are
@@ -277,14 +340,14 @@ Contribution instructions and community expectations are in
 The ordinary suite includes unit, fixture, property-style differential,
 compile-fail, and documentation tests:
 
-```console
+```bash
 cargo test --workspace
 ```
 
 Live PostgreSQL tests require a Docker-compatible runtime:
 
-```console
-cargo test --test postgres_container -- --ignored
+```bash
+cargo test --lib internal_tests::postgres_container -- --ignored
 ```
 
 ## Licence

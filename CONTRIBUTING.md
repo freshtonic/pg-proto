@@ -19,7 +19,7 @@ The repository's `rust-toolchain.toml` selects the development compiler. A
 Docker-compatible container runtime is needed for live PostgreSQL tests. The
 normal verification commands are:
 
-```console
+```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -29,13 +29,13 @@ cargo package --workspace
 
 Run the PostgreSQL compatibility suite with:
 
-```console
-cargo test --test postgres_container -- --ignored --test-threads=1
+```bash
+cargo test --lib internal_tests::postgres_container -- --ignored --test-threads=1
 ```
 
 Run a focused fuzz target with nightly Rust:
 
-```console
+```bash
 cargo +nightly fuzz run --fuzz-dir fuzz backend_codec
 ```
 

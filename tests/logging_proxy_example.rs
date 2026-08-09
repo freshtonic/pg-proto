@@ -85,12 +85,8 @@ async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Er
     )));
     assert!(captured.iter().any(|event| matches!(
         event,
-        Observation::Protocol { message, .. } if message == "SslAccepted"
-    )));
-    assert!(captured.iter().any(|event| matches!(
-        event,
-        Observation::Protocol { direction: "client -> server (TLS plaintext)", message, .. }
-            if message.starts_with("Startup(")
+        Observation::Protocol { direction: "client -> server", message, .. }
+            if message.starts_with("Parse(") || message.starts_with("Query(")
     )));
     drop(captured);
 

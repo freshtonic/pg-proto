@@ -17,11 +17,16 @@ env:
 jobs:
   reuse-pr-ci:
     name: Reuse successful PR CI
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login == 'github-actions[bot]' &&
+       startsWith(github.head_ref, 'release-plz-'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
       tested: ${{ steps.check.outputs.tested }}
+      package_tested: ${{ steps.check.outputs.package_tested }}
     steps:
       - name: Check whether this tree passed PR CI
         id: check
@@ -29,8 +34,50 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           echo "tested=false" >> "$GITHUB_OUTPUT"
+          echo "package_tested=false" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            unexpected_files="$(
+              gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename' |
+                grep -Ev '^(CHANGELOG\.md|Cargo\.lock|Cargo\.toml|[^/]+/Cargo\.toml)$' || true
+            )"
+            if [ -n "$unexpected_files" ]; then
+              echo "::notice title=Release PR CI not reused::Unexpected release files changed: $unexpected_files"
+              exit 0
+            fi
+
+            release_commit="$(gh api "repos/$REPO/git/commits/$PR_HEAD")"
+            parent_sha="$(jq -r '.parents[0].sha // empty' <<<"$release_commit")"
+            parent_count="$(jq -r '.parents | length' <<<"$release_commit")"
+            if [ "$parent_count" != "1" ] || [ "$parent_sha" != "$PR_BASE" ]; then
+              echo "::notice title=Release PR CI not reused::The release commit is not directly based on the PR base."
+              exit 0
+            fi
+
+            passed="$(
+              gh api \
+                --method GET \
+                -f event=push \
+                -f head_sha="$parent_sha" \
+                -f status=completed \
+                -f per_page=100 \
+                "repos/$REPO/actions/workflows/ci.yml/runs" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0'
+            )"
+            if [ "$passed" = "true" ]; then
+              echo "tested=true" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Release PR CI reused::Skipping duplicate tests already passed by parent $parent_sha."
+            else
+              echo "::notice title=Release PR CI not reused::The release parent has no successful push CI run."
+            fi
+            exit 0
+          fi
 
           max_attempts=6
           retry_delay=10
@@ -109,6 +156,7 @@ jobs:
                   echo "Successful pull-request CI found for $head_sha"
                   echo "::endgroup::"
                   echo "tested=true" >> "$GITHUB_OUTPUT"
+                  echo "package_tested=true" >> "$GITHUB_OUTPUT"
                   echo "::notice title=PR CI reused::Skipping duplicate CI for tree $main_tree."
                   exit 0
                 fi
@@ -130,7 +178,7 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
+      needs.reuse-pr-ci.outputs.tested != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -173,7 +221,7 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
+      needs.reuse-pr-ci.outputs.tested != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -192,7 +240,7 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
+      needs.reuse-pr-ci.outputs.tested != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -211,7 +259,7 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
+      needs.reuse-pr-ci.outputs.package_tested != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -230,7 +278,7 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      (github.event_name != 'push' || needs.reuse-pr-ci.outputs.tested != 'true')
+      needs.reuse-pr-ci.outputs.tested != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

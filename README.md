@@ -269,7 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Stateful message middleware
 
-A proxy can inspect or replace owned frontend and backend messages through
+A role component can inspect or replace owned messages through synchronous
 builder middleware. Each accepted connection gets a fresh handler with mutable
 access to the application-supplied per-connection state. Repeated `.middleware`
 calls compose stages in declaration order.
@@ -305,6 +305,19 @@ let _client = Client::builder()
     .build()?;
 # Ok::<(), pg_proto::BuildError>(())
 ```
+
+Forwarding-boundary middleware configured by `Intermediary::builder()` is
+asynchronous and fallible. Its frontend decision can forward a replacement,
+suppress the owned message, or handle the operation locally with an ordered list
+of backend responses. Its backend decision can forward a replacement or
+suppress the response after protocol state advances. `IntermediaryConnection`
+admits local operations and emits their responses through its connection-owned
+pipeline, so they cannot overtake earlier PostgreSQL responses. Middleware
+failures retain their application error in `ForwardError::Middleware`.
+
+`forward_frontend()` and `forward_backend()` report whether traffic was
+forwarded, suppressed, or locally handled; `forward_next()` reports the same
+decisions while driving both directions.
 
 For a complete networked example, see the TLS-terminating
 [`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion

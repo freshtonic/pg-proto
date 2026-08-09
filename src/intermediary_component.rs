@@ -1,6 +1,6 @@
 //! Builder-centred composition of the client-facing and PostgreSQL-facing roles.
 
-use std::{fmt, future::Future, io, pin::Pin};
+use std::{collections::VecDeque, fmt, future::Future, io, pin::Pin};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -219,30 +219,58 @@ impl<Peer, Identity> AuthenticatedRoutePolicy<Peer, Identity> for AllowAuthentic
     }
 }
 
-/// Middleware at the forwarding boundary between the two role components.
+/// Result of asynchronously intercepting a client-originated message.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FrontendMiddlewareOutput {
+    /// Forward this owned message to PostgreSQL.
+    Forward(crate::codec::FrontendMessage),
+    /// Consume the message without forwarding it or registering a response.
+    Suppress(crate::codec::FrontendMessage),
+    /// Handle the request locally and emit these responses in protocol order.
+    Respond {
+        /// Consumed client request.
+        request: crate::codec::FrontendMessage,
+        /// Responses generated for this request, in emission order.
+        responses: Vec<crate::codec::BackendMessage>,
+    },
+}
+
+/// Result of asynchronously intercepting a PostgreSQL-originated message.
+#[derive(Debug, Eq, PartialEq)]
+pub enum BackendMiddlewareOutput {
+    /// Forward this owned message to the client.
+    Forward(crate::codec::BackendMessage),
+    /// Consume the response after advancing protocol and pipeline state.
+    Suppress(crate::codec::BackendMessage),
+}
+
+/// Asynchronous, fallible middleware at the forwarding boundary.
 pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
+    /// Application-defined interception failure.
+    type Error;
+
     /// Intercepts a client-originated message after server-role middleware and
     /// before client-role middleware.
-    fn frontend(
-        &mut self,
-        _server: &ServerContext,
-        _client: &ClientContext,
-        _state: &mut State,
+    fn frontend<'a>(
+        &'a mut self,
+        _server: &'a ServerContext,
+        _client: &'a ClientContext,
+        _state: &'a mut State,
         message: crate::codec::FrontendMessage,
-    ) -> crate::codec::FrontendMessage {
-        message
+    ) -> Pin<Box<dyn Future<Output = Result<FrontendMiddlewareOutput, Self::Error>> + 'a>> {
+        Box::pin(async move { Ok(FrontendMiddlewareOutput::Forward(message)) })
     }
 
     /// Intercepts a PostgreSQL-originated message after client-role middleware
     /// and before server-role middleware.
-    fn backend(
-        &mut self,
-        _server: &ServerContext,
-        _client: &ClientContext,
-        _state: &mut State,
+    fn backend<'a>(
+        &'a mut self,
+        _server: &'a ServerContext,
+        _client: &'a ClientContext,
+        _state: &'a mut State,
         message: crate::codec::BackendMessage,
-    ) -> crate::codec::BackendMessage {
-        message
+    ) -> Pin<Box<dyn Future<Output = Result<BackendMiddlewareOutput, Self::Error>> + 'a>> {
+        Box::pin(async move { Ok(BackendMiddlewareOutput::Forward(message)) })
     }
 }
 
@@ -253,6 +281,7 @@ pub struct IdentityIntermediaryMiddleware;
 impl<State, ServerContext, ClientContext>
     IntermediaryMiddleware<State, ServerContext, ClientContext> for IdentityIntermediaryMiddleware
 {
+    type Error = std::convert::Infallible;
 }
 
 /// Creates fresh forwarding-boundary middleware for one established pair.
@@ -603,6 +632,7 @@ pub enum IntermediaryAcceptError<
     ClientError,
     RegistryError = std::convert::Infallible,
     CancellationError = std::convert::Infallible,
+    MiddlewareError = std::convert::Infallible,
 > {
     /// Client-facing TLS, startup, or authentication failed.
     Server(ServerError),
@@ -620,9 +650,11 @@ pub enum IntermediaryAcceptError<
     ServerOutput(io::Error),
     /// Opening or writing the one-shot upstream cancellation connection failed.
     Cancellation(CancellationError),
+    /// Forwarding-boundary middleware rejected generated establishment output.
+    Middleware(MiddlewareError),
 }
 
-impl<S, R, A, C, K, X> fmt::Debug for IntermediaryAcceptError<S, R, A, C, K, X> {
+impl<S, R, A, C, K, X, M> fmt::Debug for IntermediaryAcceptError<S, R, A, C, K, X, M> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Server(_) => "IntermediaryAcceptError::Server([REDACTED])",
@@ -637,11 +669,12 @@ impl<S, R, A, C, K, X> fmt::Debug for IntermediaryAcceptError<S, R, A, C, K, X> 
             }
             Self::ServerOutput(_) => "IntermediaryAcceptError::ServerOutput([REDACTED])",
             Self::Cancellation(_) => "IntermediaryAcceptError::Cancellation([REDACTED])",
+            Self::Middleware(_) => "IntermediaryAcceptError::Middleware([REDACTED])",
         })
     }
 }
 
-impl<S, R, A, C, K, X> fmt::Display for IntermediaryAcceptError<S, R, A, C, K, X> {
+impl<S, R, A, C, K, X, M> fmt::Display for IntermediaryAcceptError<S, R, A, C, K, X, M> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Server(_) => formatter.write_str("client-facing establishment failed"),
@@ -658,11 +691,14 @@ impl<S, R, A, C, K, X> fmt::Display for IntermediaryAcceptError<S, R, A, C, K, X
                 formatter.write_str("client-facing establishment output failed")
             }
             Self::Cancellation(_) => formatter.write_str("cancellation forwarding failed"),
+            Self::Middleware(_) => {
+                formatter.write_str("forwarding middleware rejected establishment output")
+            }
         }
     }
 }
 
-impl<S, R, A, C, K, X> std::error::Error for IntermediaryAcceptError<S, R, A, C, K, X>
+impl<S, R, A, C, K, X, M> std::error::Error for IntermediaryAcceptError<S, R, A, C, K, X, M>
 where
     S: std::error::Error + 'static,
     R: std::error::Error + 'static,
@@ -670,6 +706,7 @@ where
     C: std::error::Error + 'static,
     K: std::error::Error + 'static,
     X: std::error::Error + 'static,
+    M: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -681,6 +718,7 @@ where
             Self::CancellationRegistry(error) => Some(error),
             Self::ServerOutput(error) => Some(error),
             Self::Cancellation(error) => Some(error),
+            Self::Middleware(error) => Some(error),
         }
     }
 }
@@ -732,8 +770,14 @@ pub struct IntermediaryConnection<
     pipeline: Pipeline<Policy>,
     target: ConnectTarget,
     pending_frontend: Option<crate::codec::FrontendMessage>,
+    pending_local: VecDeque<PendingLocalResponses>,
     cancellation_registry: Cancellation,
     client_cancel_key: Option<crate::demux::CancelKey>,
+}
+
+struct PendingLocalResponses {
+    operation: crate::pipeline::OperationId,
+    messages: VecDeque<crate::codec::BackendMessage>,
 }
 
 /// Result of accepting either an ordinary session or an out-of-band request.
@@ -766,6 +810,54 @@ pub enum ForwardedMessage {
     Frontend(crate::codec::FrontendMessage),
     /// A PostgreSQL-originated message was forwarded to the client.
     Backend(crate::codec::BackendMessage),
+    /// A client-originated message was deliberately suppressed.
+    FrontendSuppressed(crate::codec::FrontendMessage),
+    /// A request was handled locally; responses were emitted or queued in order.
+    FrontendLocallyHandled(crate::codec::FrontendMessage),
+    /// A PostgreSQL-originated response advanced protocol state but was suppressed.
+    BackendSuppressed(crate::codec::BackendMessage),
+}
+
+/// Observable result of processing one client-originated message.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FrontendForwarding {
+    /// The message was sent to PostgreSQL.
+    Forwarded(crate::codec::FrontendMessage),
+    /// The message was consumed without being sent.
+    Suppressed(crate::codec::FrontendMessage),
+    /// The request was admitted as local and its responses were emitted or queued.
+    LocallyHandled(crate::codec::FrontendMessage),
+}
+
+impl FrontendForwarding {
+    /// Returns the owned client message represented by this outcome.
+    #[must_use]
+    pub fn into_message(self) -> crate::codec::FrontendMessage {
+        match self {
+            Self::Forwarded(message)
+            | Self::Suppressed(message)
+            | Self::LocallyHandled(message) => message,
+        }
+    }
+}
+
+/// Observable result of processing one PostgreSQL-originated response.
+#[derive(Debug, Eq, PartialEq)]
+pub enum BackendForwarding {
+    /// The response was sent to the client.
+    Forwarded(crate::codec::BackendMessage),
+    /// The response advanced protocol state but was not sent.
+    Suppressed(crate::codec::BackendMessage),
+}
+
+impl BackendForwarding {
+    /// Returns the owned PostgreSQL response represented by this outcome.
+    #[must_use]
+    pub fn into_message(self) -> crate::codec::BackendMessage {
+        match self {
+            Self::Forwarded(message) | Self::Suppressed(message) => message,
+        }
+    }
 }
 
 impl<DT, UT, State, Peer, SI, CE, SH, CH, Boundary, Policy, K>
@@ -840,15 +932,15 @@ where
     Policy: PipelinePolicy,
     K: IntermediaryCancellationRegistry,
 {
-    /// Receives one legal client message and forwards it upstream in
-    /// source-role, boundary, destination-role middleware order.
+    /// Receives one client message and reports whether it was forwarded,
+    /// suppressed, or handled with pipeline-ordered local responses.
     ///
     /// # Errors
     ///
-    /// Returns transport, framing, protocol-legality, or capacity failures.
+    /// Returns middleware, transport, protocol-legality, or capacity failures.
     pub async fn forward_frontend(
         &mut self,
-    ) -> Result<crate::codec::FrontendMessage, ForwardError> {
+    ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
         if let Some(message) = self.pending_frontend.take() {
             self.process_frontend(message, false).await
         } else {
@@ -861,23 +953,54 @@ where
         &mut self,
         message: crate::codec::FrontendMessage,
         intercept_source_and_boundary: bool,
-    ) -> Result<crate::codec::FrontendMessage, ForwardError> {
-        let message = if intercept_source_and_boundary {
+    ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
+        let decision = if intercept_source_and_boundary {
             let message = self.downstream.intercept_frontend(&mut self.state, message);
-            let message = self.boundary.frontend(
-                self.downstream.context(),
-                self.upstream.context(),
-                &mut self.state,
-                message,
-            );
-            self.upstream.intercept_frontend(&mut self.state, message)
+            self.boundary
+                .frontend(
+                    self.downstream.context(),
+                    self.upstream.context(),
+                    &mut self.state,
+                    message,
+                )
+                .await
+                .map_err(ForwardError::Middleware)?
         } else {
-            message
+            FrontendMiddlewareOutput::Forward(message)
         };
-        let admission = match self
-            .pipeline
-            .accept_frontend(message.clone(), FrontendHandling::Forward)
-        {
+        let (message, handling) = match decision {
+            FrontendMiddlewareOutput::Forward(message) => {
+                let message = if intercept_source_and_boundary {
+                    self.upstream.intercept_frontend(&mut self.state, message)
+                } else {
+                    message
+                };
+                (message, FrontendHandling::Forward)
+            }
+            FrontendMiddlewareOutput::Suppress(message) => {
+                return Ok(FrontendForwarding::Suppressed(message));
+            }
+            FrontendMiddlewareOutput::Respond { request, responses } => {
+                let admission = self
+                    .pipeline
+                    .accept_frontend(request.clone(), FrontendHandling::Local)
+                    .map_err(ForwardError::Frontend)?;
+                let FrontendAction::Discard { id } = admission.into_action() else {
+                    unreachable!()
+                };
+                let messages = responses
+                    .into_iter()
+                    .map(|message| self.downstream.intercept_backend(&mut self.state, message))
+                    .collect();
+                self.pending_local.push_back(PendingLocalResponses {
+                    operation: id,
+                    messages,
+                });
+                self.flush_local_responses().await?;
+                return Ok(FrontendForwarding::LocallyHandled(request));
+            }
+        };
+        let admission = match self.pipeline.accept_frontend(message.clone(), handling) {
             Ok(admission) => admission,
             Err(error) => {
                 self.pending_frontend = Some(message);
@@ -888,7 +1011,7 @@ where
             unreachable!()
         };
         self.upstream.send_wire_raw(message.clone()).await?;
-        Ok(message)
+        Ok(FrontendForwarding::Forwarded(message))
     }
 
     /// Receives one legal PostgreSQL response and forwards it downstream in
@@ -897,7 +1020,14 @@ where
     /// # Errors
     ///
     /// Returns transport, framing, ordering, or protocol-legality failures.
-    pub async fn forward_backend(&mut self) -> Result<crate::codec::BackendMessage, ForwardError> {
+    /// Receives one PostgreSQL response and reports whether it was forwarded or suppressed.
+    ///
+    /// # Errors
+    ///
+    /// Returns middleware, transport, ordering, or protocol-legality failures.
+    pub async fn forward_backend(
+        &mut self,
+    ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
         let message = self.upstream.receive_wire_raw().await?;
         self.process_backend(message).await
     }
@@ -905,15 +1035,25 @@ where
     async fn process_backend(
         &mut self,
         message: crate::codec::BackendMessage,
-    ) -> Result<crate::codec::BackendMessage, ForwardError> {
+    ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
         let message = self.upstream.intercept_backend(&mut self.state, message);
-        let message = self.boundary.backend(
-            self.downstream.context(),
-            self.upstream.context(),
-            &mut self.state,
-            message,
-        );
-        let message = self.downstream.intercept_backend(&mut self.state, message);
+        let decision = self
+            .boundary
+            .backend(
+                self.downstream.context(),
+                self.upstream.context(),
+                &mut self.state,
+                message,
+            )
+            .await
+            .map_err(ForwardError::Middleware)?;
+        let (message, suppress) = match decision {
+            BackendMiddlewareOutput::Forward(message) => (
+                self.downstream.intercept_backend(&mut self.state, message),
+                false,
+            ),
+            BackendMiddlewareOutput::Suppress(message) => (message, true),
+        };
         let message = match self
             .pipeline
             .accept_backend(message)
@@ -922,8 +1062,36 @@ where
             BackendAction::Emit(message) => message,
             BackendAction::Deferred(message) => return Err(ForwardError::Deferred(message)),
         };
-        self.downstream.send_wire_raw(message.clone()).await?;
-        Ok(message)
+        if suppress {
+            self.flush_local_responses().await?;
+            Ok(BackendForwarding::Suppressed(message))
+        } else {
+            self.downstream.send_wire_raw(message.clone()).await?;
+            self.flush_local_responses().await?;
+            Ok(BackendForwarding::Forwarded(message))
+        }
+    }
+
+    async fn flush_local_responses(&mut self) -> Result<(), ForwardError<Boundary::Error>> {
+        loop {
+            let Some(pending) = self.pending_local.front_mut() else {
+                return Ok(());
+            };
+            let Some(message) = pending.messages.pop_front() else {
+                self.pending_local.pop_front();
+                continue;
+            };
+            match self.pipeline.try_emit_local(pending.operation, message) {
+                Ok(BackendAction::Emit(message)) => {
+                    self.downstream.send_wire_raw(message).await?;
+                }
+                Ok(BackendAction::Deferred(message)) => {
+                    pending.messages.push_front(message);
+                    return Ok(());
+                }
+                Err(error) => return Err(ForwardError::Backend(error)),
+            }
+        }
     }
 
     /// Waits on both transports and forwards whichever legal message becomes
@@ -936,22 +1104,36 @@ where
     /// # Errors
     ///
     /// Returns transport, framing, ordering, protocol-legality, or capacity failures.
-    pub async fn forward_next(&mut self) -> Result<ForwardedMessage, ForwardError> {
+    pub async fn forward_next(
+        &mut self,
+    ) -> Result<ForwardedMessage, ForwardError<Boundary::Error>> {
         if self.pending_frontend.is_some() {
             let message = self.upstream.receive_wire_raw().await?;
             return self
                 .process_backend(message)
                 .await
-                .map(ForwardedMessage::Backend);
+                .map(|outcome| match outcome {
+                    BackendForwarding::Forwarded(message) => ForwardedMessage::Backend(message),
+                    BackendForwarding::Suppressed(message) => {
+                        ForwardedMessage::BackendSuppressed(message)
+                    }
+                });
         }
         tokio::select! {
             result = self.downstream.receive_wire_raw() => {
                 let message = result?;
-                self.process_frontend(message, true).await.map(ForwardedMessage::Frontend)
+                self.process_frontend(message, true).await.map(|outcome| match outcome {
+                    FrontendForwarding::Forwarded(message) => ForwardedMessage::Frontend(message),
+                    FrontendForwarding::Suppressed(message) => ForwardedMessage::FrontendSuppressed(message),
+                    FrontendForwarding::LocallyHandled(message) => ForwardedMessage::FrontendLocallyHandled(message),
+                })
             }
             result = self.upstream.receive_wire_raw() => {
                 let message = result?;
-                self.process_backend(message).await.map(ForwardedMessage::Backend)
+                self.process_backend(message).await.map(|outcome| match outcome {
+                    BackendForwarding::Forwarded(message) => ForwardedMessage::Backend(message),
+                    BackendForwarding::Suppressed(message) => ForwardedMessage::BackendSuppressed(message),
+                })
             }
         }
     }
@@ -991,7 +1173,7 @@ where
 
 /// Operational forwarding or pipeline projection failure.
 #[derive(Debug)]
-pub enum ForwardError {
+pub enum ForwardError<MiddlewareError = std::convert::Infallible> {
     /// Transport, decoding, or encoding failure.
     Io(io::Error),
     /// Frontend backpressure or protocol-legality rejection.
@@ -1000,9 +1182,11 @@ pub enum ForwardError {
     Backend(crate::pipeline::BackendProjectionError),
     /// A bounded response arrived before its operation became emittable.
     Deferred(crate::codec::BackendMessage),
+    /// Forwarding-boundary middleware rejected a message.
+    Middleware(MiddlewareError),
 }
 
-impl fmt::Display for ForwardError {
+impl<E> fmt::Display for ForwardError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => error.fmt(formatter),
@@ -1011,20 +1195,25 @@ impl fmt::Display for ForwardError {
             }
             Self::Backend(_) => formatter.write_str("backend message violates pipeline legality"),
             Self::Deferred(_) => formatter.write_str("backend response is not yet emittable"),
+            Self::Middleware(_) => formatter.write_str("forwarding middleware rejected a message"),
         }
     }
 }
 
-impl std::error::Error for ForwardError {
+impl<E> std::error::Error for ForwardError<E>
+where
+    E: std::error::Error + 'static,
+{
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            _ => None,
+            Self::Middleware(error) => Some(error),
+            Self::Frontend(_) | Self::Backend(_) | Self::Deferred(_) => None,
         }
     }
 }
 
-impl From<io::Error> for ForwardError {
+impl<E> From<io::Error> for ForwardError<E> {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
@@ -1102,6 +1291,20 @@ where
             >,
             K::Error,
             crate::CancelError<CE>,
+            <<Boundary as IntermediaryMiddlewareFactory<
+                crate::ServerConnectionContext<
+                    Peer,
+                    <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
+                >,
+                crate::ClientConnectionContext<CA::Evidence>,
+            >>::Handler as IntermediaryMiddleware<
+                State,
+                crate::ServerConnectionContext<
+                    Peer,
+                    <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
+                >,
+                crate::ClientConnectionContext<CA::Evidence>,
+            >>::Error,
         >,
     >
     where
@@ -1298,17 +1501,37 @@ where
             pipeline: Pipeline::new(self.pipeline),
             target: selected,
             pending_frontend: None,
+            pending_local: VecDeque::new(),
             cancellation_registry: self.cancellation_registry.clone(),
             client_cancel_key,
         };
         if let Some(message) = backend_key_message {
             let expected = message.clone();
-            let message = connection.boundary.backend(
-                connection.downstream.context(),
-                connection.upstream.context(),
-                &mut connection.state,
-                message,
-            );
+            let message = connection
+                .boundary
+                .backend(
+                    connection.downstream.context(),
+                    connection.upstream.context(),
+                    &mut connection.state,
+                    message,
+                )
+                .await;
+            let message = match message {
+                Ok(BackendMiddlewareOutput::Forward(message)) => message,
+                Ok(BackendMiddlewareOutput::Suppress(_)) => {
+                    let _ = connection.detach_cancellation();
+                    let _ = connection.teardown();
+                    return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "middleware suppressed generated cancellation key",
+                    )));
+                }
+                Err(error) => {
+                    let _ = connection.detach_cancellation();
+                    let _ = connection.teardown();
+                    return Err(IntermediaryAcceptError::Middleware(error));
+                }
+            };
             let message = connection
                 .downstream
                 .intercept_backend(&mut connection.state, message);

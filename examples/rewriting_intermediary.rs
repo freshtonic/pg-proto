@@ -32,38 +32,56 @@ impl
         ClientConnectionContext<()>,
     > for Rewrite
 {
-    fn frontend(
-        &mut self,
-        _: &ServerConnectionContext<(), TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        (): &mut (),
+    type Error = std::convert::Infallible;
+
+    fn frontend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<(), TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        (): &'a mut (),
         message: FrontendMessage,
-    ) -> FrontendMessage {
-        match message {
-            FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
-                b"select amount from ledger where visible = true",
-            )),
-            FrontendMessage::Parse(mut parse) => {
-                parse.query = Bytes::from_static(b"select amount from ledger where visible = true");
-                FrontendMessage::Parse(parse)
-            }
-            other => other,
-        }
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
+                > + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(pg_proto::FrontendMiddlewareOutput::Forward(match message {
+                FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
+                    b"select amount from ledger where visible = true",
+                )),
+                FrontendMessage::Parse(mut parse) => {
+                    parse.query =
+                        Bytes::from_static(b"select amount from ledger where visible = true");
+                    FrontendMessage::Parse(parse)
+                }
+                other => other,
+            }))
+        })
     }
-    fn backend(
-        &mut self,
-        _: &ServerConnectionContext<(), TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        (): &mut (),
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<(), TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        (): &'a mut (),
         message: BackendMessage,
-    ) -> BackendMessage {
-        match message {
-            BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
-                rows.fields[0].name = Bytes::from_static(b"visible_amount");
-                BackendMessage::RowDescription(rows)
-            }
-            other => other,
-        }
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(pg_proto::BackendMiddlewareOutput::Forward(match message {
+                BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
+                    rows.fields[0].name = Bytes::from_static(b"visible_amount");
+                    BackendMessage::RowDescription(rows)
+                }
+                other => other,
+            }))
+        })
     }
 }
 

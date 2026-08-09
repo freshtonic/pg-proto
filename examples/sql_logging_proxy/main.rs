@@ -56,45 +56,62 @@ impl
         ClientConnectionContext<()>,
     > for SqlLogger
 {
-    fn frontend(
-        &mut self,
-        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut SqlState,
+    type Error = std::convert::Infallible;
+
+    fn frontend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut SqlState,
         message: FrontendMessage,
-    ) -> FrontendMessage {
-        if let FrontendMessage::Query(sql)
-        | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
-        {
-            (state.reporter)(Observation::Sql {
-                connection: state.connection,
-                statement: String::from_utf8_lossy(sql).into_owned(),
-            });
-        }
-        message
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
+                > + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if let FrontendMessage::Query(sql)
+            | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
+            {
+                (state.reporter)(Observation::Sql {
+                    connection: state.connection,
+                    statement: String::from_utf8_lossy(sql).into_owned(),
+                });
+            }
+            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        })
     }
 
-    fn backend(
-        &mut self,
-        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &ClientConnectionContext<()>,
-        state: &mut SqlState,
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        state: &'a mut SqlState,
         message: BackendMessage,
-    ) -> BackendMessage {
-        match &message {
-            BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
-            BackendMessage::CommandComplete(tag) => {
-                (state.reporter)(Observation::RowCount {
-                    connection: state.connection,
-                    rows: state.rows,
-                    command: String::from_utf8_lossy(tag).into_owned(),
-                });
-                state.rows = 0;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            match &message {
+                BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
+                BackendMessage::CommandComplete(tag) => {
+                    (state.reporter)(Observation::RowCount {
+                        connection: state.connection,
+                        rows: state.rows,
+                        command: String::from_utf8_lossy(tag).into_owned(),
+                    });
+                    state.rows = 0;
+                }
+                BackendMessage::ErrorResponse(_) => state.rows = 0,
+                _ => {}
             }
-            BackendMessage::ErrorResponse(_) => state.rows = 0,
-            _ => {}
-        }
-        message
+            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        })
     }
 }
 

@@ -75,8 +75,9 @@ pub use codec::{
 pub use demux::CancelKey;
 pub use intermediary_component::{
     AllowAuthenticatedRoute, AuthenticatedRouteContext, AuthenticatedRoutePolicy,
-    CancellationPolicy, CancellationRoute, EstablishmentFailurePolicy, ForwardError,
-    ForwardedMessage, IdentityIntermediaryMiddleware, InitialServerContext, Intermediary,
+    BackendForwarding, BackendMiddlewareOutput, CancellationPolicy, CancellationRoute,
+    EstablishmentFailurePolicy, ForwardError, ForwardedMessage, FrontendForwarding,
+    FrontendMiddlewareOutput, IdentityIntermediaryMiddleware, InitialServerContext, Intermediary,
     IntermediaryAccept, IntermediaryAcceptError, IntermediaryBuildError, IntermediaryBuilder,
     IntermediaryCancellationRegistry, IntermediaryConnection, IntermediaryContexts,
     IntermediaryMiddleware, IntermediaryMiddlewareFactory, RejectCancellation,

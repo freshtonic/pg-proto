@@ -171,6 +171,14 @@ pub struct BackendProjectionError {
     pub message: BackendMessage,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum BackendSequenceError {
+    Cardinality { expected: usize, actual: usize },
+    Source(BackendMessage),
+    Replacement(BackendMessage),
+    DifferentSpan,
+}
+
 /// Public summary of the pipeline's projected frontend state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PipelineState {
@@ -533,6 +541,59 @@ impl Default for Pipeline<NoPipeline> {
 }
 
 impl<P: PipelinePolicy> Pipeline<P> {
+    fn snapshot(&self) -> Self {
+        Self {
+            policy: self.policy,
+            operations: self.operations.clone(),
+            request_state: self.request_state,
+            response_state: self.response_state,
+            next_id: self.next_id,
+            changed: Arc::clone(&self.changed),
+        }
+    }
+
+    pub(crate) fn prepare_backend_replacements(
+        &self,
+        sources: &[BackendMessage],
+        replacements: &[BackendMessage],
+    ) -> Result<Self, BackendSequenceError> {
+        if sources.len() != replacements.len() {
+            return Err(BackendSequenceError::Cardinality {
+                expected: sources.len(),
+                actual: replacements.len(),
+            });
+        }
+        let mut source_projection = self.snapshot();
+        for message in sources.iter().cloned() {
+            match source_projection.accept_backend(message) {
+                Ok(BackendAction::Emit(_)) => {}
+                Ok(BackendAction::Deferred(message))
+                | Err(BackendProjectionError { message, .. }) => {
+                    return Err(BackendSequenceError::Source(message));
+                }
+            }
+        }
+        let mut replacement_projection = self.snapshot();
+        for message in replacements.iter().cloned() {
+            if !message.is_reconstructable() {
+                return Err(BackendSequenceError::Replacement(message));
+            }
+            match replacement_projection.accept_backend(message) {
+                Ok(BackendAction::Emit(_)) => {}
+                Ok(BackendAction::Deferred(message))
+                | Err(BackendProjectionError { message, .. }) => {
+                    return Err(BackendSequenceError::Replacement(message));
+                }
+            }
+        }
+        if source_projection.operations != replacement_projection.operations
+            || source_projection.request_state != replacement_projection.request_state
+            || source_projection.response_state != replacement_projection.response_state
+        {
+            return Err(BackendSequenceError::DifferentSpan);
+        }
+        Ok(replacement_projection)
+    }
     /// Creates an empty pipeline using `policy`.
     #[must_use]
     pub(crate) fn new(policy: P) -> Self {

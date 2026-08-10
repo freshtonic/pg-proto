@@ -9,6 +9,26 @@ use crate::{
     pipeline::{BackendAction, FrontendAction, FrontendHandling, Pipeline, PipelinePolicy},
 };
 
+fn is_backend_batch_barrier(message: &crate::codec::BackendMessage) -> bool {
+    use crate::codec::BackendMessage as B;
+    matches!(
+        message,
+        B::CommandComplete(_)
+            | B::PortalSuspended
+            | B::EmptyQueryResponse
+            | B::ErrorResponse(_)
+            | B::ReadyForQuery(_)
+            | B::CopyInResponse(_)
+            | B::CopyOutResponse(_)
+            | B::CopyBothResponse(_)
+            | B::CopyDone
+            | B::NoticeResponse(_)
+            | B::NotificationResponse { .. }
+            | B::ParameterStatus { .. }
+            | B::BackendKeyData { .. }
+    )
+}
+
 /// Required posture for out-of-band cancellation connections.
 ///
 /// Forwarding cancellation is implemented by issue #36. Until then the only
@@ -244,6 +264,108 @@ pub enum BackendMiddlewareOutput {
     Expand(Vec<crate::codec::BackendMessage>),
     /// Consume the response after advancing protocol and pipeline state.
     Suppress(crate::codec::BackendMessage),
+    /// Retain the unchanged current source without projection or output.
+    Hold,
+}
+
+/// Ordered result of applying batch policy to retained backend messages.
+#[derive(Debug, Eq, PartialEq)]
+pub enum BackendBatchOutput {
+    /// Leave the authoritative input span retained by the connection.
+    KeepHolding,
+    /// Replace every held input with one output at the same ordered position.
+    ReplaceOneToOne(Vec<crate::codec::BackendMessage>),
+}
+
+/// Reason retained backend messages are offered to batch policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendFlushReason {
+    /// A configured message or byte limit was reached.
+    Capacity,
+    /// A protocol boundary must follow the held span.
+    ProtocolBarrier,
+    /// The application requested a latency or batch boundary.
+    Explicit,
+    /// The connection is being deliberately torn down.
+    Teardown,
+}
+
+/// Non-zero bounds for connection-owned backend messages.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendHoldLimits {
+    max_messages: usize,
+    max_bytes: usize,
+}
+
+impl BackendHoldLimits {
+    /// Creates message-count and retained-byte bounds.
+    ///
+    /// # Errors
+    /// Returns an error when either bound is zero.
+    pub const fn new(
+        max_messages: usize,
+        max_bytes: usize,
+    ) -> Result<Self, BackendHoldConfigError> {
+        if max_messages == 0 || max_bytes == 0 {
+            Err(BackendHoldConfigError)
+        } else {
+            Ok(Self {
+                max_messages,
+                max_bytes,
+            })
+        }
+    }
+    /// Maximum retained message count.
+    #[must_use]
+    pub const fn max_messages(self) -> usize {
+        self.max_messages
+    }
+    /// Maximum estimated retained wire bytes.
+    #[must_use]
+    pub const fn max_bytes(self) -> usize {
+        self.max_bytes
+    }
+}
+
+/// A zero backend hold bound is invalid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendHoldConfigError;
+
+impl fmt::Display for BackendHoldConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("backend hold limits must be non-zero")
+    }
+}
+impl std::error::Error for BackendHoldConfigError {}
+
+/// Opaque ordered view of connection-owned backend messages.
+#[derive(Clone, Copy, Debug)]
+pub struct HeldBackendMessages<'a> {
+    messages: &'a [crate::codec::BackendMessage],
+    bytes: usize,
+}
+
+impl<'a> HeldBackendMessages<'a> {
+    /// Number of held messages.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.messages.len()
+    }
+    /// Whether the view is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.messages.is_empty()
+    }
+    /// Estimated retained wire bytes.
+    #[must_use]
+    pub const fn bytes(self) -> usize {
+        self.bytes
+    }
+    /// Iterates over messages in receipt order.
+    #[must_use]
+    pub fn iter(self) -> impl ExactSizeIterator<Item = &'a crate::codec::BackendMessage> {
+        self.messages.iter()
+    }
 }
 
 /// Asynchronous, fallible middleware at the forwarding boundary.
@@ -273,6 +395,22 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
         message: crate::codec::BackendMessage,
     ) -> Pin<Box<dyn Future<Output = Result<BackendMiddlewareOutput, Self::Error>> + 'a>> {
         Box::pin(async move { Ok(BackendMiddlewareOutput::Forward(message)) })
+    }
+
+    /// Applies policy to an ordered borrowed span of retained backend messages.
+    fn flush_backend<'a>(
+        &'a mut self,
+        _server: &'a ServerContext,
+        _client: &'a ClientContext,
+        _state: &'a mut State,
+        held: HeldBackendMessages<'a>,
+        _reason: BackendFlushReason,
+    ) -> Pin<Box<dyn Future<Output = Result<BackendBatchOutput, Self::Error>> + 'a>> {
+        Box::pin(async move {
+            Ok(BackendBatchOutput::ReplaceOneToOne(
+                held.iter().cloned().collect(),
+            ))
+        })
     }
 }
 
@@ -333,6 +471,7 @@ pub struct Intermediary<
     pub(crate) cancellation: CancellationPolicy,
     pub(crate) cancellation_registry: Cancellation,
     pub(crate) failure_policy: EstablishmentFailurePolicy,
+    pub(crate) backend_hold_limits: Option<BackendHoldLimits>,
 }
 
 impl Intermediary<()> {
@@ -375,6 +514,7 @@ pub struct IntermediaryBuilder<
     cancellation: Option<CancellationPolicy>,
     cancellation_registry: Cancellation,
     failure_policy: EstablishmentFailurePolicy,
+    backend_hold_limits: Option<BackendHoldLimits>,
 }
 
 impl Default for IntermediaryBuilder {
@@ -389,6 +529,7 @@ impl Default for IntermediaryBuilder {
             cancellation: None,
             cancellation_registry: RejectCancellation,
             failure_policy: EstablishmentFailurePolicy::Close,
+            backend_hold_limits: None,
         }
     }
 }
@@ -407,6 +548,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -423,6 +565,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -442,6 +585,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -461,6 +605,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -480,6 +625,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -496,6 +642,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: self.cancellation,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -516,6 +663,13 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
         self
     }
 
+    /// Enables bounded connection-owned backend message holding.
+    #[must_use]
+    pub fn backend_batching(mut self, limits: BackendHoldLimits) -> Self {
+        self.backend_hold_limits = Some(limits);
+        self
+    }
+
     /// Enables forwarding through an application-owned concurrent registry.
     #[must_use]
     pub fn cancellation_registry<Next>(
@@ -532,6 +686,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
             cancellation: Some(CancellationPolicy::Forward),
             cancellation_registry: registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         }
     }
 
@@ -556,6 +711,7 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
                 .ok_or(IntermediaryBuildError::MissingCancellationPolicy)?,
             cancellation_registry: self.cancellation_registry,
             failure_policy: self.failure_policy,
+            backend_hold_limits: self.backend_hold_limits,
         })
     }
 }
@@ -772,6 +928,8 @@ pub struct IntermediaryConnection<
     pipeline: Pipeline<Policy>,
     target: ConnectTarget,
     pending_frontend: Option<crate::codec::FrontendMessage>,
+    backend_hold: crate::backend_hold::BackendHold,
+    backend_hold_limits: Option<BackendHoldLimits>,
     pending_local: VecDeque<PendingLocalResponses>,
     cancellation_registry: Cancellation,
     client_cancel_key: Option<crate::demux::CancelKey>,
@@ -825,6 +983,8 @@ pub enum ForwardedMessage {
     FrontendLocallyHandled(crate::codec::FrontendMessage),
     /// A PostgreSQL-originated response advanced protocol state but was suppressed.
     BackendSuppressed(crate::codec::BackendMessage),
+    /// A PostgreSQL response entered the connection-owned backend hold.
+    BackendHeld,
 }
 
 /// Observable result of processing one client-originated message.
@@ -864,15 +1024,64 @@ pub enum BackendForwarding {
     },
     /// The response advanced protocol state but was not sent.
     Suppressed(crate::codec::BackendMessage),
+    /// The response entered the connection-owned hold without projection.
+    Held,
 }
 
 impl BackendForwarding {
     /// Returns the owned PostgreSQL response represented by this outcome.
+    ///
+    /// # Panics
+    /// Panics for [`BackendForwarding::Held`] because the connection still owns
+    /// that response.
     #[must_use]
     pub fn into_message(self) -> crate::codec::BackendMessage {
         match self {
             Self::Forwarded(message) | Self::Suppressed(message) => message,
             Self::Expanded { source, .. } => source,
+            Self::Held => panic!("a held response remains owned by the connection"),
+        }
+    }
+}
+
+/// Observable result of explicitly applying backend batch policy.
+#[derive(Debug, Eq, PartialEq)]
+pub enum BackendBatchForwarding {
+    /// The held span was atomically projected and emitted in order.
+    Released(Vec<crate::codec::BackendMessage>),
+    /// Batch policy elected to retain the unchanged span.
+    Kept,
+    /// No backend messages were held.
+    Empty,
+}
+
+/// Validation failure for an ordered one-to-one backend replacement span.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendBatchProjectionError {
+    /// Replacement cardinality differed from the held span.
+    Cardinality {
+        /// Number of authoritative held inputs.
+        expected: usize,
+        /// Number of proposed replacements.
+        actual: usize,
+    },
+    /// A held source was not attributable at this pipeline position.
+    IllegalSource,
+    /// A proposed replacement was illegal or not reconstructable.
+    IllegalReplacement,
+    /// Replacements would consume a different protocol span than the sources.
+    DifferentSpan,
+}
+
+impl From<crate::pipeline::BackendSequenceError> for BackendBatchProjectionError {
+    fn from(error: crate::pipeline::BackendSequenceError) -> Self {
+        match error {
+            crate::pipeline::BackendSequenceError::Cardinality { expected, actual } => {
+                Self::Cardinality { expected, actual }
+            }
+            crate::pipeline::BackendSequenceError::Source(_) => Self::IllegalSource,
+            crate::pipeline::BackendSequenceError::Replacement(_) => Self::IllegalReplacement,
+            crate::pipeline::BackendSequenceError::DifferentSpan => Self::DifferentSpan,
         }
     }
 }
@@ -896,6 +1105,15 @@ where
     #[must_use]
     pub const fn cancellation_key(&self) -> Option<&crate::demux::CancelKey> {
         self.client_cancel_key.as_ref()
+    }
+
+    /// Returns an ordered borrowed view of retained backend messages.
+    #[must_use]
+    pub fn held_backend_messages(&self) -> HeldBackendMessages<'_> {
+        HeldBackendMessages {
+            messages: self.backend_hold.messages(),
+            bytes: self.backend_hold.bytes(),
+        }
     }
 
     /// Detaches this session's cancellation mapping explicitly.
@@ -1046,6 +1264,18 @@ where
     pub async fn forward_backend(
         &mut self,
     ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
+        if self.backend_hold.pending().is_some() {
+            return self.process_pending_backend().await;
+        }
+        if self.backend_hold_is_full() {
+            match self
+                .flush_backend_hold_for(BackendFlushReason::Capacity)
+                .await?
+            {
+                BackendBatchForwarding::Released(_) | BackendBatchForwarding::Empty => {}
+                BackendBatchForwarding::Kept => return Err(ForwardError::BackendHoldCapacity),
+            }
+        }
         let message = self.upstream.receive_wire_raw().await?;
         self.process_backend(message).await
     }
@@ -1055,24 +1285,51 @@ where
         message: crate::codec::BackendMessage,
     ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
         let message = self.upstream.intercept_backend(&mut self.state, message);
-        let source = message.clone();
+        self.backend_hold.set_pending(message);
+        if self
+            .backend_hold
+            .pending()
+            .is_some_and(is_backend_batch_barrier)
+            && !self.backend_hold.is_empty()
+        {
+            match self
+                .flush_backend_hold_for(BackendFlushReason::ProtocolBarrier)
+                .await?
+            {
+                BackendBatchForwarding::Released(_) | BackendBatchForwarding::Empty => {}
+                BackendBatchForwarding::Kept => return Err(ForwardError::BackendHoldRefused),
+            }
+        }
+        self.process_pending_backend().await
+    }
+
+    async fn process_pending_backend(
+        &mut self,
+    ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
+        let source = self
+            .backend_hold
+            .pending()
+            .expect("pending backend processing requires a source")
+            .clone();
         let decision = self
             .boundary
             .backend(
                 self.downstream.context(),
                 self.upstream.context(),
                 &mut self.state,
-                message,
+                source.clone(),
             )
             .await
             .map_err(ForwardError::Middleware)?;
         let outcome = match decision {
             BackendMiddlewareOutput::Forward(message) => {
+                let _ = self.backend_hold.take_pending();
                 let message = self.downstream.intercept_backend(&mut self.state, message);
                 let message = self.emit_backend(message).await?;
                 BackendForwarding::Forwarded(message)
             }
             BackendMiddlewareOutput::Suppress(message) => {
+                let _ = self.backend_hold.take_pending();
                 let message = self.advance_backend(message)?;
                 BackendForwarding::Suppressed(message)
             }
@@ -1080,6 +1337,7 @@ where
                 if messages.is_empty() {
                     return Err(ForwardError::EmptyExpansion(source));
                 }
+                let _ = self.backend_hold.take_pending();
                 let mut emitted = Vec::with_capacity(messages.len());
                 for message in messages {
                     let message = self.downstream.intercept_backend(&mut self.state, message);
@@ -1090,9 +1348,100 @@ where
                     messages: emitted,
                 }
             }
+            BackendMiddlewareOutput::Hold => {
+                if self.backend_hold_limits.is_none() {
+                    return Err(ForwardError::BackendHoldingDisabled(source));
+                }
+                self.backend_hold.hold_pending();
+                BackendForwarding::Held
+            }
         };
         self.flush_local_responses().await?;
         Ok(outcome)
+    }
+
+    fn backend_hold_is_full(&self) -> bool {
+        self.backend_hold_limits.is_some_and(|limits| {
+            self.backend_hold.len() >= limits.max_messages()
+                || self.backend_hold.bytes() >= limits.max_bytes()
+        })
+    }
+
+    /// Applies batch policy to held messages without reading another upstream frame.
+    ///
+    /// # Errors
+    /// Returns middleware, encoding, projection, or transport failures while
+    /// preserving the hold until projection commits.
+    pub async fn flush_backend_hold(
+        &mut self,
+    ) -> Result<BackendBatchForwarding, ForwardError<Boundary::Error>> {
+        self.flush_backend_hold_for(BackendFlushReason::Explicit)
+            .await
+    }
+
+    /// Flushes retained messages for deliberate teardown without reading upstream.
+    ///
+    /// # Errors
+    /// Returns an error when middleware fails, refuses release, proposes an
+    /// invalid span, or output cannot be encoded or written.
+    pub async fn prepare_backend_teardown(
+        &mut self,
+    ) -> Result<BackendBatchForwarding, ForwardError<Boundary::Error>> {
+        let outcome = self
+            .flush_backend_hold_for(BackendFlushReason::Teardown)
+            .await?;
+        if matches!(outcome, BackendBatchForwarding::Kept) {
+            return Err(ForwardError::BackendHoldRefused);
+        }
+        Ok(outcome)
+    }
+
+    async fn flush_backend_hold_for(
+        &mut self,
+        reason: BackendFlushReason,
+    ) -> Result<BackendBatchForwarding, ForwardError<Boundary::Error>> {
+        if self.backend_hold.is_empty() {
+            return Ok(BackendBatchForwarding::Empty);
+        }
+        let held = HeldBackendMessages {
+            messages: self.backend_hold.messages(),
+            bytes: self.backend_hold.bytes(),
+        };
+        let decision = self
+            .boundary
+            .flush_backend(
+                self.downstream.context(),
+                self.upstream.context(),
+                &mut self.state,
+                held,
+                reason,
+            )
+            .await
+            .map_err(ForwardError::Middleware)?;
+        let BackendBatchOutput::ReplaceOneToOne(messages) = decision else {
+            return Ok(BackendBatchForwarding::Kept);
+        };
+        let messages: Vec<_> = messages
+            .into_iter()
+            .map(|message| self.downstream.intercept_backend(&mut self.state, message))
+            .collect();
+        for message in &messages {
+            message.to_frame().map_err(ForwardError::Io)?;
+        }
+        let prepared = self
+            .pipeline
+            .prepare_backend_replacements(self.backend_hold.messages(), &messages)
+            .map_err(|error| ForwardError::BackendBatch {
+                error: error.into(),
+                proposed: messages.clone(),
+            })?;
+        self.pipeline = prepared;
+        let _sources = self.backend_hold.clear();
+        for message in &messages {
+            self.downstream.send_wire_raw(message.clone()).await?;
+        }
+        self.flush_local_responses().await?;
+        Ok(BackendBatchForwarding::Released(messages))
     }
 
     fn advance_backend(
@@ -1153,6 +1502,30 @@ where
     pub async fn forward_next(
         &mut self,
     ) -> Result<ForwardedMessage, ForwardError<Boundary::Error>> {
+        if self.backend_hold.pending().is_some() {
+            return self
+                .process_pending_backend()
+                .await
+                .map(|outcome| match outcome {
+                    BackendForwarding::Forwarded(message) => ForwardedMessage::Backend(message),
+                    BackendForwarding::Expanded { source, messages } => {
+                        ForwardedMessage::BackendExpanded { source, messages }
+                    }
+                    BackendForwarding::Suppressed(message) => {
+                        ForwardedMessage::BackendSuppressed(message)
+                    }
+                    BackendForwarding::Held => ForwardedMessage::BackendHeld,
+                });
+        }
+        if self.backend_hold_is_full() {
+            match self
+                .flush_backend_hold_for(BackendFlushReason::Capacity)
+                .await?
+            {
+                BackendBatchForwarding::Released(_) | BackendBatchForwarding::Empty => {}
+                BackendBatchForwarding::Kept => return Err(ForwardError::BackendHoldCapacity),
+            }
+        }
         if self.pending_frontend.is_some() {
             let message = self.upstream.receive_wire_raw().await?;
             return self
@@ -1166,6 +1539,7 @@ where
                     BackendForwarding::Suppressed(message) => {
                         ForwardedMessage::BackendSuppressed(message)
                     }
+                    BackendForwarding::Held => ForwardedMessage::BackendHeld,
                 });
         }
         tokio::select! {
@@ -1185,6 +1559,7 @@ where
                         ForwardedMessage::BackendExpanded { source, messages }
                     }
                     BackendForwarding::Suppressed(message) => ForwardedMessage::BackendSuppressed(message),
+                    BackendForwarding::Held => ForwardedMessage::BackendHeld,
                 })
             }
         }
@@ -1192,6 +1567,10 @@ where
 
     /// Deliberately tears down both roles and recovers transports, handlers,
     /// contexts, boundary middleware, and the sole connection state.
+    ///
+    /// # Panics
+    /// Panics when a backend source is pending or held. Call
+    /// [`Self::prepare_backend_teardown`] first when batching is enabled.
     #[allow(clippy::type_complexity)]
     pub fn teardown(
         mut self,
@@ -1206,6 +1585,10 @@ where
             crate::ClientConnectionContext<ClientEvidence>,
         >,
     ) {
+        assert!(
+            self.backend_hold.is_empty() && self.backend_hold.pending().is_none(),
+            "backend messages remain held; call prepare_backend_teardown before teardown"
+        );
         let _ = self.detach_cancellation();
         let (downstream, server_handler, server_context) = self.downstream.into_parts();
         let (upstream, client_handler, client_context) = self.upstream.into_parts();
@@ -1236,6 +1619,19 @@ pub enum ForwardError<MiddlewareError = std::convert::Infallible> {
     Deferred(crate::codec::BackendMessage),
     /// Backend fan-out did not contain a replacement response.
     EmptyExpansion(crate::codec::BackendMessage),
+    /// Middleware requested holding without configured finite limits.
+    BackendHoldingDisabled(crate::codec::BackendMessage),
+    /// Batch policy kept a full hold, so no transport may be polled.
+    BackendHoldCapacity,
+    /// Batch policy refused a required protocol-boundary release.
+    BackendHoldRefused,
+    /// A proposed batch failed atomic protocol-span validation.
+    BackendBatch {
+        /// Validation failure.
+        error: BackendBatchProjectionError,
+        /// Unsent proposed replacements in order.
+        proposed: Vec<crate::codec::BackendMessage>,
+    },
     /// Forwarding-boundary middleware rejected a message.
     Middleware(MiddlewareError),
 }
@@ -1252,6 +1648,17 @@ impl<E> fmt::Display for ForwardError<E> {
             Self::EmptyExpansion(_) => {
                 formatter.write_str("backend expansion must contain at least one response")
             }
+            Self::BackendHoldingDisabled(_) => {
+                formatter.write_str("backend holding is not configured")
+            }
+            Self::BackendHoldCapacity => {
+                formatter.write_str("backend hold is full and batch policy kept holding")
+            }
+            Self::BackendHoldRefused => {
+                formatter.write_str("backend batch policy refused a required release")
+            }
+            Self::BackendBatch { .. } => formatter
+                .write_str("backend batch replacement is not a legal one-to-one protocol span"),
             Self::Middleware(_) => formatter.write_str("forwarding middleware rejected a message"),
         }
     }
@@ -1265,9 +1672,14 @@ where
         match self {
             Self::Io(error) => Some(error),
             Self::Middleware(error) => Some(error),
-            Self::Frontend(_) | Self::Backend(_) | Self::Deferred(_) | Self::EmptyExpansion(_) => {
-                None
-            }
+            Self::Frontend(_)
+            | Self::Backend(_)
+            | Self::Deferred(_)
+            | Self::EmptyExpansion(_)
+            | Self::BackendHoldingDisabled(_)
+            | Self::BackendHoldCapacity
+            | Self::BackendHoldRefused
+            | Self::BackendBatch { .. } => None,
         }
     }
 }
@@ -1560,6 +1972,8 @@ where
             pipeline: Pipeline::new(self.pipeline),
             target: selected,
             pending_frontend: None,
+            backend_hold: crate::backend_hold::BackendHold::default(),
+            backend_hold_limits: self.backend_hold_limits,
             pending_local: VecDeque::new(),
             cancellation_registry: self.cancellation_registry.clone(),
             client_cancel_key,
@@ -1577,7 +1991,11 @@ where
                 .await;
             let message = match message {
                 Ok(BackendMiddlewareOutput::Forward(message)) => message,
-                Ok(BackendMiddlewareOutput::Suppress(_) | BackendMiddlewareOutput::Expand(_)) => {
+                Ok(
+                    BackendMiddlewareOutput::Suppress(_)
+                    | BackendMiddlewareOutput::Expand(_)
+                    | BackendMiddlewareOutput::Hold,
+                ) => {
                     let _ = connection.detach_cancellation();
                     let _ = connection.teardown();
                     return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(

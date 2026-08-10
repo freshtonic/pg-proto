@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — pg-proto backend batching</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-monospace, monospace; }
+    body { max-width: 1050px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin-bottom: .25rem; }
+    .warning { color: #c55; font-weight: bold; }
+    .tabs, .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+    button { padding: .55rem .8rem; cursor: pointer; }
+    button.active { outline: 3px solid #4b9; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1rem; }
+    section { border: 1px solid #8888; border-radius: .5rem; padding: 1rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 8rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #8885; padding: .4rem; text-align: left; }
+    .ok { color: #297; }
+    .bad { color: #d55; }
+  </style>
+</head>
+<body>
+  <h1>Backend batching state-machine lab</h1>
+  <p class="warning">PROTOTYPE — throwaway model, not pg-proto production code.</p>
+  <p>
+    Question: which ownership model best supports an ordered 1:1 transformation
+    of buffered <code>DataRow</code> messages without double projection?
+  </p>
+
+  <nav class="tabs" aria-label="Design">
+    <button data-design="hold">Crate-owned hold</button>
+    <button data-design="state">Connection state</button>
+    <button data-design="collector">Response collector</button>
+  </nav>
+
+  <div class="actions">
+    <button data-action="row">Receive DataRow</button>
+    <button data-action="terminator">Receive CommandComplete</button>
+    <button data-action="flush">Explicit flush</button>
+    <button data-action="cancel">Cancel during flush</button>
+    <button data-action="violate">Attempt lost retention</button>
+    <button data-action="teardown">Teardown</button>
+    <button data-action="reset">Reset</button>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>Full state</h2>
+      <pre id="state"></pre>
+    </section>
+    <section>
+      <h2>Event log</h2>
+      <pre id="log"></pre>
+    </section>
+  </div>
+
+  <section>
+    <h2>Live invariant check</h2>
+    <table>
+      <tbody>
+        <tr><th>Every received message owned</th><td id="owned"></td></tr>
+        <tr><th>No input projected twice</th><td id="once"></td></tr>
+        <tr><th>Output order preserved</th><td id="order"></td></tr>
+        <tr><th>Capacity bounded (3 rows)</th><td id="capacity"></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script>
+    const models = {
+      hold: {
+        title: "crate-owned hold",
+        owner: "connection.hold",
+        cancellation: "connection restores the in-flight hold",
+        teardown: "fallible: returns the authoritative hold",
+      },
+      state: {
+        title: "caller-defined connection state",
+        owner: "state.rows",
+        cancellation: "future must have moved every row back into state",
+        teardown: "state is recovered, but correctness is a middleware contract",
+      },
+      collector: {
+        title: "ordered response collector",
+        owner: "connection.collector",
+        cancellation: "scheduler retains the in-flight transaction",
+        teardown: "fallible: returns collector queue and producer",
+      },
+    };
+
+    let design = "hold";
+    let s;
+
+    function reset() {
+      s = {
+        nextId: 1,
+        received: [],
+        pending: [],
+        inFlight: [],
+        emitted: [],
+        inputProjection: {},
+        outputProjection: {},
+        closed: false,
+        log: [`selected ${models[design].title}`],
+      };
+      render();
+    }
+
+    function receiveRow() {
+      if (s.closed) return note("connection is closed");
+      if (s.pending.length >= 3) return note("BACKPRESSURE: row not read; capacity is full");
+      const message = { id: s.nextId++, kind: "DataRow" };
+      s.received.push(message);
+      s.pending.push(message);
+      note(`${message.kind}#${message.id} moved to ${models[design].owner}; no projection`);
+      if (design === "collector") note("collector associates row with the response-head transaction");
+    }
+
+    function receiveTerminator() {
+      if (s.closed) return note("connection is closed");
+      const message = { id: s.nextId++, kind: "CommandComplete" };
+      s.received.push(message);
+      s.pending.push(message);
+      note(`barrier #${message.id} appended after held rows; flush required before next read`);
+      flush();
+    }
+
+    function flush() {
+      if (s.closed) return note("connection is closed");
+      if (!s.pending.length) return note("nothing to flush");
+      s.inFlight = s.pending.splice(0);
+      const proposed = s.inFlight.map(message => ({
+        source: message.id,
+        kind: message.kind,
+        value: message.kind === "DataRow" ? `decrypted(${message.id})` : message.kind,
+      }));
+      note(`atomic validation of ${proposed.length} ordered 1:1 replacements`);
+      for (const output of proposed) {
+        s.inputProjection[output.source] = (s.inputProjection[output.source] || 0) + 1;
+        s.outputProjection[output.source] = (s.outputProjection[output.source] || 0) + 1;
+        s.emitted.push(output);
+      }
+      s.inFlight = [];
+      note(`committed and emitted: ${proposed.map(x => x.value).join(", ")}`);
+    }
+
+    function cancelFlush() {
+      if (s.closed) return note("connection is closed");
+      if (!s.pending.length) return note("nothing pending; receive rows first");
+      s.inFlight = s.pending.splice(0);
+      note(`flush future cancelled; ${models[design].cancellation}`);
+      s.pending.unshift(...s.inFlight);
+      s.inFlight = [];
+      note("all messages restored; projection remains unchanged");
+    }
+
+    function violateRetention() {
+      if (s.closed) return note("connection is closed");
+      if (design !== "state") {
+        return note("unrepresentable: the crate owns every deferred input");
+      }
+      const message = { id: s.nextId++, kind: "DataRow" };
+      s.received.push(message);
+      note("BUG: middleware reported retained but failed to insert the row into state");
+    }
+
+    function teardown() {
+      if (s.closed) return note("already torn down");
+      s.closed = true;
+      note(`teardown with ${s.pending.length} pending: ${models[design].teardown}`);
+    }
+
+    function note(message) {
+      s.log.push(message);
+      render();
+    }
+
+    function check() {
+      const locations = new Map();
+      for (const m of s.pending) locations.set(m.id, (locations.get(m.id) || 0) + 1);
+      for (const m of s.inFlight) locations.set(m.id, (locations.get(m.id) || 0) + 1);
+      for (const m of s.emitted) locations.set(m.source, (locations.get(m.source) || 0) + 1);
+      const owned = s.received.every(m => locations.get(m.id) === 1);
+      const once = Object.values(s.inputProjection).every(n => n === 1)
+        && Object.values(s.outputProjection).every(n => n === 1);
+      const order = s.emitted.every((m, i, all) => i === 0 || all[i - 1].source < m.source);
+      return { owned, once, order, capacity: s.pending.filter(m => m.kind === "DataRow").length <= 3 };
+    }
+
+    function mark(id, ok) {
+      const el = document.getElementById(id);
+      el.className = ok ? "ok" : "bad";
+      el.textContent = ok ? "PASS" : "FAIL";
+    }
+
+    function render() {
+      document.querySelectorAll("[data-design]").forEach(button => {
+        button.classList.toggle("active", button.dataset.design === design);
+      });
+      document.getElementById("state").textContent = JSON.stringify({
+        design: models[design].title,
+        authoritativeOwner: models[design].owner,
+        received: s.received,
+        pending: s.pending,
+        inFlight: s.inFlight,
+        emitted: s.emitted,
+        inputProjection: s.inputProjection,
+        outputProjection: s.outputProjection,
+        closed: s.closed,
+      }, null, 2);
+      document.getElementById("log").textContent = s.log.map((x, i) => `${i + 1}. ${x}`).join("\n");
+      const result = check();
+      Object.entries(result).forEach(([name, ok]) => mark(name, ok));
+    }
+
+    document.querySelectorAll("[data-design]").forEach(button => {
+      button.addEventListener("click", () => { design = button.dataset.design; reset(); });
+    });
+    document.querySelectorAll("[data-action]").forEach(button => {
+      button.addEventListener("click", () => ({
+        row: receiveRow,
+        terminator: receiveTerminator,
+        flush,
+        cancel: cancelFlush,
+        violate: violateRetention,
+        teardown,
+        reset,
+      })[button.dataset.action]());
+    });
+    reset();
+  </script>
+</body>
+</html>

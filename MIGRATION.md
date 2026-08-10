@@ -143,10 +143,21 @@ future and declare the handler's `Error` type. Return
 `FrontendMiddlewareOutput::Forward` for replacement, `Suppress` to consume a
 message, or `Respond` to register a locally handled operation and provide its
 ordered backend responses. Backend middleware returns
-`BackendMiddlewareOutput::Forward`, `Expand`, or `Suppress`. Use `Expand` when
-one upstream response, such as an encrypted buffered row, must become several
-ordered downstream responses. Empty expansions are rejected; use `Suppress`
-when no downstream response should be emitted.
+`BackendMiddlewareOutput::Forward`, `Expand`, `Suppress`, or `Hold`. `Forward`
+replaces and emits one response immediately. `Expand` immediately replaces one
+upstream response with several ordered downstream responses; empty expansions
+are rejected. `Suppress` commits the source without output. `Hold` is different:
+it leaves the unchanged source uncommitted in pg-proto's connection-owned hold.
+
+Holding is opt-in and bounded. Construct non-zero `BackendHoldLimits`, pass them
+to `IntermediaryBuilder::backend_batching`, and implement `flush_backend` to
+return `BackendBatchOutput::ReplaceOneToOne` or `KeepHolding`. The borrowed
+`HeldBackendMessages` view preserves source ownership across cancellation. The
+driver flushes at conservative protocol barriers and capacity; applications can
+call `flush_backend_hold` for latency boundaries and
+`prepare_backend_teardown` before ordinary teardown. A required barrier,
+capacity, or teardown flush that keeps holding is reported as an error rather
+than discarding the span.
 
 `forward_frontend` and `forward_backend` now return `FrontendForwarding` and
 `BackendForwarding`, respectively. Match these outcomes when application code

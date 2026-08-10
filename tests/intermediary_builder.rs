@@ -16,35 +16,29 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 struct CandidateResolver;
 impl StartupRouteResolver<String> for CandidateResolver {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         startup: StartupParameters,
-        initial: InitialServerContext<'a, String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async move {
-            assert_eq!(initial.peer(), "downstream-peer");
-            assert_eq!(startup.user(), Some("alice"));
-            Ok(ConnectTarget::new("candidate"))
-        })
+        initial: InitialServerContext<'_, String>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        assert_eq!(initial.peer(), "downstream-peer");
+        assert_eq!(startup.user(), Some("alice"));
+        Ok(ConnectTarget::new("candidate"))
     }
 }
 
 struct RefineRoute;
 impl AuthenticatedRoutePolicy<String, TrustIdentity> for RefineRoute {
     type Error = Infallible;
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         target: ConnectTarget,
-        context: AuthenticatedRouteContext<'a, String, TrustIdentity>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async move {
-            assert_eq!(target.name(), "candidate");
-            assert_eq!(context.peer(), "downstream-peer");
-            assert_eq!(context.identity(), &TrustIdentity);
-            Ok(ConnectTarget::new("tenant-a"))
-        })
+        context: AuthenticatedRouteContext<'_, String, TrustIdentity>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        assert_eq!(target.name(), "candidate");
+        assert_eq!(context.peer(), "downstream-peer");
+        assert_eq!(context.identity(), &TrustIdentity);
+        Ok(ConnectTarget::new("tenant-a"))
     }
 }
 
@@ -226,43 +220,28 @@ impl
 {
     type Error = Infallible;
 
-    fn frontend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut Vec<&'static str>,
+    async fn frontend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut Vec<&'static str>,
         message: FrontendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
-                > + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            state.push("boundary-frontend");
-            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
-        })
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        state.push("boundary-frontend");
+        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut Vec<&'static str>,
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut Vec<&'static str>,
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            state.push("boundary-backend");
-            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
-        })
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        state.push("boundary-backend");
+        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -614,66 +593,51 @@ impl
 {
     type Error = BoundaryFailure;
 
-    fn frontend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        (): &'a mut (),
+    async fn frontend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
         message: FrontendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
-                > + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            match &message {
-                FrontendMessage::Query(query) if query == "LOCAL" => {
-                    Ok(pg_proto::FrontendMiddlewareOutput::Respond {
-                        request: message,
-                        responses: vec![
-                            BackendMessage::CommandComplete(Bytes::from_static(b"LOCAL")),
-                            BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
-                        ],
-                    })
-                }
-                FrontendMessage::Query(query) if query == "DROP" => {
-                    Ok(pg_proto::FrontendMiddlewareOutput::Suppress(message))
-                }
-                FrontendMessage::Query(query) if query == "FAIL" => Err(BoundaryFailure),
-                _ => Ok(pg_proto::FrontendMiddlewareOutput::Forward(message)),
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        match &message {
+            FrontendMessage::Query(query) if query == "LOCAL" => {
+                Ok(pg_proto::FrontendMiddlewareOutput::Respond {
+                    request: message,
+                    responses: vec![
+                        BackendMessage::CommandComplete(Bytes::from_static(b"LOCAL")),
+                        BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
+                    ],
+                })
             }
-        })
+            FrontendMessage::Query(query) if query == "DROP" => {
+                Ok(pg_proto::FrontendMiddlewareOutput::Suppress(message))
+            }
+            FrontendMessage::Query(query) if query == "FAIL" => Err(BoundaryFailure),
+            _ => Ok(pg_proto::FrontendMiddlewareOutput::Forward(message)),
+        }
     }
 
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        (): &'a mut (),
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            tokio::task::yield_now().await;
-            match message {
-                BackendMessage::DataRow(_) => Ok(pg_proto::BackendMiddlewareOutput::Expand(vec![
-                    BackendMessage::DataRow(pg_proto::DataRow {
-                        columns: vec![Some(Bytes::from_static(b"clear-one"))],
-                    }),
-                    BackendMessage::DataRow(pg_proto::DataRow {
-                        columns: vec![Some(Bytes::from_static(b"clear-two"))],
-                    }),
-                ])),
-                other => Ok(pg_proto::BackendMiddlewareOutput::Forward(other)),
-            }
-        })
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        match message {
+            BackendMessage::DataRow(_) => Ok(pg_proto::BackendMiddlewareOutput::Expand(vec![
+                BackendMessage::DataRow(pg_proto::DataRow {
+                    columns: vec![Some(Bytes::from_static(b"clear-one"))],
+                }),
+                BackendMessage::DataRow(pg_proto::DataRow {
+                    columns: vec![Some(Bytes::from_static(b"clear-two"))],
+                }),
+            ])),
+            other => Ok(pg_proto::BackendMiddlewareOutput::Forward(other)),
+        }
     }
 }
 
@@ -831,59 +795,45 @@ impl
 {
     type Error = Infallible;
 
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        _: &'a mut usize,
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        _: &mut usize,
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            if matches!(message, BackendMessage::DataRow(_)) {
-                Ok(pg_proto::BackendMiddlewareOutput::Hold)
-            } else {
-                Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
-            }
-        })
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        if matches!(message, BackendMessage::DataRow(_)) {
+            Ok(pg_proto::BackendMiddlewareOutput::Hold)
+        } else {
+            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        }
     }
 
-    fn flush_backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<String, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        flushes: &'a mut usize,
-        held: pg_proto::HeldBackendMessages<'a>,
+    async fn flush_backend(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        flushes: &mut usize,
+        held: pg_proto::HeldBackendMessages<'_>,
         reason: pg_proto::BackendFlushReason,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendBatchOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            assert_eq!(reason, pg_proto::BackendFlushReason::ProtocolBarrier);
-            *flushes += 1;
-            let replacements = held
-                .iter()
-                .map(|message| {
-                    let BackendMessage::DataRow(row) = message else {
-                        panic!("batch contains a non-row")
-                    };
-                    let value = row.columns[0].as_ref().unwrap();
-                    let mut clear = b"clear-".to_vec();
-                    clear.extend_from_slice(value);
-                    BackendMessage::DataRow(pg_proto::DataRow {
-                        columns: vec![Some(Bytes::from(clear))],
-                    })
+    ) -> Result<pg_proto::BackendBatchOutput, Self::Error> {
+        assert_eq!(reason, pg_proto::BackendFlushReason::ProtocolBarrier);
+        *flushes += 1;
+        let replacements = held
+            .iter()
+            .map(|message| {
+                let BackendMessage::DataRow(row) = message else {
+                    panic!("batch contains a non-row")
+                };
+                let value = row.columns[0].as_ref().unwrap();
+                let mut clear = b"clear-".to_vec();
+                clear.extend_from_slice(value);
+                BackendMessage::DataRow(pg_proto::DataRow {
+                    columns: vec![Some(Bytes::from(clear))],
                 })
-                .collect();
-            Ok(pg_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
-        })
+            })
+            .collect();
+        Ok(pg_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
     }
 }
 

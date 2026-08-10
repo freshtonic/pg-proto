@@ -179,28 +179,34 @@ impl<'a, Peer> InitialServerContext<'a, Peer> {
 }
 
 /// Required asynchronous startup routing policy.
+///
+/// Resolution futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait StartupRouteResolver<Peer> {
     /// Application resolver failure.
     type Error;
 
     /// Selects a destination before client-facing authentication begins.
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         startup: StartupParameters,
-        context: InitialServerContext<'a, Peer>,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>;
+        context: InitialServerContext<'_, Peer>,
+    ) -> Result<ConnectTarget, Self::Error>;
 }
 
 /// Optional policy that validates or refines a destination after authentication.
+///
+/// Routing futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait AuthenticatedRoutePolicy<Peer, Identity> {
     /// Application policy failure.
     type Error;
     /// Validates or refines the startup-selected target using typed identity evidence.
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         target: ConnectTarget,
-        context: AuthenticatedRouteContext<'a, Peer, Identity>,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>;
+        context: AuthenticatedRouteContext<'_, Peer, Identity>,
+    ) -> Result<ConnectTarget, Self::Error>;
 }
 
 /// Borrowed facts passed to authenticated route policy.
@@ -230,12 +236,12 @@ pub struct AllowAuthenticatedRoute;
 
 impl<Peer, Identity> AuthenticatedRoutePolicy<Peer, Identity> for AllowAuthenticatedRoute {
     type Error = std::convert::Infallible;
-    fn route<'a>(
-        &'a self,
+    async fn route(
+        &self,
         target: ConnectTarget,
-        _context: AuthenticatedRouteContext<'a, Peer, Identity>,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>> {
-        Box::pin(async move { Ok(target) })
+        _context: AuthenticatedRouteContext<'_, Peer, Identity>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(target)
     }
 }
 
@@ -369,48 +375,49 @@ impl<'a> HeldBackendMessages<'a> {
 }
 
 /// Asynchronous, fallible middleware at the forwarding boundary.
+///
+/// Middleware futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     /// Application-defined interception failure.
     type Error;
 
     /// Intercepts a client-originated message after server-role middleware and
     /// before client-role middleware.
-    fn frontend<'a>(
-        &'a mut self,
-        _server: &'a ServerContext,
-        _client: &'a ClientContext,
-        _state: &'a mut State,
+    async fn frontend(
+        &mut self,
+        _server: &ServerContext,
+        _client: &ClientContext,
+        _state: &mut State,
         message: crate::codec::FrontendMessage,
-    ) -> Pin<Box<dyn Future<Output = Result<FrontendMiddlewareOutput, Self::Error>> + 'a>> {
-        Box::pin(async move { Ok(FrontendMiddlewareOutput::Forward(message)) })
+    ) -> Result<FrontendMiddlewareOutput, Self::Error> {
+        Ok(FrontendMiddlewareOutput::Forward(message))
     }
 
     /// Intercepts a PostgreSQL-originated message after client-role middleware
     /// and before server-role middleware.
-    fn backend<'a>(
-        &'a mut self,
-        _server: &'a ServerContext,
-        _client: &'a ClientContext,
-        _state: &'a mut State,
+    async fn backend(
+        &mut self,
+        _server: &ServerContext,
+        _client: &ClientContext,
+        _state: &mut State,
         message: crate::codec::BackendMessage,
-    ) -> Pin<Box<dyn Future<Output = Result<BackendMiddlewareOutput, Self::Error>> + 'a>> {
-        Box::pin(async move { Ok(BackendMiddlewareOutput::Forward(message)) })
+    ) -> Result<BackendMiddlewareOutput, Self::Error> {
+        Ok(BackendMiddlewareOutput::Forward(message))
     }
 
     /// Applies policy to an ordered borrowed span of retained backend messages.
-    fn flush_backend<'a>(
-        &'a mut self,
-        _server: &'a ServerContext,
-        _client: &'a ClientContext,
-        _state: &'a mut State,
-        held: HeldBackendMessages<'a>,
+    async fn flush_backend(
+        &mut self,
+        _server: &ServerContext,
+        _client: &ClientContext,
+        _state: &mut State,
+        held: HeldBackendMessages<'_>,
         _reason: BackendFlushReason,
-    ) -> Pin<Box<dyn Future<Output = Result<BackendBatchOutput, Self::Error>> + 'a>> {
-        Box::pin(async move {
-            Ok(BackendBatchOutput::ReplaceOneToOne(
-                held.iter().cloned().collect(),
-            ))
-        })
+    ) -> Result<BackendBatchOutput, Self::Error> {
+        Ok(BackendBatchOutput::ReplaceOneToOne(
+            held.iter().cloned().collect(),
+        ))
     }
 }
 

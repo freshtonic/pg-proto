@@ -139,15 +139,15 @@ impl fmt::Debug for ClientTlsConfig {
 }
 
 /// Application-owned source of reloadable client TLS material.
+///
+/// Resolution futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait ClientTlsProvider {
     /// Provider resolution failure.
     type Error;
 
     /// Resolves material for one connection attempt.
-    fn resolve<'a>(
-        &'a self,
-        target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<ClientTlsConfig, Self::Error>> + 'a>>;
+    async fn resolve(&self, target: &ConnectTarget) -> Result<ClientTlsConfig, Self::Error>;
 }
 
 /// Failure while resolving or establishing client TLS.
@@ -182,11 +182,8 @@ impl<ProviderError: std::error::Error + 'static> std::error::Error
 impl ClientTlsProvider for () {
     type Error = Infallible;
 
-    fn resolve<'a>(
-        &'a self,
-        _target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<ClientTlsConfig, Self::Error>> + 'a>> {
-        Box::pin(async { unreachable!("disabled TLS never resolves a provider") })
+    async fn resolve(&self, _target: &ConnectTarget) -> Result<ClientTlsConfig, Self::Error> {
+        unreachable!("disabled TLS never resolves a provider")
     }
 }
 
@@ -359,6 +356,9 @@ pub enum ClientAuthenticationResponse {
 }
 
 /// Factory for asynchronous, fallible per-connection authentication sessions.
+///
+/// Authentication futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait ClientAuthentication {
     /// Typed identity evidence produced after server confirmation.
     type Evidence;
@@ -368,17 +368,13 @@ pub trait ClientAuthentication {
     type Error;
 
     /// Creates fresh authentication state using the selected route.
-    fn begin<'a>(
-        &'a self,
-        target: &'a ConnectTarget,
-    ) -> ClientAuthenticationFuture<'a, Self::Session, Self::Error>;
+    async fn begin(&self, target: &ConnectTarget) -> Result<Self::Session, Self::Error>;
 }
 
-/// Boxed future used by application-defined authentication policies.
-pub type ClientAuthenticationFuture<'a, Output, Error> =
-    Pin<Box<dyn Future<Output = Result<Output, Error>> + 'a>>;
-
 /// Mutable authentication policy state owned by one connection attempt.
+///
+/// Authentication futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait ClientAuthenticationSession {
     /// Typed identity evidence produced after server confirmation.
     type Evidence;
@@ -386,13 +382,13 @@ pub trait ClientAuthenticationSession {
     type Error;
 
     /// Answers one server authentication challenge.
-    fn respond(
+    async fn respond(
         &mut self,
         challenge: ClientAuthenticationChallenge,
-    ) -> ClientAuthenticationFuture<'_, ClientAuthenticationResponse, Self::Error>;
+    ) -> Result<ClientAuthenticationResponse, Self::Error>;
 
     /// Produces identity evidence after `AuthenticationOk` was received.
-    fn authenticated(self) -> ClientAuthenticationFuture<'static, Self::Evidence, Self::Error>;
+    async fn authenticated(self) -> Result<Self::Evidence, Self::Error>;
 }
 
 /// Failure while running an application authentication policy.
@@ -441,11 +437,8 @@ impl ClientAuthentication for TrustClientAuthentication {
     type Session = Self;
     type Error = Infallible;
 
-    fn begin<'a>(
-        &'a self,
-        _target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Session, Self::Error>> + 'a>> {
-        Box::pin(async { Ok(Self) })
+    async fn begin(&self, _target: &ConnectTarget) -> Result<Self::Session, Self::Error> {
+        Ok(Self)
     }
 }
 
@@ -453,15 +446,15 @@ impl ClientAuthenticationSession for TrustClientAuthentication {
     type Evidence = ();
     type Error = Infallible;
 
-    fn respond(
+    async fn respond(
         &mut self,
         _challenge: ClientAuthenticationChallenge,
-    ) -> ClientAuthenticationFuture<'_, ClientAuthenticationResponse, Self::Error> {
-        Box::pin(async { Ok(ClientAuthenticationResponse::Verified) })
+    ) -> Result<ClientAuthenticationResponse, Self::Error> {
+        Ok(ClientAuthenticationResponse::Verified)
     }
 
-    fn authenticated(self) -> Pin<Box<dyn Future<Output = Result<Self::Evidence, Self::Error>>>> {
-        Box::pin(async { Ok(()) })
+    async fn authenticated(self) -> Result<Self::Evidence, Self::Error> {
+        Ok(())
     }
 }
 

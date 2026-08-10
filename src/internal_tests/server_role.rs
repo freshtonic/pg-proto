@@ -3,8 +3,8 @@
 use bytes::Bytes;
 use pg_proto::{
     Conn, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
-    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
-    ServerAuthenticationResponse, ServerTlsPolicy,
+    ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
+    ServerTlsPolicy,
     codec::{BackendMessage, DataRow, FieldDescription, RowDescription, TransactionStatus},
     credentials::{verify_cleartext, verify_md5_response},
     pre_startup::PreStartupOffer,
@@ -43,44 +43,38 @@ impl ServerAuthentication<()> for ScramAuthentication {
     type Identity = &'static str;
     type Error = std::io::Error;
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async {
-            Ok(ServerAuthenticationAction::Sasl {
-                mechanisms: vec![Bytes::from_static(SCRAM_SHA_256)],
-            })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::Sasl {
+            mechanisms: vec![Bytes::from_static(SCRAM_SHA_256)],
         })
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async move {
-            match response {
-                ServerAuthenticationResponse::SaslInitial {
-                    mechanism,
-                    response: Some(initial),
-                } => {
-                    let (exchange, challenge) = self.server.start(&mechanism, &initial)?;
-                    self.exchange = Some(exchange);
-                    Ok(ServerAuthenticationAction::SaslContinue(challenge))
-                }
-                ServerAuthenticationResponse::Sasl(final_response) => {
-                    let final_data = self.exchange.take().unwrap().finish(&final_response)?;
-                    Ok(ServerAuthenticationAction::SaslFinal {
-                        server_final: final_data,
-                        identity: "proxy_test",
-                    })
-                }
-                _ => Err(std::io::Error::other("unexpected SCRAM response")),
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        match response {
+            ServerAuthenticationResponse::SaslInitial {
+                mechanism,
+                response: Some(initial),
+            } => {
+                let (exchange, challenge) = self.server.start(&mechanism, &initial)?;
+                self.exchange = Some(exchange);
+                Ok(ServerAuthenticationAction::SaslContinue(challenge))
             }
-        })
+            ServerAuthenticationResponse::Sasl(final_response) => {
+                let final_data = self.exchange.take().unwrap().finish(&final_response)?;
+                Ok(ServerAuthenticationAction::SaslFinal {
+                    server_final: final_data,
+                    identity: "proxy_test",
+                })
+            }
+            _ => Err(std::io::Error::other("unexpected SCRAM response")),
+        }
     }
 }
 
@@ -96,28 +90,24 @@ impl ServerAuthentication<()> for CompatibilityAuthentication {
     type Identity = ();
     type Error = ();
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async { Ok(ServerAuthenticationAction::CleartextPassword) })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::CleartextPassword)
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async move {
-            let ServerAuthenticationResponse::Password(body) = response else {
-                return Err(());
-            };
-            (body == b"secret".as_slice())
-                .then_some(ServerAuthenticationAction::Accept(()))
-                .ok_or(())
-        })
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        let ServerAuthenticationResponse::Password(body) = response else {
+            return Err(());
+        };
+        (body == b"secret".as_slice())
+            .then_some(ServerAuthenticationAction::Accept(()))
+            .ok_or(())
     }
 }
 

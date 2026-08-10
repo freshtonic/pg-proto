@@ -143,7 +143,10 @@ future and declare the handler's `Error` type. Return
 `FrontendMiddlewareOutput::Forward` for replacement, `Suppress` to consume a
 message, or `Respond` to register a locally handled operation and provide its
 ordered backend responses. Backend middleware returns
-`BackendMiddlewareOutput::Forward` or `Suppress`.
+`BackendMiddlewareOutput::Forward`, `Expand`, or `Suppress`. Use `Expand` when
+one upstream response, such as an encrypted buffered row, must become several
+ordered downstream responses. Empty expansions are rejected; use `Suppress`
+when no downstream response should be emitted.
 
 `forward_frontend` and `forward_backend` now return `FrontendForwarding` and
 `BackendForwarding`, respectively. Match these outcomes when application code

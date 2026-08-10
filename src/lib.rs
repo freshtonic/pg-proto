@@ -8,6 +8,7 @@
 
 #[allow(dead_code)]
 mod auth;
+mod backend_hold;
 #[allow(dead_code)]
 mod cancel;
 #[allow(dead_code)]
@@ -75,10 +76,12 @@ pub use codec::{
 pub use demux::CancelKey;
 pub use intermediary_component::{
     AllowAuthenticatedRoute, AuthenticatedRouteContext, AuthenticatedRoutePolicy,
-    BackendForwarding, BackendMiddlewareOutput, CancellationPolicy, CancellationRoute,
-    EstablishmentFailurePolicy, ForwardError, ForwardedMessage, FrontendForwarding,
-    FrontendMiddlewareOutput, IdentityIntermediaryMiddleware, InitialServerContext, Intermediary,
-    IntermediaryAccept, IntermediaryAcceptError, IntermediaryBuildError, IntermediaryBuilder,
+    BackendBatchForwarding, BackendBatchOutput, BackendBatchProjectionError, BackendFlushReason,
+    BackendForwarding, BackendHoldConfigError, BackendHoldLimits, BackendMiddlewareOutput,
+    CancellationPolicy, CancellationRoute, EstablishmentFailurePolicy, ForwardError,
+    ForwardedMessage, FrontendForwarding, FrontendMiddlewareOutput, HeldBackendMessages,
+    IdentityIntermediaryMiddleware, InitialServerContext, Intermediary, IntermediaryAccept,
+    IntermediaryAcceptError, IntermediaryBuildError, IntermediaryBuilder,
     IntermediaryCancellationRegistry, IntermediaryConnection, IntermediaryContexts,
     IntermediaryMiddleware, IntermediaryMiddlewareFactory, RejectCancellation,
     StartupResolutionError, StartupRouteResolver,

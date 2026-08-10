@@ -636,6 +636,50 @@ fn simple_query_stream_stays_at_head_until_ready() {
 }
 
 #[test]
+fn backend_batch_preparation_is_atomic_and_span_preserving() {
+    let mut pipeline = bounded(2);
+    pipeline
+        .accept_frontend(
+            FrontendMessage::Query(Bytes::from_static(b"select 1")),
+            FrontendHandling::Forward,
+        )
+        .unwrap();
+    let sources = vec![
+        BackendMessage::DataRow(DataRow {
+            columns: vec![Some(Bytes::from_static(b"encrypted"))],
+        }),
+        BackendMessage::CommandComplete(Bytes::from_static(b"SELECT 1")),
+    ];
+    let replacements = vec![
+        BackendMessage::DataRow(DataRow {
+            columns: vec![Some(Bytes::from_static(b"clear"))],
+        }),
+        BackendMessage::CommandComplete(Bytes::from_static(b"SELECT 1")),
+    ];
+    let prepared = pipeline
+        .prepare_backend_replacements(&sources, &replacements)
+        .unwrap();
+    assert_eq!(
+        pipeline.len(),
+        1,
+        "preparation must not mutate the live ledger"
+    );
+    pipeline = prepared;
+    assert_eq!(pipeline.len(), 1, "command completion awaits ReadyForQuery");
+
+    let before = pipeline.len();
+    assert!(
+        pipeline
+            .prepare_backend_replacements(
+                &[BackendMessage::ReadyForQuery(TransactionStatus::Idle)],
+                &[BackendMessage::DataRow(DataRow { columns: vec![] })],
+            )
+            .is_err()
+    );
+    assert_eq!(pipeline.len(), before, "failed preparation is atomic");
+}
+
+#[test]
 fn complete_extended_pipeline_is_ordered() {
     let mut pipeline = bounded(8);
     for message in [

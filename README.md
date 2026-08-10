@@ -311,13 +311,19 @@ asynchronous and fallible. Its frontend decision can forward a replacement,
 suppress the owned message, or handle the operation locally with an ordered list
 of backend responses. Its backend decision can forward a replacement, expand
 one PostgreSQL response into multiple ordered client responses, or suppress the
-response after protocol state advances. `IntermediaryConnection`
+response after protocol state advances. A fourth decision, `Hold`, leaves the
+unchanged source unprojected in a bounded connection-owned hold. Configure
+non-zero count and byte limits with `backend_batching`, then implement
+`flush_backend` to return one ordered replacement per held source. Holds flush
+before protocol barriers, at capacity, on explicit `flush_backend_hold()` calls,
+or during `prepare_backend_teardown()`; `Expand` remains immediate one-to-many
+replacement and is not a delayed batch mechanism. `IntermediaryConnection`
 admits local operations and emits their responses through its connection-owned
 pipeline, so they cannot overtake earlier PostgreSQL responses. Middleware
 failures retain their application error in `ForwardError::Middleware`.
 
 `forward_frontend()` and `forward_backend()` report whether traffic was
-forwarded, suppressed, or locally handled; `forward_next()` reports the same
+forwarded, suppressed, held, or locally handled; `forward_next()` reports the same
 decisions while driving both directions.
 
 For a complete networked example, see the TLS-terminating

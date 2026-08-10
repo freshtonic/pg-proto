@@ -818,3 +818,197 @@ async fn async_middleware_supports_suppression_local_responses_and_backend_fanou
     downstream.await.unwrap();
     upstream.await.unwrap();
 }
+
+#[derive(Default)]
+struct OrderedBatch;
+
+impl
+    IntermediaryMiddleware<
+        usize,
+        ServerConnectionContext<String, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for OrderedBatch
+{
+    type Error = Infallible;
+
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        _: &'a mut usize,
+        message: BackendMessage,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if matches!(message, BackendMessage::DataRow(_)) {
+                Ok(pg_proto::BackendMiddlewareOutput::Hold)
+            } else {
+                Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+            }
+        })
+    }
+
+    fn flush_backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        flushes: &'a mut usize,
+        held: pg_proto::HeldBackendMessages<'a>,
+        reason: pg_proto::BackendFlushReason,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendBatchOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            assert_eq!(reason, pg_proto::BackendFlushReason::ProtocolBarrier);
+            *flushes += 1;
+            let replacements = held
+                .iter()
+                .map(|message| {
+                    let BackendMessage::DataRow(row) = message else {
+                        panic!("batch contains a non-row")
+                    };
+                    let value = row.columns[0].as_ref().unwrap();
+                    let mut clear = b"clear-".to_vec();
+                    clear.extend_from_slice(value);
+                    BackendMessage::DataRow(pg_proto::DataRow {
+                        columns: vec![Some(Bytes::from(clear))],
+                    })
+                })
+                .collect();
+            Ok(pg_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
+        })
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn held_rows_are_released_once_in_order_before_the_protocol_barrier() {
+    let (downstream_transport, mut downstream_peer) = tokio::io::duplex(16 * 1024);
+    let (upstream_transport, mut upstream_peer) = tokio::io::duplex(16 * 1024);
+    let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .unwrap();
+    let client = Client::builder()
+        .connector(move |_| {
+            let transport = upstream_transport.lock().unwrap().take().unwrap();
+            async move { Ok::<_, Infallible>(transport) }
+        })
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .unwrap();
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(CandidateResolver)
+        .authenticated_route(RefineRoute)
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(1).unwrap())
+        .middleware(
+            |_: &ServerConnectionContext<String, TrustIdentity>,
+             _: &ClientConnectionContext<()>| OrderedBatch,
+        )
+        .backend_batching(pg_proto::BackendHoldLimits::new(8, 4096).unwrap())
+        .build()
+        .unwrap();
+
+    let downstream = tokio::spawn(async move {
+        let startup = pg_proto::StartupMessage {
+            version: pg_proto::ProtocolVersion::V3_0,
+            parameters: std::iter::once((
+                Bytes::from_static(b"user"),
+                Bytes::from_static(b"alice"),
+            ))
+            .collect(),
+        };
+        downstream_peer
+            .write_all(&startup.encode().unwrap())
+            .await
+            .unwrap();
+        let mut authentication_and_ready = [0; 15];
+        downstream_peer
+            .read_exact(&mut authentication_and_ready)
+            .await
+            .unwrap();
+        downstream_peer
+            .write_all(&frontend_bytes(&FrontendMessage::Query(
+                Bytes::from_static(b"SELECT"),
+            )))
+            .await
+            .unwrap();
+        for expected in [b"clear-one".as_slice(), b"clear-two", b"clear-three"] {
+            let (tag, body) = read_tagged(&mut downstream_peer).await;
+            assert_eq!(tag, b'D');
+            assert_eq!(&body[6..], expected);
+        }
+        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'C');
+        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'Z');
+    });
+    let upstream = tokio::spawn(async move {
+        let length = upstream_peer.read_u32().await.unwrap();
+        let mut startup = vec![0; usize::try_from(length).unwrap() - 4];
+        upstream_peer.read_exact(&mut startup).await.unwrap();
+        upstream_peer
+            .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+            .await
+            .unwrap();
+        assert_eq!(read_tagged(&mut upstream_peer).await.0, b'Q');
+        for encrypted in [b"one".as_slice(), b"two", b"three"] {
+            upstream_peer
+                .write_all(&backend_bytes(&BackendMessage::DataRow(
+                    pg_proto::DataRow {
+                        columns: vec![Some(Bytes::copy_from_slice(encrypted))],
+                    },
+                )))
+                .await
+                .unwrap();
+        }
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::CommandComplete(
+                Bytes::from_static(b"SELECT 3"),
+            )))
+            .await
+            .unwrap();
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
+                pg_proto::TransactionStatus::Idle,
+            )))
+            .await
+            .unwrap();
+    });
+
+    let mut session =
+        Box::pin(intermediary.accept(downstream_transport, "downstream-peer".to_owned(), 0_usize))
+            .await
+            .unwrap()
+            .into_session();
+    session.forward_frontend().await.unwrap();
+    for expected_len in 1..=3 {
+        assert_eq!(
+            session.forward_backend().await.unwrap(),
+            pg_proto::BackendForwarding::Held
+        );
+        assert_eq!(session.held_backend_messages().len(), expected_len);
+    }
+    assert_eq!(*session.state(), 0);
+    assert!(matches!(
+        session.forward_backend().await.unwrap(),
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
+    ));
+    assert_eq!(*session.state(), 1);
+    assert!(session.held_backend_messages().is_empty());
+    session.forward_backend().await.unwrap();
+    let _ = session.teardown();
+    downstream.await.unwrap();
+    upstream.await.unwrap();
+}

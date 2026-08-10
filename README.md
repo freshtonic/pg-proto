@@ -309,8 +309,9 @@ let _client = Client::builder()
 Forwarding-boundary middleware configured by `Intermediary::builder()` is
 asynchronous and fallible. Its frontend decision can forward a replacement,
 suppress the owned message, or handle the operation locally with an ordered list
-of backend responses. Its backend decision can forward a replacement or
-suppress the response after protocol state advances. `IntermediaryConnection`
+of backend responses. Its backend decision can forward a replacement, expand
+one PostgreSQL response into multiple ordered client responses, or suppress the
+response after protocol state advances. `IntermediaryConnection`
 admits local operations and emits their responses through its connection-owned
 pipeline, so they cannot overtake earlier PostgreSQL responses. Middleware
 failures retain their application error in `ForwardError::Middleware`.

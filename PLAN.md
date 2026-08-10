@@ -284,6 +284,8 @@ neutral composition harnesses and examples.
 - [x] Expose asynchronous, fallible intermediary-boundary middleware through
   the builder facade.
   - [x] Support owned forward, suppress, and locally respond decisions.
+  - [x] Support backend fan-out without allowing expanded responses to bypass
+    pipeline legality or wire ordering.
   - [x] Preserve application errors in the public forwarding error layer.
   - [x] Admit local operations and emit generated responses through the
     connection-owned pipeline without allowing response reordering.

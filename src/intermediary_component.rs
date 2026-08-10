@@ -240,6 +240,8 @@ pub enum FrontendMiddlewareOutput {
 pub enum BackendMiddlewareOutput {
     /// Forward this owned message to the client.
     Forward(crate::codec::BackendMessage),
+    /// Replace one PostgreSQL response with one or more ordered client responses.
+    Expand(Vec<crate::codec::BackendMessage>),
     /// Consume the response after advancing protocol and pipeline state.
     Suppress(crate::codec::BackendMessage),
 }
@@ -810,6 +812,13 @@ pub enum ForwardedMessage {
     Frontend(crate::codec::FrontendMessage),
     /// A PostgreSQL-originated message was forwarded to the client.
     Backend(crate::codec::BackendMessage),
+    /// One PostgreSQL response expanded into ordered client responses.
+    BackendExpanded {
+        /// Response received from PostgreSQL.
+        source: crate::codec::BackendMessage,
+        /// Responses emitted to the client.
+        messages: Vec<crate::codec::BackendMessage>,
+    },
     /// A client-originated message was deliberately suppressed.
     FrontendSuppressed(crate::codec::FrontendMessage),
     /// A request was handled locally; responses were emitted or queued in order.
@@ -846,6 +855,13 @@ impl FrontendForwarding {
 pub enum BackendForwarding {
     /// The response was sent to the client.
     Forwarded(crate::codec::BackendMessage),
+    /// One PostgreSQL response expanded into these ordered client responses.
+    Expanded {
+        /// Response received from PostgreSQL after client-role interception.
+        source: crate::codec::BackendMessage,
+        /// Responses emitted to the client after server-role interception.
+        messages: Vec<crate::codec::BackendMessage>,
+    },
     /// The response advanced protocol state but was not sent.
     Suppressed(crate::codec::BackendMessage),
 }
@@ -856,6 +872,7 @@ impl BackendForwarding {
     pub fn into_message(self) -> crate::codec::BackendMessage {
         match self {
             Self::Forwarded(message) | Self::Suppressed(message) => message,
+            Self::Expanded { source, .. } => source,
         }
     }
 }
@@ -1020,7 +1037,8 @@ where
     /// # Errors
     ///
     /// Returns transport, framing, ordering, or protocol-legality failures.
-    /// Receives one PostgreSQL response and reports whether it was forwarded or suppressed.
+    /// Receives one PostgreSQL response and reports whether it was forwarded,
+    /// expanded, or suppressed.
     ///
     /// # Errors
     ///
@@ -1037,6 +1055,7 @@ where
         message: crate::codec::BackendMessage,
     ) -> Result<BackendForwarding, ForwardError<Boundary::Error>> {
         let message = self.upstream.intercept_backend(&mut self.state, message);
+        let source = message.clone();
         let decision = self
             .boundary
             .backend(
@@ -1047,29 +1066,56 @@ where
             )
             .await
             .map_err(ForwardError::Middleware)?;
-        let (message, suppress) = match decision {
-            BackendMiddlewareOutput::Forward(message) => (
-                self.downstream.intercept_backend(&mut self.state, message),
-                false,
-            ),
-            BackendMiddlewareOutput::Suppress(message) => (message, true),
+        let outcome = match decision {
+            BackendMiddlewareOutput::Forward(message) => {
+                let message = self.downstream.intercept_backend(&mut self.state, message);
+                let message = self.emit_backend(message).await?;
+                BackendForwarding::Forwarded(message)
+            }
+            BackendMiddlewareOutput::Suppress(message) => {
+                let message = self.advance_backend(message)?;
+                BackendForwarding::Suppressed(message)
+            }
+            BackendMiddlewareOutput::Expand(messages) => {
+                if messages.is_empty() {
+                    return Err(ForwardError::EmptyExpansion(source));
+                }
+                let mut emitted = Vec::with_capacity(messages.len());
+                for message in messages {
+                    let message = self.downstream.intercept_backend(&mut self.state, message);
+                    emitted.push(self.emit_backend(message).await?);
+                }
+                BackendForwarding::Expanded {
+                    source,
+                    messages: emitted,
+                }
+            }
         };
-        let message = match self
+        self.flush_local_responses().await?;
+        Ok(outcome)
+    }
+
+    fn advance_backend(
+        &mut self,
+        message: crate::codec::BackendMessage,
+    ) -> Result<crate::codec::BackendMessage, ForwardError<Boundary::Error>> {
+        match self
             .pipeline
             .accept_backend(message)
             .map_err(ForwardError::Backend)?
         {
-            BackendAction::Emit(message) => message,
-            BackendAction::Deferred(message) => return Err(ForwardError::Deferred(message)),
-        };
-        if suppress {
-            self.flush_local_responses().await?;
-            Ok(BackendForwarding::Suppressed(message))
-        } else {
-            self.downstream.send_wire_raw(message.clone()).await?;
-            self.flush_local_responses().await?;
-            Ok(BackendForwarding::Forwarded(message))
+            BackendAction::Emit(message) => Ok(message),
+            BackendAction::Deferred(message) => Err(ForwardError::Deferred(message)),
         }
+    }
+
+    async fn emit_backend(
+        &mut self,
+        message: crate::codec::BackendMessage,
+    ) -> Result<crate::codec::BackendMessage, ForwardError<Boundary::Error>> {
+        let message = self.advance_backend(message)?;
+        self.downstream.send_wire_raw(message.clone()).await?;
+        Ok(message)
     }
 
     async fn flush_local_responses(&mut self) -> Result<(), ForwardError<Boundary::Error>> {
@@ -1114,6 +1160,9 @@ where
                 .await
                 .map(|outcome| match outcome {
                     BackendForwarding::Forwarded(message) => ForwardedMessage::Backend(message),
+                    BackendForwarding::Expanded { source, messages } => {
+                        ForwardedMessage::BackendExpanded { source, messages }
+                    }
                     BackendForwarding::Suppressed(message) => {
                         ForwardedMessage::BackendSuppressed(message)
                     }
@@ -1132,6 +1181,9 @@ where
                 let message = result?;
                 self.process_backend(message).await.map(|outcome| match outcome {
                     BackendForwarding::Forwarded(message) => ForwardedMessage::Backend(message),
+                    BackendForwarding::Expanded { source, messages } => {
+                        ForwardedMessage::BackendExpanded { source, messages }
+                    }
                     BackendForwarding::Suppressed(message) => ForwardedMessage::BackendSuppressed(message),
                 })
             }
@@ -1182,6 +1234,8 @@ pub enum ForwardError<MiddlewareError = std::convert::Infallible> {
     Backend(crate::pipeline::BackendProjectionError),
     /// A bounded response arrived before its operation became emittable.
     Deferred(crate::codec::BackendMessage),
+    /// Backend fan-out did not contain a replacement response.
+    EmptyExpansion(crate::codec::BackendMessage),
     /// Forwarding-boundary middleware rejected a message.
     Middleware(MiddlewareError),
 }
@@ -1195,6 +1249,9 @@ impl<E> fmt::Display for ForwardError<E> {
             }
             Self::Backend(_) => formatter.write_str("backend message violates pipeline legality"),
             Self::Deferred(_) => formatter.write_str("backend response is not yet emittable"),
+            Self::EmptyExpansion(_) => {
+                formatter.write_str("backend expansion must contain at least one response")
+            }
             Self::Middleware(_) => formatter.write_str("forwarding middleware rejected a message"),
         }
     }
@@ -1208,7 +1265,9 @@ where
         match self {
             Self::Io(error) => Some(error),
             Self::Middleware(error) => Some(error),
-            Self::Frontend(_) | Self::Backend(_) | Self::Deferred(_) => None,
+            Self::Frontend(_) | Self::Backend(_) | Self::Deferred(_) | Self::EmptyExpansion(_) => {
+                None
+            }
         }
     }
 }
@@ -1518,12 +1577,12 @@ where
                 .await;
             let message = match message {
                 Ok(BackendMiddlewareOutput::Forward(message)) => message,
-                Ok(BackendMiddlewareOutput::Suppress(_)) => {
+                Ok(BackendMiddlewareOutput::Suppress(_) | BackendMiddlewareOutput::Expand(_)) => {
                     let _ = connection.detach_cancellation();
                     let _ = connection.teardown();
                     return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "middleware suppressed generated cancellation key",
+                        "middleware suppressed or expanded generated cancellation key",
                     )));
                 }
                 Err(error) => {

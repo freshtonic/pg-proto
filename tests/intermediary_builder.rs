@@ -116,6 +116,22 @@ fn backend_bytes(message: &BackendMessage) -> Vec<u8> {
     let (tag, body) = match message {
         BackendMessage::ParseComplete => (b'1', Vec::new()),
         BackendMessage::BindComplete => (b'2', Vec::new()),
+        BackendMessage::DataRow(row) => {
+            let mut body = u16::try_from(row.columns.len())
+                .unwrap()
+                .to_be_bytes()
+                .to_vec();
+            for column in &row.columns {
+                match column {
+                    None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
+                    Some(value) => {
+                        body.extend_from_slice(&i32::try_from(value.len()).unwrap().to_be_bytes());
+                        body.extend_from_slice(value);
+                    }
+                }
+            }
+            (b'D', body)
+        }
         BackendMessage::CommandComplete(command) => (b'C', [command.as_ref(), b"\0"].concat()),
         BackendMessage::ReadyForQuery(status) => (
             b'Z',
@@ -631,11 +647,39 @@ impl
             }
         })
     }
+
+    fn backend<'a>(
+        &'a mut self,
+        _: &'a ServerConnectionContext<String, TrustIdentity>,
+        _: &'a ClientConnectionContext<()>,
+        (): &'a mut (),
+        message: BackendMessage,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            match message {
+                BackendMessage::DataRow(_) => Ok(pg_proto::BackendMiddlewareOutput::Expand(vec![
+                    BackendMessage::DataRow(pg_proto::DataRow {
+                        columns: vec![Some(Bytes::from_static(b"clear-one"))],
+                    }),
+                    BackendMessage::DataRow(pg_proto::DataRow {
+                        columns: vec![Some(Bytes::from_static(b"clear-two"))],
+                    }),
+                ])),
+                other => Ok(pg_proto::BackendMiddlewareOutput::Forward(other)),
+            }
+        })
+    }
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn async_middleware_suppresses_and_emits_local_responses_in_pipeline_order() {
+async fn async_middleware_supports_suppression_local_responses_and_backend_fanout() {
     let (downstream_transport, mut downstream_peer) = tokio::io::duplex(16 * 1024);
     let (upstream_transport, mut upstream_peer) = tokio::io::duplex(16 * 1024);
     let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
@@ -694,6 +738,11 @@ async fn async_middleware_suppresses_and_emits_local_responses_in_pipeline_order
                 .await
                 .unwrap();
         }
+        for cleartext in [b"clear-one".as_slice(), b"clear-two"] {
+            let (tag, body) = read_tagged(&mut downstream_peer).await;
+            assert_eq!(tag, b'D');
+            assert_eq!(&body[6..], cleartext);
+        }
         for expected in [b"FIRST\0".as_slice(), b"LOCAL\0"] {
             let (tag, body) = read_tagged(&mut downstream_peer).await;
             assert_eq!((tag, body.as_slice()), (b'C', expected));
@@ -710,6 +759,14 @@ async fn async_middleware_suppresses_and_emits_local_responses_in_pipeline_order
             .unwrap();
         let (tag, body) = read_tagged(&mut upstream_peer).await;
         assert_eq!((tag, body.as_slice()), (b'Q', b"FIRST\0".as_slice()));
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::DataRow(
+                pg_proto::DataRow {
+                    columns: vec![Some(Bytes::from_static(b"encrypted-batch"))],
+                },
+            )))
+            .await
+            .unwrap();
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::CommandComplete(
                 Bytes::from_static(b"FIRST"),
@@ -742,6 +799,10 @@ async fn async_middleware_suppresses_and_emits_local_responses_in_pipeline_order
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
         pg_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Query(query)) if query == "LOCAL"
+    ));
+    assert!(matches!(
+        session.forward_backend().await.unwrap(),
+        pg_proto::BackendForwarding::Expanded { messages, .. } if messages.len() == 2
     ));
     session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();

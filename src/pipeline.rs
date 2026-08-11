@@ -1060,15 +1060,6 @@ impl<P: PipelinePolicy> Pipeline<P> {
         }
         if terminal {
             self.response_state = None;
-            match head.kind {
-                OperationKind::Sync | OperationKind::Query => {
-                    self.request_state = RequestState::Ready;
-                }
-                OperationKind::Execute if !error => {
-                    self.request_state = RequestState::Extended { bound: true };
-                }
-                _ => {}
-            }
         }
         self.remove_inert_heads();
         self.changed.notify_waiters();
@@ -1076,13 +1067,17 @@ impl<P: PipelinePolicy> Pipeline<P> {
     }
 
     fn enter_extended_error(&mut self) {
-        self.request_state = RequestState::ExtendedError;
         self.response_state = None;
+        let mut sync_accepted = false;
         for operation in &mut self.operations {
             if operation.kind == OperationKind::Sync {
+                sync_accepted = true;
                 break;
             }
             operation.discarded = true;
+        }
+        if !sync_accepted {
+            self.request_state = RequestState::ExtendedError;
         }
     }
 

@@ -163,7 +163,7 @@ async fn runtime_pipeline_dispatches_to_compile_time_checked_phase_hooks() {
             .expect("Parse response middleware replacement is legal"),
         BackendAction::Emit(BackendMessage::ErrorResponse(_))
     ));
-    assert_eq!(pipeline.state(), PipelineState::ExtendedError);
+    assert_eq!(pipeline.state(), PipelineState::Ready);
     pipeline
         .accept_backend_typed(
             &mut middleware,
@@ -710,6 +710,33 @@ fn complete_extended_pipeline_is_ordered() {
 }
 
 #[test]
+fn completing_an_earlier_sync_does_not_rewind_the_projected_frontend_state() {
+    let mut pipeline = bounded(8);
+    for message in [
+        parse(b"first"),
+        FrontendMessage::Sync,
+        parse(b"second"),
+        describe(),
+    ] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .unwrap();
+    }
+
+    pipeline
+        .accept_backend(BackendMessage::ParseComplete)
+        .unwrap();
+    pipeline
+        .accept_backend(BackendMessage::ReadyForQuery(TransactionStatus::Idle))
+        .unwrap();
+
+    assert_eq!(pipeline.state(), PipelineState::Extended);
+    pipeline
+        .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
+        .unwrap();
+}
+
+#[test]
 fn multiple_operations_are_accepted_before_responses_and_flush_is_inert() {
     let mut pipeline = bounded(5);
     assert!(matches!(
@@ -784,7 +811,7 @@ fn first_local_rejection_discards_through_sync() {
         .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
         .unwrap();
     pipeline.try_emit_local(rejected, error()).unwrap();
-    assert_eq!(pipeline.state(), PipelineState::ExtendedError);
+    assert_eq!(pipeline.state(), PipelineState::Ready);
     assert_eq!(
         pipeline.len(),
         1,
@@ -810,6 +837,23 @@ fn upstream_error_discards_following_operations_until_sync() {
         .accept_backend(BackendMessage::ReadyForQuery(TransactionStatus::Idle))
         .unwrap();
     assert!(pipeline.is_empty());
+}
+
+#[test]
+fn an_error_before_an_accepted_sync_preserves_later_cycle_projection() {
+    let mut pipeline = bounded(8);
+    for message in [parse(b"bad"), bind(), FrontendMessage::Sync, parse(b"next")] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .unwrap();
+    }
+
+    pipeline.accept_backend(error()).unwrap();
+
+    assert_eq!(pipeline.state(), PipelineState::Extended);
+    pipeline
+        .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
+        .unwrap();
 }
 
 #[test]

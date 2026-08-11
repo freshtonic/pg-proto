@@ -14,19 +14,20 @@ pub use codec::{
 };
 pub use demux::CancelKey;
 pub use intermediary_component::{
-    AllowAuthenticatedRoute, AuthenticatedRouteContext, AuthenticatedRoutePolicy,
-    BackendBatchForwarding, BackendBatchOutput, BackendBatchProjectionError, BackendFlushReason,
-    BackendForwarding, BackendHoldConfigError, BackendHoldLimits, BackendMiddlewareOutput,
-    CancellationPolicy, CancellationRoute, EstablishmentFailurePolicy, ForwardError,
-    ForwardedMessage, FrontendForwarding, FrontendMiddlewareOutput, HeldBackendMessages,
-    IdentityIntermediaryMiddleware, InitialServerContext, Intermediary, IntermediaryAccept,
-    IntermediaryAcceptError, IntermediaryBuildError, IntermediaryBuilder,
-    IntermediaryCancellationRegistry, IntermediaryConnection, IntermediaryContexts,
-    IntermediaryMiddleware, IntermediaryMiddlewareFactory, RejectCancellation,
-    StartupResolutionError, StartupRouteResolver,
+    AllowAuthenticatedRoute, AttributedBackendMessages, AuthenticatedRouteContext,
+    AuthenticatedRoutePolicy, BackendBatchForwarding, BackendBatchOutput,
+    BackendBatchProjectionError, BackendFlushReason, BackendForwarding, BackendHoldConfigError,
+    BackendHoldLimits, BackendMiddlewareOutput, CancellationPolicy, CancellationRoute,
+    EstablishmentFailurePolicy, ForwardError, ForwardedMessage, FrontendForwarding,
+    FrontendMiddlewareOutput, HeldBackendMessages, IdentityIntermediaryMiddleware,
+    InitialServerContext, Intermediary, IntermediaryAccept, IntermediaryAcceptError,
+    IntermediaryBuildError, IntermediaryBuilder, IntermediaryCancellationRegistry,
+    IntermediaryConnection, IntermediaryContexts, IntermediaryMiddleware,
+    IntermediaryMiddlewareFactory, RejectCancellation, StartupResolutionError,
+    StartupRouteResolver,
 };
 pub use pipeline::{
-    BackendProjectionError, BoundedPipeline, FrontendProjectionError, NoPipeline,
+    BackendProjectionError, BoundedPipeline, FrontendProjectionError, NoPipeline, OperationId,
     PipelineConfigError, PipelinePolicy,
 };
 pub use pre_startup::{CertificateVerification, PreStartupMessage, SslMode, SslStrategy};

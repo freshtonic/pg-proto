@@ -7,7 +7,7 @@ use pg_proto::{
     AuthenticatedRouteContext, AuthenticatedRoutePolicy, BackendMessage, Bind, BoundedPipeline,
     CancellationPolicy, Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware,
     ClientTlsPolicy, ConnectTarget, CopyResponse, Execute, FrontendMessage, InitialServerContext,
-    Intermediary, IntermediaryBuildError, IntermediaryMiddleware, Parse, Server,
+    Intermediary, IntermediaryBuildError, IntermediaryMiddleware, OperationId, Parse, Server,
     ServerConnectionContext, ServerMiddleware, ServerTlsPolicy, StartupParameters,
     StartupRouteResolver, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
@@ -209,8 +209,11 @@ impl ClientMiddleware<Vec<&'static str>, ClientConnectionContext<()>> for Client
     }
 }
 
-#[derive(Clone, Copy)]
-struct BoundaryOrder;
+#[derive(Default)]
+struct BoundaryOrder {
+    frontend_operations: Vec<OperationId>,
+    backend_operations: Vec<Option<OperationId>>,
+}
 impl
     IntermediaryMiddleware<
         Vec<&'static str>,
@@ -232,6 +235,18 @@ impl
         Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
+    async fn frontend_operation(
+        &mut self,
+        server: &ServerConnectionContext<String, TrustIdentity>,
+        client: &ClientConnectionContext<()>,
+        state: &mut Vec<&'static str>,
+        operation: OperationId,
+        message: FrontendMessage,
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        self.frontend_operations.push(operation);
+        self.frontend(server, client, state, message).await
+    }
+
     async fn backend(
         &mut self,
         _: &ServerConnectionContext<String, TrustIdentity>,
@@ -242,6 +257,18 @@ impl
         tokio::task::yield_now().await;
         state.push("boundary-backend");
         Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+    }
+
+    async fn backend_operation(
+        &mut self,
+        server: &ServerConnectionContext<String, TrustIdentity>,
+        client: &ClientConnectionContext<()>,
+        state: &mut Vec<&'static str>,
+        operation: Option<OperationId>,
+        message: BackendMessage,
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        self.backend_operations.push(operation);
+        self.backend(server, client, state, message).await
     }
 }
 
@@ -295,7 +322,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
              client: &ClientConnectionContext<()>| {
                 assert_eq!(server.peer(), "downstream-peer");
                 assert_eq!(client.target().name(), "tenant-a");
-                BoundaryOrder
+                BoundaryOrder::default()
             },
         )
         .build()
@@ -540,7 +567,18 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     assert!(
         matches!(session.forward_next().await.unwrap(), pg_proto::ForwardedMessage::Frontend(FrontendMessage::CopyData(data)) if data == "r-standby-status")
     );
-    let (_downstream, _upstream, state, _boundary, _handlers, contexts) = session.teardown();
+    let (_downstream, _upstream, state, boundary, _handlers, contexts) = session.teardown();
+    let backend_operations: Vec<_> = boundary
+        .backend_operations
+        .iter()
+        .copied()
+        .flatten()
+        .collect();
+    assert!(boundary.backend_operations.iter().any(Option::is_none));
+    assert_eq!(boundary.frontend_operations[0], backend_operations[0]);
+    assert_eq!(boundary.frontend_operations[0], backend_operations[1]);
+    assert_eq!(boundary.frontend_operations[1], backend_operations[2]);
+    assert_eq!(boundary.frontend_operations[1], backend_operations[3]);
     assert!(
         state[traffic_entries..].starts_with(&[
             "server-frontend",
@@ -809,17 +847,21 @@ impl
         }
     }
 
-    async fn flush_backend(
+    async fn flush_backend_operations(
         &mut self,
         _: &ServerConnectionContext<String, TrustIdentity>,
         _: &ClientConnectionContext<()>,
         flushes: &mut usize,
-        held: pg_proto::HeldBackendMessages<'_>,
+        held: pg_proto::AttributedBackendMessages<'_>,
         reason: pg_proto::BackendFlushReason,
     ) -> Result<pg_proto::BackendBatchOutput, Self::Error> {
         assert_eq!(reason, pg_proto::BackendFlushReason::ProtocolBarrier);
         *flushes += 1;
+        let operation_ids: Vec<_> = held.iter().map(|(operation, _)| operation).collect();
+        assert!(operation_ids.iter().all(Option::is_some));
+        assert!(operation_ids.windows(2).all(|ids| ids[0] == ids[1]));
         let replacements = held
+            .messages()
             .iter()
             .map(|message| {
                 let BackendMessage::DataRow(row) = message else {

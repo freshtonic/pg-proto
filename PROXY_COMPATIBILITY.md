@@ -33,6 +33,7 @@ messages, transaction state, and connection cleanup.
 | Pool cleanliness evidence | pgcat tracks transactions, SET, PREPARE, COPY, and prepared cache state | Implemented as extensible evidence consumed by application-owned pool policy |
 | Opaque forwarding escape hatch | Unknown or uninspected traffic must be forwardable without monomorphising every state | Exact state erasure, checked re-entry, and neutral two-sided composition are implemented |
 | Output batching and backpressure | Current Proxy buffers rows and pgcat buffers extended/COPY messages | Cancellation-safe push/flush exists; the composition façade must permit downstream buffering without hiding command boundaries |
+| Application operation correlation | Rewriters retain per-query encryption, portal, and metrics data across pipelined responses | Implemented with opaque operation identities on intermediary middleware and held backend spans |
 
 ## Behaviour that remains downstream
 

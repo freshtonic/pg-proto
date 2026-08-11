@@ -399,6 +399,9 @@ checked middleware belongs on the state-aware session APIs above it.
   - [x] Consolidate inbound receipt, middleware interception, phase legality,
     and reconstruction validation across backend, frontend, pre-startup, and
     encryption-reply traffic without combining receipt with projection.
+  - [x] Expose opaque operation identity to forwarding-boundary middleware and
+    held backend batches so application state can follow pipelined responses
+    without duplicating the private ordering ledger.
 - [x] Use the repository README as the crate-level Rustdoc landing page.
 - [x] License both published crates and the repository under the MIT License.
 - [x] Add descriptive crates.io keywords and categories to both package manifests.

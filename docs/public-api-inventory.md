@@ -13,7 +13,7 @@ Issue #38 classifies the former public surface by responsibility:
 | runtime/generated middleware adapters | implementation-only | builder middleware factories and role middleware traits |
 | `Client`, `Server`, and `Intermediary` configuration, policy, context, errors, and owned connection types | facade-required | exported at the crate root |
 | frontend/backend/startup message values used by application middleware | facade-required vocabulary | exported at the crate root; wire framing remains internal |
-| bounded-pipeline configuration and forwarding errors | facade-required nested configuration | supplied through `IntermediaryBuilder::pipeline` |
+| bounded-pipeline configuration, opaque operation identity, and forwarding errors | facade-required nested configuration | supplied through `IntermediaryBuilder::pipeline` and operation-aware boundary middleware |
 
 The exact reviewed root export manifest is [`public-api.txt`](public-api.txt).
 `tests/public_surface.rs` rejects public modules, root declarations outside that

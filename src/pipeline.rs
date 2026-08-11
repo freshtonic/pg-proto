@@ -24,9 +24,13 @@ use crate::{
     },
 };
 
-/// Stable identity of an accepted frontend operation.
+/// Stable identity of one accepted frontend operation.
+///
+/// The identity is opaque: it permits application state to be correlated with
+/// ordered responses without exposing the intermediary's pipeline ledger or
+/// projection controls.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct OperationId(u64);
+pub struct OperationId(u64);
 
 /// Pipeline policy which preserves the historical lock-step behaviour.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -541,6 +545,45 @@ impl Default for Pipeline<NoPipeline> {
 }
 
 impl<P: PipelinePolicy> Pipeline<P> {
+    /// Returns the identity that will be assigned to the next accepted
+    /// frontend operation.
+    pub(crate) const fn next_operation_id(&self) -> OperationId {
+        OperationId(self.next_id)
+    }
+
+    /// Attributes a backend message to its forwarded frontend operation.
+    /// Asynchronous messages have no operation identity.
+    pub(crate) fn backend_operation_id(&self, message: &BackendMessage) -> Option<OperationId> {
+        if is_asynchronous(message) {
+            return None;
+        }
+        self.operations
+            .iter()
+            .find(|operation| {
+                operation.origin == Origin::Forwarded
+                    && !operation.discarded
+                    && response_fits(**operation, message)
+            })
+            .map(|operation| operation.id)
+    }
+
+    /// Attributes an ordered backend span while projecting each source against
+    /// a private ledger snapshot.
+    pub(crate) fn backend_operation_ids(
+        &self,
+        messages: &[BackendMessage],
+    ) -> Vec<Option<OperationId>> {
+        let mut projection = self.snapshot();
+        messages
+            .iter()
+            .map(|message| {
+                let id = projection.backend_operation_id(message);
+                let _ = projection.accept_backend(message.clone());
+                id
+            })
+            .collect()
+    }
+
     fn snapshot(&self) -> Self {
         Self {
             policy: self.policy,

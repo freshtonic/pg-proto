@@ -322,6 +322,15 @@ admits local operations and emits their responses through its connection-owned
 pipeline, so they cannot overtake earlier PostgreSQL responses. Middleware
 failures retain their application error in `ForwardError::Middleware`.
 
+Middleware which needs to correlate application data with protocol responses
+can override `frontend_operation` and `backend_operation`. Both hooks receive the
+same opaque `OperationId` for one accepted request and all of its ordered
+responses; asynchronous backend messages receive no operation identity. Held
+batch policy can obtain the same attribution by overriding
+`flush_backend_operations` and iterating its `AttributedBackendMessages`. The
+identity is deliberately not a pipeline handle: projection, ordering, and
+backpressure remain connection-owned.
+
 `forward_frontend()` and `forward_backend()` report whether traffic was
 forwarded, suppressed, held, or locally handled; `forward_next()` reports the same
 decisions while driving both directions.

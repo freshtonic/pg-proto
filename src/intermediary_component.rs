@@ -6,7 +6,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     ConnectTarget, NoPipeline, StartupParameters,
-    pipeline::{BackendAction, FrontendAction, FrontendHandling, Pipeline, PipelinePolicy},
+    pipeline::{
+        BackendAction, FrontendAction, FrontendHandling, OperationId, Pipeline, PipelinePolicy,
+    },
 };
 
 fn is_backend_batch_barrier(message: &crate::codec::BackendMessage) -> bool {
@@ -374,6 +376,31 @@ impl<'a> HeldBackendMessages<'a> {
     }
 }
 
+/// Ordered held backend messages paired with their originating operations.
+#[derive(Clone, Debug)]
+pub struct AttributedBackendMessages<'a> {
+    held: HeldBackendMessages<'a>,
+    operation_ids: Vec<Option<OperationId>>,
+}
+
+impl<'a> AttributedBackendMessages<'a> {
+    /// Returns the existing un-attributed held-message view.
+    #[must_use]
+    pub const fn messages(&self) -> HeldBackendMessages<'a> {
+        self.held
+    }
+
+    /// Iterates over messages and their originating operation identities.
+    /// Asynchronous backend messages carry no operation identity.
+    #[must_use]
+    pub fn iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Option<OperationId>, &'a crate::codec::BackendMessage)> + '_
+    {
+        self.operation_ids.iter().copied().zip(self.held.messages)
+    }
+}
+
 /// Asynchronous, fallible middleware at the forwarding boundary.
 ///
 /// Middleware futures are not required to be [`Send`].
@@ -394,6 +421,23 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
         Ok(FrontendMiddlewareOutput::Forward(message))
     }
 
+    /// Intercepts a client-originated message with the identity reserved for
+    /// the operation if it is forwarded or handled locally.
+    ///
+    /// The default preserves existing middleware by delegating to
+    /// [`Self::frontend`]. Implementations which attach application state to an
+    /// operation should remove that state themselves when they suppress it.
+    async fn frontend_operation(
+        &mut self,
+        server: &ServerContext,
+        client: &ClientContext,
+        state: &mut State,
+        _operation: OperationId,
+        message: crate::codec::FrontendMessage,
+    ) -> Result<FrontendMiddlewareOutput, Self::Error> {
+        self.frontend(server, client, state, message).await
+    }
+
     /// Intercepts a PostgreSQL-originated message after client-role middleware
     /// and before server-role middleware.
     async fn backend(
@@ -404,6 +448,22 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
         message: crate::codec::BackendMessage,
     ) -> Result<BackendMiddlewareOutput, Self::Error> {
         Ok(BackendMiddlewareOutput::Forward(message))
+    }
+
+    /// Intercepts a PostgreSQL-originated message with its frontend operation
+    /// identity when the message advances an operation.
+    ///
+    /// Asynchronous backend messages have no operation identity. The default
+    /// preserves existing middleware by delegating to [`Self::backend`].
+    async fn backend_operation(
+        &mut self,
+        server: &ServerContext,
+        client: &ClientContext,
+        state: &mut State,
+        _operation: Option<OperationId>,
+        message: crate::codec::BackendMessage,
+    ) -> Result<BackendMiddlewareOutput, Self::Error> {
+        self.backend(server, client, state, message).await
     }
 
     /// Applies policy to an ordered borrowed span of retained backend messages.
@@ -418,6 +478,21 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
         Ok(BackendBatchOutput::ReplaceOneToOne(
             held.iter().cloned().collect(),
         ))
+    }
+
+    /// Applies policy to retained backend messages with operation attribution.
+    /// The default preserves existing middleware by delegating to
+    /// [`Self::flush_backend`].
+    async fn flush_backend_operations(
+        &mut self,
+        server: &ServerContext,
+        client: &ClientContext,
+        state: &mut State,
+        held: AttributedBackendMessages<'_>,
+        reason: BackendFlushReason,
+    ) -> Result<BackendBatchOutput, Self::Error> {
+        self.flush_backend(server, client, state, held.messages(), reason)
+            .await
     }
 }
 
@@ -1198,11 +1273,13 @@ where
     ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
         let decision = if intercept_source_and_boundary {
             let message = self.downstream.intercept_frontend(&mut self.state, message);
+            let operation = self.pipeline.next_operation_id();
             self.boundary
-                .frontend(
+                .frontend_operation(
                     self.downstream.context(),
                     self.upstream.context(),
                     &mut self.state,
+                    operation,
                     message,
                 )
                 .await
@@ -1318,12 +1395,14 @@ where
             .pending()
             .expect("pending backend processing requires a source")
             .clone();
+        let operation = self.pipeline.backend_operation_id(&source);
         let decision = self
             .boundary
-            .backend(
+            .backend_operation(
                 self.downstream.context(),
                 self.upstream.context(),
                 &mut self.state,
+                operation,
                 source.clone(),
             )
             .await
@@ -1410,13 +1489,18 @@ where
         if self.backend_hold.is_empty() {
             return Ok(BackendBatchForwarding::Empty);
         }
-        let held = HeldBackendMessages {
-            messages: self.backend_hold.messages(),
-            bytes: self.backend_hold.bytes(),
+        let held = AttributedBackendMessages {
+            held: HeldBackendMessages {
+                messages: self.backend_hold.messages(),
+                bytes: self.backend_hold.bytes(),
+            },
+            operation_ids: self
+                .pipeline
+                .backend_operation_ids(self.backend_hold.messages()),
         };
         let decision = self
             .boundary
-            .flush_backend(
+            .flush_backend_operations(
                 self.downstream.context(),
                 self.upstream.context(),
                 &mut self.state,

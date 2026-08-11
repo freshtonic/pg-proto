@@ -56,27 +56,25 @@ impl IntermediaryCancellationRegistry for Registry {
 struct Resolver(Rc<RefCell<usize>>);
 impl StartupRouteResolver<&'static str> for Resolver {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, &'static str>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
+        _: InitialServerContext<'_, &'static str>,
+    ) -> Result<ConnectTarget, Self::Error> {
         *self.0.borrow_mut() += 1;
-        Box::pin(async { Ok(ConnectTarget::new("db").with_metadata("tenant", "a")) })
+        Ok(ConnectTarget::new("db").with_metadata("tenant", "a"))
     }
 }
 
 struct FixedResolver;
 impl StartupRouteResolver<()> for FixedResolver {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, ()>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async { Ok(ConnectTarget::new("hidden-address")) })
+        _: InitialServerContext<'_, ()>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new("hidden-address"))
     }
 }
 

@@ -43,16 +43,14 @@ pub enum BackendMiddlewareOutput {
 
 pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     // Existing frontend(...) and backend(...) remain.
-    fn flush_backend<'a>(
-        &'a mut self,
-        server: &'a ServerContext,
-        client: &'a ClientContext,
-        state: &'a mut State,
+    async fn flush_backend(
+        &mut self,
+        server: &ServerContext,
+        client: &ClientContext,
+        state: &mut State,
         held: HeldBackendMessages,
         reason: BackendFlushReason,
-    ) -> Pin<Box<dyn Future<
-        Output = Result<BackendFlushOutput, Self::Error>
-    > + 'a>>;
+    ) -> Result<BackendFlushOutput, Self::Error>;
 }
 
 impl<...> IntermediaryConnection<...> {
@@ -253,30 +251,27 @@ private because applications do not vary them safely.
 ## Example
 
 ```rust
-fn backend<'a>(
+async fn backend(
     &mut self,
-    _server: &'a ServerCx,
-    _client: &'a ClientCx,
-    _state: &'a mut State,
+    _server: &ServerCx,
+    _client: &ClientCx,
+    _state: &mut State,
     message: BackendMessage,
-) -> Pin<Box<dyn Future<Output = Result<BackendMiddlewareOutput, Error>> + 'a>> {
-    Box::pin(async move {
-        Ok(match message {
-            message @ BackendMessage::DataRow(_) => BackendMiddlewareOutput::Hold(message),
-            barrier => BackendMiddlewareOutput::Forward(barrier),
-        })
+) -> Result<BackendMiddlewareOutput, Error> {
+    Ok(match message {
+        message @ BackendMessage::DataRow(_) => BackendMiddlewareOutput::Hold(message),
+        barrier => BackendMiddlewareOutput::Forward(barrier),
     })
 }
 
-fn flush_backend<'a>(
+async fn flush_backend(
     &mut self,
-    _server: &'a ServerCx,
-    _client: &'a ClientCx,
-    state: &'a mut State,
+    _server: &ServerCx,
+    _client: &ClientCx,
+    state: &mut State,
     input: HeldBackendMessages,
     _reason: BackendFlushReason,
-) -> Pin<Box<dyn Future<Output = Result<BackendFlushOutput, Error>> + 'a>> {
-  Box::pin(async move {
+) -> Result<BackendFlushOutput, Error> {
     let mut output = Vec::new();
     for message in input.into_messages() {
         match message {
@@ -288,7 +283,6 @@ fn flush_backend<'a>(
         }
     }
     Ok(BackendFlushOutput::Release(output))
-  })
 }
 ```
 

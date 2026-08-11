@@ -36,41 +36,26 @@ impl
 {
     type Error = std::convert::Infallible;
 
-    fn frontend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut ProtocolState,
+    async fn frontend(
+        &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut ProtocolState,
         message: FrontendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
-                > + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            println!("[{}] client -> server: {message:?}", state.connection);
-            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
-        })
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        println!("[{}] client -> server: {message:?}", state.connection);
+        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut ProtocolState,
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut ProtocolState,
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            println!("[{}] server -> client: {message:?}", state.connection);
-            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
-        })
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        println!("[{}] server -> client: {message:?}", state.connection);
+        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -156,13 +141,12 @@ struct Route(SocketAddr);
 impl StartupRouteResolver<SocketAddr> for Route {
     type Error = Infallible;
 
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, SocketAddr>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async move { Ok(ConnectTarget::new(self.0.to_string())) })
+        _: InitialServerContext<'_, SocketAddr>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new(self.0.to_string()))
     }
 }
 

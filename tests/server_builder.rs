@@ -13,9 +13,9 @@ use bytes::Bytes;
 use pg_proto::{
     BuildServerError, DisabledServerTls, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
     ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
-    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
-    ServerAuthenticationResponse, ServerIdentity, ServerIdentityProvider, ServerProtocolLimits,
-    ServerTlsPolicy, StartupMessage, TrustServerAuthentication,
+    ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
+    ServerIdentity, ServerIdentityProvider, ServerProtocolLimits, ServerTlsPolicy, StartupMessage,
+    TrustServerAuthentication,
 };
 use rcgen::generate_simple_self_signed;
 use rustls::{
@@ -104,23 +104,19 @@ impl ServerAuthenticationProvider for InvalidSaslAuthentication {
 impl ServerAuthentication<()> for InvalidSaslAuthentication {
     type Identity = ();
     type Error = Infallible;
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async {
-            Ok(ServerAuthenticationAction::Sasl {
-                mechanisms: vec![Bytes::from_static(b"bad\0mechanism")],
-            })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::Sasl {
+            mechanisms: vec![Bytes::from_static(b"bad\0mechanism")],
         })
     }
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
         _response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
         unreachable!()
     }
 }
@@ -144,42 +140,38 @@ impl ServerAuthentication<()> for TokenAuthentication {
     type Identity = &'static str;
     type Error = Infallible;
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
         let action = match self.method {
             TokenMethod::Kerberos => ServerAuthenticationAction::KerberosV5,
             TokenMethod::Gss => ServerAuthenticationAction::Gss,
             TokenMethod::Sspi => ServerAuthenticationAction::Sspi,
         };
-        Box::pin(async move { Ok(action) })
+        Ok(action)
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async move {
-            let ServerAuthenticationResponse::Token(token) = response else {
-                unreachable!()
-            };
-            self.responses += 1;
-            Ok(
-                if matches!(self.method, TokenMethod::Gss) && self.responses == 1 {
-                    assert_eq!(token, b"client-one".as_slice());
-                    ServerAuthenticationAction::GssContinue(Bytes::from_static(b"server-two"))
-                } else {
-                    if matches!(self.method, TokenMethod::Gss) {
-                        assert_eq!(token, b"client-three".as_slice());
-                    }
-                    ServerAuthenticationAction::Accept("gss-user")
-                },
-            )
-        })
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        let ServerAuthenticationResponse::Token(token) = response else {
+            unreachable!()
+        };
+        self.responses += 1;
+        Ok(
+            if matches!(self.method, TokenMethod::Gss) && self.responses == 1 {
+                assert_eq!(token, b"client-one".as_slice());
+                ServerAuthenticationAction::GssContinue(Bytes::from_static(b"server-two"))
+            } else {
+                if matches!(self.method, TokenMethod::Gss) {
+                    assert_eq!(token, b"client-three".as_slice());
+                }
+                ServerAuthenticationAction::Accept("gss-user")
+            },
+        )
     }
 }
 
@@ -195,26 +187,22 @@ impl ServerAuthentication<()> for Md5Authentication {
     type Identity = Vec<u8>;
     type Error = Infallible;
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async { Ok(ServerAuthenticationAction::Md5Password { salt: [1, 2, 3, 4] }) })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::Md5Password { salt: [1, 2, 3, 4] })
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, ()>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async move {
-            let ServerAuthenticationResponse::Password(body) = response else {
-                unreachable!()
-            };
-            Ok(ServerAuthenticationAction::Accept(body.to_vec()))
-        })
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        let ServerAuthenticationResponse::Password(body) = response else {
+            unreachable!()
+        };
+        Ok(ServerAuthenticationAction::Accept(body.to_vec()))
     }
 }
 
@@ -236,45 +224,41 @@ impl ServerAuthentication<&str> for AuthenticationSession {
     type Identity = UserIdentity;
     type Error = AuthenticationFailure;
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, &str>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async { Ok(ServerAuthenticationAction::CleartextPassword) })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, &str>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::CleartextPassword)
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        request: ServerAuthenticationRequest<'a, &str>,
+    async fn respond(
+        &mut self,
+        request: ServerAuthenticationRequest<'_, &str>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async move {
-            let ServerAuthenticationResponse::Password(credential) = response else {
-                unreachable!()
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        let ServerAuthenticationResponse::Password(credential) = response else {
+            unreachable!()
+        };
+        if credential != b"secret".as_slice() {
+            return Err(AuthenticationFailure("invalid password"));
+        }
+        if *request.peer() != "peer" {
+            return Err(AuthenticationFailure("unexpected peer"));
+        }
+        let user = request
+            .startup()
+            .parameters
+            .get(b"user".as_slice())
+            .ok_or(AuthenticationFailure("user is required"))?;
+        if let Some(expected) = &self.expected_binding {
+            let NegotiatedServerTls::Tls { server_end_point } = request.tls() else {
+                panic!("expected TLS authentication facts")
             };
-            if credential != b"secret".as_slice() {
-                return Err(AuthenticationFailure("invalid password"));
-            }
-            if *request.peer() != "peer" {
-                return Err(AuthenticationFailure("unexpected peer"));
-            }
-            let user = request
-                .startup()
-                .parameters
-                .get(b"user".as_slice())
-                .ok_or(AuthenticationFailure("user is required"))?;
-            if let Some(expected) = &self.expected_binding {
-                let NegotiatedServerTls::Tls { server_end_point } = request.tls() else {
-                    panic!("expected TLS authentication facts")
-                };
-                assert_eq!(server_end_point, expected);
-            }
-            Ok(ServerAuthenticationAction::Accept(UserIdentity(
-                String::from_utf8_lossy(user).into_owned(),
-            )))
-        })
+            assert_eq!(server_end_point, expected);
+        }
+        Ok(ServerAuthenticationAction::Accept(UserIdentity(
+            String::from_utf8_lossy(user).into_owned(),
+        )))
     }
 }
 

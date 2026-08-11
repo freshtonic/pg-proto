@@ -2,8 +2,6 @@
 
 use std::{
     convert::Infallible,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -39,12 +37,9 @@ impl ClientAuthentication for PasswordPolicy {
     type Evidence = String;
     type Session = PasswordSession;
 
-    fn begin<'a>(
-        &'a self,
-        target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Session, Self::Error>> + 'a>> {
+    async fn begin(&self, target: &ConnectTarget) -> Result<Self::Session, Self::Error> {
         let identity = target.metadata().get("tenant").unwrap().to_owned();
-        Box::pin(async move { Ok(PasswordSession { identity }) })
+        Ok(PasswordSession { identity })
     }
 }
 
@@ -52,20 +47,18 @@ impl ClientAuthenticationSession for PasswordSession {
     type Error = Infallible;
     type Evidence = String;
 
-    fn respond<'a>(
-        &'a mut self,
+    async fn respond(
+        &mut self,
         challenge: ClientAuthenticationChallenge,
-    ) -> Pin<Box<dyn Future<Output = Result<ClientAuthenticationResponse, Self::Error>> + 'a>> {
-        Box::pin(async move {
-            assert_eq!(challenge, ClientAuthenticationChallenge::CleartextPassword);
-            Ok(ClientAuthenticationResponse::Password(Bytes::from_static(
-                b"secret",
-            )))
-        })
+    ) -> Result<ClientAuthenticationResponse, Self::Error> {
+        assert_eq!(challenge, ClientAuthenticationChallenge::CleartextPassword);
+        Ok(ClientAuthenticationResponse::Password(Bytes::from_static(
+            b"secret",
+        )))
     }
 
-    fn authenticated(self) -> Pin<Box<dyn Future<Output = Result<Self::Evidence, Self::Error>>>> {
-        Box::pin(async move { Ok(self.identity) })
+    async fn authenticated(self) -> Result<Self::Evidence, Self::Error> {
+        Ok(self.identity)
     }
 }
 
@@ -123,18 +116,13 @@ struct ReloadingTls {
 impl ClientTlsProvider for ReloadingTls {
     type Error = Infallible;
 
-    fn resolve<'a>(
-        &'a self,
-        _target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<ClientTlsConfig, Self::Error>> + 'a>> {
+    async fn resolve(&self, _target: &ConnectTarget) -> Result<ClientTlsConfig, Self::Error> {
         self.resolutions.fetch_add(1, Ordering::SeqCst);
         let roots = self.roots.clone();
-        Box::pin(async move {
-            Ok(ClientTlsConfig::new(
-                ServerName::try_from("localhost").unwrap(),
-                roots,
-            ))
-        })
+        Ok(ClientTlsConfig::new(
+            ServerName::try_from("localhost").unwrap(),
+            roots,
+        ))
     }
 }
 
@@ -329,11 +317,8 @@ impl ClientAuthentication for DenyingPolicy {
     type Evidence = ();
     type Session = Self;
 
-    fn begin<'a>(
-        &'a self,
-        _target: &'a ConnectTarget,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Session, Self::Error>> + 'a>> {
-        Box::pin(async { Err(Denied) })
+    async fn begin(&self, _target: &ConnectTarget) -> Result<Self::Session, Self::Error> {
+        Err(Denied)
     }
 }
 
@@ -341,15 +326,15 @@ impl ClientAuthenticationSession for DenyingPolicy {
     type Error = Denied;
     type Evidence = ();
 
-    fn respond(
+    async fn respond(
         &mut self,
         _challenge: ClientAuthenticationChallenge,
-    ) -> Pin<Box<dyn Future<Output = Result<ClientAuthenticationResponse, Self::Error>> + '_>> {
-        Box::pin(async { Err(Denied) })
+    ) -> Result<ClientAuthenticationResponse, Self::Error> {
+        Err(Denied)
     }
 
-    fn authenticated(self) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>>>> {
-        Box::pin(async { Err(Denied) })
+    async fn authenticated(self) -> Result<(), Self::Error> {
+        Err(Denied)
     }
 }
 

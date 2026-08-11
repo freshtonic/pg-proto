@@ -214,7 +214,7 @@ authenticated routing, cancellation storage, middleware, and failure disclosure
 remain explicit application policies.
 
 ```rust,no_run
-use std::{convert::Infallible, future::Future, pin::Pin};
+use std::convert::Infallible;
 use pg_proto::{
     CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
     Intermediary, Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
@@ -224,12 +224,12 @@ use pg_proto::{
 struct Route;
 impl<Peer> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, Peer>,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectTarget, Self::Error>> + 'a>> {
-        Box::pin(async { Ok(ConnectTarget::new("127.0.0.1:5432")) })
+        _: InitialServerContext<'_, Peer>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new("127.0.0.1:5432"))
     }
 }
 

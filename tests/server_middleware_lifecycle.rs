@@ -6,9 +6,9 @@ use bytes::Bytes;
 use pg_proto::{
     BackendMessage, CancellationRequest, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
     ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
-    ServerAuthenticationFuture, ServerAuthenticationProvider, ServerAuthenticationRequest,
-    ServerAuthenticationResponse, ServerConnectionContext, ServerMiddleware, ServerTlsPolicy,
-    StartupMessage, TrustIdentity, TrustServerAuthentication,
+    ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
+    ServerConnectionContext, ServerMiddleware, ServerTlsPolicy, StartupMessage, TrustIdentity,
+    TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -101,23 +101,21 @@ impl ServerAuthenticationProvider for PasswordFactory {
 impl ServerAuthentication<()> for PasswordAuth {
     type Identity = Bytes;
     type Error = Infallible;
-    fn start<'a>(
-        &'a mut self,
-        _: ServerAuthenticationRequest<'a, ()>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Bytes>, Infallible> {
-        Box::pin(async { Ok(ServerAuthenticationAction::CleartextPassword) })
+    async fn start(
+        &mut self,
+        _: ServerAuthenticationRequest<'_, ()>,
+    ) -> Result<ServerAuthenticationAction<Bytes>, Infallible> {
+        Ok(ServerAuthenticationAction::CleartextPassword)
     }
-    fn respond<'a>(
-        &'a mut self,
-        _: ServerAuthenticationRequest<'a, ()>,
+    async fn respond(
+        &mut self,
+        _: ServerAuthenticationRequest<'_, ()>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Bytes>, Infallible> {
-        Box::pin(async move {
-            let ServerAuthenticationResponse::Password(password) = response else {
-                unreachable!()
-            };
-            Ok(ServerAuthenticationAction::Accept(password))
-        })
+    ) -> Result<ServerAuthenticationAction<Bytes>, Infallible> {
+        let ServerAuthenticationResponse::Password(password) = response else {
+            unreachable!()
+        };
+        Ok(ServerAuthenticationAction::Accept(password))
     }
 }
 

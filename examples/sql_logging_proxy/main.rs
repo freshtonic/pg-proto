@@ -58,60 +58,45 @@ impl
 {
     type Error = std::convert::Infallible;
 
-    fn frontend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut SqlState,
+    async fn frontend(
+        &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut SqlState,
         message: FrontendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
-                > + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            if let FrontendMessage::Query(sql)
-            | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
-            {
-                (state.reporter)(Observation::Sql {
-                    connection: state.connection,
-                    statement: String::from_utf8_lossy(sql).into_owned(),
-                });
-            }
-            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
-        })
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        if let FrontendMessage::Query(sql)
+        | FrontendMessage::Parse(pg_proto::Parse { query: sql, .. }) = &message
+        {
+            (state.reporter)(Observation::Sql {
+                connection: state.connection,
+                statement: String::from_utf8_lossy(sql).into_owned(),
+            });
+        }
+        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<SocketAddr, TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        state: &'a mut SqlState,
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        state: &mut SqlState,
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            match &message {
-                BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
-                BackendMessage::CommandComplete(tag) => {
-                    (state.reporter)(Observation::RowCount {
-                        connection: state.connection,
-                        rows: state.rows,
-                        command: String::from_utf8_lossy(tag).into_owned(),
-                    });
-                    state.rows = 0;
-                }
-                BackendMessage::ErrorResponse(_) => state.rows = 0,
-                _ => {}
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        match &message {
+            BackendMessage::DataRow(_) => state.rows = state.rows.saturating_add(1),
+            BackendMessage::CommandComplete(tag) => {
+                (state.reporter)(Observation::RowCount {
+                    connection: state.connection,
+                    rows: state.rows,
+                    command: String::from_utf8_lossy(tag).into_owned(),
+                });
+                state.rows = 0;
             }
-            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
-        })
+            BackendMessage::ErrorResponse(_) => state.rows = 0,
+            _ => {}
+        }
+        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -210,13 +195,12 @@ struct Route(SocketAddr);
 impl StartupRouteResolver<SocketAddr> for Route {
     type Error = Infallible;
 
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, SocketAddr>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async move { Ok(ConnectTarget::new(self.0.to_string())) })
+        _: InitialServerContext<'_, SocketAddr>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new(self.0.to_string()))
     }
 }
 

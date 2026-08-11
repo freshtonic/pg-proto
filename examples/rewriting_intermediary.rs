@@ -13,13 +13,12 @@ use pg_proto::{
 struct Route;
 impl<Peer> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, Peer>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async { Ok(ConnectTarget::new("postgres")) })
+        _: InitialServerContext<'_, Peer>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new("postgres"))
     }
 }
 
@@ -34,54 +33,38 @@ impl
 {
     type Error = std::convert::Infallible;
 
-    fn frontend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<(), TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        (): &'a mut (),
+    async fn frontend(
+        &mut self,
+        _: &ServerConnectionContext<(), TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
         message: FrontendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<pg_proto::FrontendMiddlewareOutput, Self::Error>,
-                > + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            Ok(pg_proto::FrontendMiddlewareOutput::Forward(match message {
-                FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
-                    b"select amount from ledger where visible = true",
-                )),
-                FrontendMessage::Parse(mut parse) => {
-                    parse.query =
-                        Bytes::from_static(b"select amount from ledger where visible = true");
-                    FrontendMessage::Parse(parse)
-                }
-                other => other,
-            }))
-        })
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        Ok(pg_proto::FrontendMiddlewareOutput::Forward(match message {
+            FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
+                b"select amount from ledger where visible = true",
+            )),
+            FrontendMessage::Parse(mut parse) => {
+                parse.query = Bytes::from_static(b"select amount from ledger where visible = true");
+                FrontendMessage::Parse(parse)
+            }
+            other => other,
+        }))
     }
-    fn backend<'a>(
-        &'a mut self,
-        _: &'a ServerConnectionContext<(), TrustIdentity>,
-        _: &'a ClientConnectionContext<()>,
-        (): &'a mut (),
+    async fn backend(
+        &mut self,
+        _: &ServerConnectionContext<(), TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
         message: BackendMessage,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<pg_proto::BackendMiddlewareOutput, Self::Error>>
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            Ok(pg_proto::BackendMiddlewareOutput::Forward(match message {
-                BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
-                    rows.fields[0].name = Bytes::from_static(b"visible_amount");
-                    BackendMessage::RowDescription(rows)
-                }
-                other => other,
-            }))
-        })
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        Ok(pg_proto::BackendMiddlewareOutput::Forward(match message {
+            BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
+                rows.fields[0].name = Bytes::from_static(b"visible_amount");
+                BackendMessage::RowDescription(rows)
+            }
+            other => other,
+        }))
     }
 }
 

@@ -10,13 +10,12 @@ use std::convert::Infallible;
 struct Route;
 impl<Peer> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
-    fn resolve<'a>(
-        &'a self,
+    async fn resolve(
+        &self,
         _: StartupParameters,
-        _: InitialServerContext<'a, Peer>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConnectTarget, Self::Error>> + 'a>>
-    {
-        Box::pin(async { Ok(ConnectTarget::new("postgres")) })
+        _: InitialServerContext<'_, Peer>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new("postgres"))
     }
 }
 

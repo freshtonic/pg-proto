@@ -20,10 +20,6 @@ use crate::{
     transport::Buffered,
 };
 
-/// A non-`Send` future returned by application-defined server authentication.
-pub type ServerAuthenticationFuture<'a, Identity, Error> =
-    Pin<Box<dyn Future<Output = Result<Identity, Error>> + 'a>>;
-
 /// Async startup routing hook used by the intermediary facade.
 #[allow(clippy::type_complexity)]
 pub(crate) trait StartupResolver<State, Peer, Identity> {
@@ -217,6 +213,9 @@ pub enum ServerAuthenticationResponse {
 }
 
 /// Per-connection asynchronous authentication policy.
+///
+/// Authentication futures are not required to be [`Send`].
+#[allow(async_fn_in_trait)]
 pub trait ServerAuthentication<Peer> {
     /// Typed evidence produced by successful authentication.
     type Identity;
@@ -224,17 +223,17 @@ pub trait ServerAuthentication<Peer> {
     type Error;
 
     /// Starts the application-driven authentication conversation.
-    fn start<'a>(
-        &'a mut self,
-        request: ServerAuthenticationRequest<'a, Peer>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>;
+    async fn start(
+        &mut self,
+        request: ServerAuthenticationRequest<'_, Peer>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error>;
 
     /// Advances the conversation after one protocol response.
-    fn respond<'a>(
-        &'a mut self,
-        request: ServerAuthenticationRequest<'a, Peer>,
+    async fn respond(
+        &mut self,
+        request: ServerAuthenticationRequest<'_, Peer>,
         response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>;
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error>;
 }
 
 /// Factory creating one isolated authentication policy per connection.
@@ -470,20 +469,18 @@ impl<Peer> ServerAuthentication<Peer> for TrustServerAuthentication {
     type Identity = TrustIdentity;
     type Error = std::convert::Infallible;
 
-    fn start<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, Peer>,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
-        Box::pin(async { Ok(ServerAuthenticationAction::Accept(TrustIdentity)) })
+    async fn start(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, Peer>,
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
+        Ok(ServerAuthenticationAction::Accept(TrustIdentity))
     }
 
-    fn respond<'a>(
-        &'a mut self,
-        _request: ServerAuthenticationRequest<'a, Peer>,
+    async fn respond(
+        &mut self,
+        _request: ServerAuthenticationRequest<'_, Peer>,
         _response: ServerAuthenticationResponse,
-    ) -> ServerAuthenticationFuture<'a, ServerAuthenticationAction<Self::Identity>, Self::Error>
-    {
+    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error> {
         unreachable!("trust authentication accepts before a response")
     }
 }

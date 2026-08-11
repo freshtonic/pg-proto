@@ -9,10 +9,9 @@ use std::{
 use bytes::Bytes;
 use pg_proto::{
     BackendMessage, Client, ClientAuthentication, ClientAuthenticationChallenge,
-    ClientAuthenticationFuture, ClientAuthenticationResponse, ClientAuthenticationSession,
-    ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
-    ClientTlsStatus, ConnectTarget, FrontendMessage, MiddlewareFactory, StartupParameters,
-    TrustClientAuthentication,
+    ClientAuthenticationResponse, ClientAuthenticationSession, ClientConnectionContext,
+    ClientInitialContext, ClientMiddleware, ClientTlsPolicy, ClientTlsStatus, ConnectTarget,
+    FrontendMessage, MiddlewareFactory, StartupParameters, TrustClientAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
@@ -31,11 +30,8 @@ impl ClientAuthentication for PasswordAuthentication {
     type Session = Self;
     type Error = std::convert::Infallible;
 
-    fn begin<'a>(
-        &'a self,
-        _target: &'a ConnectTarget,
-    ) -> ClientAuthenticationFuture<'a, Self::Session, Self::Error> {
-        Box::pin(async { Ok(*self) })
+    async fn begin(&self, _target: &ConnectTarget) -> Result<Self::Session, Self::Error> {
+        Ok(*self)
     }
 }
 
@@ -43,20 +39,18 @@ impl ClientAuthenticationSession for PasswordAuthentication {
     type Evidence = &'static str;
     type Error = std::convert::Infallible;
 
-    fn respond(
+    async fn respond(
         &mut self,
         challenge: ClientAuthenticationChallenge,
-    ) -> ClientAuthenticationFuture<'_, ClientAuthenticationResponse, Self::Error> {
+    ) -> Result<ClientAuthenticationResponse, Self::Error> {
         assert_eq!(challenge, ClientAuthenticationChallenge::CleartextPassword);
-        Box::pin(async {
-            Ok(ClientAuthenticationResponse::Password(Bytes::from_static(
-                b"policy-secret",
-            )))
-        })
+        Ok(ClientAuthenticationResponse::Password(Bytes::from_static(
+            b"policy-secret",
+        )))
     }
 
-    fn authenticated(self) -> ClientAuthenticationFuture<'static, Self::Evidence, Self::Error> {
-        Box::pin(async { Ok("authenticated") })
+    async fn authenticated(self) -> Result<Self::Evidence, Self::Error> {
+        Ok("authenticated")
     }
 }
 

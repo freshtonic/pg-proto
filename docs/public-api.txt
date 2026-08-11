@@ -1,12 +1,11 @@
 pub use client_component::{
     BuildError, CancelError, Client, ClientAuthentication, ClientAuthenticationChallenge,
-    ClientAuthenticationError, ClientAuthenticationFuture, ClientAuthenticationResponse,
-    ClientAuthenticationSession, ClientBuilder, ClientConnection, ClientConnectionContext,
-    ClientInitialContext, ClientTlsConfig, ClientTlsConfiguration, ClientTlsError, ClientTlsPolicy,
-    ClientTlsProvider, ClientTlsStatus, ClientTransport, ConnectError, ConnectTarget,
-    ConnectionChanged, ConnectionClean, IdentityHandler, ProtocolLimitError, ProtocolLimits,
-    QueryError, ReloadableClientTls, StartupParameterError, StartupParameters,
-    TrustClientAuthentication,
+    ClientAuthenticationError, ClientAuthenticationResponse, ClientAuthenticationSession,
+    ClientBuilder, ClientConnection, ClientConnectionContext, ClientInitialContext,
+    ClientTlsConfig, ClientTlsConfiguration, ClientTlsError, ClientTlsPolicy, ClientTlsProvider,
+    ClientTlsStatus, ClientTransport, ConnectError, ConnectTarget, ConnectionChanged,
+    ConnectionClean, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
+    ReloadableClientTls, StartupParameterError, StartupParameters, TrustClientAuthentication,
 };
 pub use codec::{
     Authentication, BackendMessage, Bind, Close, CopyResponse, DataRow, Describe, DescribeTarget,
@@ -38,10 +37,10 @@ pub use server_component::{
     AcceptError, AcceptedServerTransport, BuildServerError, CancellationRequest, DisabledServerTls,
     IdentityServerHandler, NegotiatedServerTls, NoServerIdentity, NoServerIdentityProvider,
     OptionalServerTls, RequiredServerTls, Server, ServerAccept, ServerAcceptFuture,
-    ServerAuthentication, ServerAuthenticationAction, ServerAuthenticationFuture,
-    ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
-    ServerBuilder, ServerCancellation, ServerConnection, ServerConnectionContext, ServerIdentity,
-    ServerIdentityProvider, ServerProtocolLimits, ServerTlsConfiguration, ServerTlsPolicy,
-    TrustIdentity, TrustServerAuthentication,
+    ServerAuthentication, ServerAuthenticationAction, ServerAuthenticationProvider,
+    ServerAuthenticationRequest, ServerAuthenticationResponse, ServerBuilder, ServerCancellation,
+    ServerConnection, ServerConnectionContext, ServerIdentity, ServerIdentityProvider,
+    ServerProtocolLimits, ServerTlsConfiguration, ServerTlsPolicy, TrustIdentity,
+    TrustServerAuthentication,
 };
 pub use startup::{ProtocolVersion, StartupMessage};

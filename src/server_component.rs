@@ -3,6 +3,7 @@
 use std::{fmt, future::Future, io, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
+use rand::RngExt as _;
 use rustls::{ServerConfig, pki_types::CertificateDer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -243,6 +244,77 @@ pub trait ServerAuthenticationProvider {
 
     /// Creates a fresh policy instance.
     fn create(&self) -> Self::Authentication;
+}
+
+/// Static username/password verification using PostgreSQL MD5 authentication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticMd5ServerCredentials {
+    username: Bytes,
+    password: Bytes,
+}
+
+impl StaticMd5ServerCredentials {
+    /// Creates a reusable credential provider.
+    #[must_use]
+    pub fn new(username: impl Into<Bytes>, password: impl Into<Bytes>) -> Self {
+        Self {
+            username: username.into(),
+            password: password.into(),
+        }
+    }
+}
+
+/// Isolated MD5 exchange for one connection.
+#[derive(Clone, Debug)]
+pub struct StaticMd5ServerCredentialSession {
+    username: Bytes,
+    password: Bytes,
+    salt: [u8; 4],
+}
+
+impl ServerAuthenticationProvider for StaticMd5ServerCredentials {
+    type Authentication = StaticMd5ServerCredentialSession;
+
+    fn create(&self) -> Self::Authentication {
+        let mut salt = [0; 4];
+        rand::rng().fill(&mut salt);
+        StaticMd5ServerCredentialSession {
+            username: self.username.clone(),
+            password: self.password.clone(),
+            salt,
+        }
+    }
+}
+
+impl<Peer> ServerAuthentication<Peer> for StaticMd5ServerCredentialSession {
+    type Identity = ();
+    type Error = crate::StaticCredentialError;
+
+    async fn start(
+        &mut self,
+        _: ServerAuthenticationRequest<'_, Peer>,
+    ) -> Result<ServerAuthenticationAction<()>, Self::Error> {
+        Ok(ServerAuthenticationAction::Md5Password { salt: self.salt })
+    }
+
+    async fn respond(
+        &mut self,
+        _: ServerAuthenticationRequest<'_, Peer>,
+        response: ServerAuthenticationResponse,
+    ) -> Result<ServerAuthenticationAction<()>, Self::Error> {
+        let ServerAuthenticationResponse::Password(received) = response else {
+            return Err(crate::StaticCredentialError::AuthenticationFailed);
+        };
+        if !crate::credentials::verify_md5_response(
+            &received,
+            &self.username,
+            &self.password,
+            self.salt,
+        ) {
+            return Err(crate::StaticCredentialError::AuthenticationFailed);
+        }
+        Ok(ServerAuthenticationAction::Accept(()))
+    }
 }
 
 /// Typed evidence for an explicitly trusted connection.

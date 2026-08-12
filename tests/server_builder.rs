@@ -393,6 +393,13 @@ async fn required_tls_rejects_plaintext_and_authentication_rejection_is_typed() 
         server.accept(server_io, "peer", ()).await,
         Err(pg_proto::AcceptError::TlsRequired)
     ));
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    assert!(
+        response
+            .windows(b"Transport Layer Security (TLS) connection is required".len())
+            .any(|window| window == b"Transport Layer Security (TLS) connection is required")
+    );
 
     let server = Server::builder()
         .tls(ServerTlsPolicy::Disabled)

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.10.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.1...pg-proto-v0.10.2) - 2026-08-12
+
+### Added
+
+- add reusable intermediary protocol adapters
+
+### Fixed
+
+- restore rustdoc grammar and diagrams
+- review proxy adapter facade exports
+
 ## [0.10.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.0...pg-proto-v0.10.1) - 2026-08-11
 
 ### Added

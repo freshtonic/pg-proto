@@ -25,10 +25,16 @@ fn root_facade_matches_the_reviewed_manifest() {
 #[test]
 fn implementation_modules_and_legacy_connection_are_not_public() {
     let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
-    assert!(!source.lines().any(|line| line.starts_with("pub mod ")));
+    let public_modules = source
+        .lines()
+        .filter(|line| line.starts_with("pub mod "))
+        .collect::<Vec<_>>();
+    assert_eq!(public_modules, ["pub mod grammar;"]);
     assert!(source.lines().all(|line| {
         let trimmed = line.trim_start();
-        !trimmed.starts_with("pub ") || trimmed.starts_with("pub use ")
+        !trimmed.starts_with("pub ")
+            || trimmed.starts_with("pub use ")
+            || trimmed == "pub mod grammar;"
     }));
     assert!(!source.contains("pub struct Conn<"));
     assert!(source.contains("#![deny(private_bounds, private_interfaces, unreachable_pub)]"));

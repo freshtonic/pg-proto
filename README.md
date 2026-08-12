@@ -32,14 +32,14 @@ the PostgreSQL frontend/backend wire protocol.
 
 ### Client role
 
-![pg-proto client connected to an external server](docs/images/client-mode.svg)
+![pg-proto client connected to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/client-mode.svg)
 
 `pg-proto` initiates the connection and acts as the protocol client. The external
 server is commonly PostgreSQL itself, but may be any compatible server.
 
 ### Server role
 
-![external client connected to a pg-proto server](docs/images/server-mode.svg)
+![external client connected to a pg-proto server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/server-mode.svg)
 
 An external client initiates the connection and `pg-proto` acts as the protocol
 server. This mode suits PostgreSQL-compatible services, test backends, recorders,
@@ -47,7 +47,7 @@ and protocol conformance tools.
 
 ### Intermediary role
 
-![external client connected through a pg-proto intermediary to an external server](docs/images/intermediary-mode.svg)
+![external client connected through a pg-proto intermediary to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/intermediary-mode.svg)
 
 `pg-proto` terminates both protocol roles around an intermediary: its server side
 accepts the external client, while its client side establishes an independent

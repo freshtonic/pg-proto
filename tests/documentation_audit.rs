@@ -3,6 +3,25 @@
 use std::{fs, path::Path};
 
 #[test]
+fn mode_diagrams_use_rustdoc_safe_urls_and_ship_with_the_crate() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    let base = "https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images";
+
+    for image in [
+        "client-mode.svg",
+        "server-mode.svg",
+        "intermediary-mode.svg",
+    ] {
+        assert!(root.join("docs/images").join(image).is_file());
+        assert!(
+            readme.contains(&format!("{base}/{image}")),
+            "README must use a rustdoc-safe URL for {image}"
+        );
+    }
+}
+
+#[test]
 fn public_docs_reference_only_builder_entry_points() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
@@ -28,7 +47,6 @@ fn public_docs_reference_only_builder_entry_points() {
     let private_modules = [
         "auth",
         "codec",
-        "grammar",
         "intermediary",
         "middleware",
         "pipeline",

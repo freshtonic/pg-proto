@@ -23,7 +23,7 @@ mod demux;
 #[allow(dead_code)]
 mod erased;
 #[allow(dead_code)]
-mod grammar;
+pub mod grammar;
 #[allow(dead_code)]
 mod integrations;
 #[allow(dead_code)]

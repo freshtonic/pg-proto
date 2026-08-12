@@ -464,6 +464,180 @@ impl fmt::Debug for TrustClientAuthentication {
     }
 }
 
+/// Username and password authentication for PostgreSQL server challenges.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticClientCredentials {
+    username: Bytes,
+    password: Bytes,
+}
+
+impl StaticClientCredentials {
+    /// Creates credentials reused by each connection attempt.
+    #[must_use]
+    pub fn new(username: impl Into<Bytes>, password: impl Into<Bytes>) -> Self {
+        Self {
+            username: username.into(),
+            password: password.into(),
+        }
+    }
+}
+
+/// Per-connection static credential exchange.
+pub struct StaticClientCredentialSession {
+    username: Bytes,
+    password: Bytes,
+    scram: Option<postgres_protocol::authentication::sasl::ScramSha256>,
+}
+
+/// Failure while answering a static credential challenge.
+#[derive(Debug)]
+pub enum StaticCredentialError {
+    /// The server requested an authentication mechanism this adapter does not support.
+    UnsupportedAuthentication,
+    /// The server sent a challenge out of sequence.
+    InvalidChallengeSequence,
+    /// A SCRAM message was invalid or failed verification.
+    Scram(io::Error),
+    /// The supplied password did not match.
+    AuthenticationFailed,
+}
+
+impl fmt::Display for StaticCredentialError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedAuthentication => {
+                formatter.write_str("unsupported authentication mechanism")
+            }
+            Self::InvalidChallengeSequence => {
+                formatter.write_str("authentication challenge is out of sequence")
+            }
+            Self::Scram(error) => error.fmt(formatter),
+            Self::AuthenticationFailed => formatter.write_str("authentication failed"),
+        }
+    }
+}
+
+impl std::error::Error for StaticCredentialError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Scram(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl ClientAuthentication for StaticClientCredentials {
+    type Evidence = ();
+    type Session = StaticClientCredentialSession;
+    type Error = StaticCredentialError;
+
+    async fn begin(&self, _: &ConnectTarget) -> Result<Self::Session, Self::Error> {
+        Ok(StaticClientCredentialSession {
+            username: self.username.clone(),
+            password: self.password.clone(),
+            scram: None,
+        })
+    }
+}
+
+impl ClientAuthenticationSession for StaticClientCredentialSession {
+    type Evidence = ();
+    type Error = StaticCredentialError;
+
+    async fn respond(
+        &mut self,
+        challenge: ClientAuthenticationChallenge,
+    ) -> Result<ClientAuthenticationResponse, Self::Error> {
+        use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
+        match challenge {
+            ClientAuthenticationChallenge::CleartextPassword => Ok(
+                ClientAuthenticationResponse::Password(self.password.clone()),
+            ),
+            ClientAuthenticationChallenge::Md5Password(salt) => {
+                Ok(ClientAuthenticationResponse::Password(Bytes::from(
+                    crate::credentials::md5_response(&self.username, &self.password, salt),
+                )))
+            }
+            ClientAuthenticationChallenge::Sasl(mechanisms)
+                if mechanisms
+                    .iter()
+                    .any(|mechanism| mechanism.as_ref() == b"SCRAM-SHA-256") =>
+            {
+                let scram = self.scram.insert(ScramSha256::new(
+                    &self.password,
+                    ChannelBinding::unsupported(),
+                ));
+                Ok(ClientAuthenticationResponse::SaslInitial {
+                    mechanism: Bytes::from_static(b"SCRAM-SHA-256"),
+                    response: Bytes::copy_from_slice(scram.message()),
+                })
+            }
+            ClientAuthenticationChallenge::Sasl(_) => {
+                Err(StaticCredentialError::UnsupportedAuthentication)
+            }
+            ClientAuthenticationChallenge::SaslContinue(message) => {
+                let scram = self
+                    .scram
+                    .as_mut()
+                    .ok_or(StaticCredentialError::InvalidChallengeSequence)?;
+                scram
+                    .update(&message)
+                    .map_err(StaticCredentialError::Scram)?;
+                Ok(ClientAuthenticationResponse::Sasl(Bytes::copy_from_slice(
+                    scram.message(),
+                )))
+            }
+            ClientAuthenticationChallenge::SaslFinal(message) => {
+                let scram = self
+                    .scram
+                    .as_mut()
+                    .ok_or(StaticCredentialError::InvalidChallengeSequence)?;
+                scram
+                    .finish(&message)
+                    .map_err(StaticCredentialError::Scram)?;
+                Ok(ClientAuthenticationResponse::Verified)
+            }
+            _ => Err(StaticCredentialError::UnsupportedAuthentication),
+        }
+    }
+
+    async fn authenticated(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod static_credential_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn answers_cleartext_and_md5_challenges() {
+        let credentials = StaticClientCredentials::new("alice", "secret");
+        let mut session = credentials
+            .begin(&ConnectTarget::new("database"))
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .respond(ClientAuthenticationChallenge::CleartextPassword)
+                .await
+                .unwrap(),
+            ClientAuthenticationResponse::Password(Bytes::from_static(b"secret"))
+        );
+
+        let salt = [1, 2, 3, 4];
+        assert_eq!(
+            session
+                .respond(ClientAuthenticationChallenge::Md5Password(salt))
+                .await
+                .unwrap(),
+            ClientAuthenticationResponse::Password(Bytes::from(crate::credentials::md5_response(
+                b"alice", b"secret", salt
+            )))
+        );
+    }
+}
+
 /// Application-defined destination supplied to the connector.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ConnectTarget {

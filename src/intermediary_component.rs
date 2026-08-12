@@ -113,6 +113,91 @@ pub trait IntermediaryCancellationRegistry {
     fn detach(&self, client: &crate::demux::CancelKey) -> Option<CancellationRoute>;
 }
 
+/// Thread-safe in-memory cancellation routes which preserve upstream keys.
+///
+/// This is suitable for one-upstream-per-downstream intermediaries which do
+/// not need pool-level cancellation key translation.
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryCancellationRegistry {
+    routes: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<crate::demux::CancelKey, CancellationRoute>>,
+    >,
+}
+
+/// Failure to register an in-memory cancellation route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InMemoryCancellationRegistryError {
+    /// Another live route already uses the database-issued key.
+    DuplicateKey,
+    /// A previous registry user panicked while holding the lock.
+    Poisoned,
+}
+
+impl fmt::Display for InMemoryCancellationRegistryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::DuplicateKey => "duplicate PostgreSQL cancellation key",
+            Self::Poisoned => "cancellation registry lock poisoned",
+        })
+    }
+}
+
+impl std::error::Error for InMemoryCancellationRegistryError {}
+
+impl IntermediaryCancellationRegistry for InMemoryCancellationRegistry {
+    type Error = InMemoryCancellationRegistryError;
+
+    fn register(&self, route: CancellationRoute) -> Result<crate::demux::CancelKey, Self::Error> {
+        let client_key = route.upstream_key().clone();
+        let mut routes = self
+            .routes
+            .lock()
+            .map_err(|_| InMemoryCancellationRegistryError::Poisoned)?;
+        if routes.contains_key(&client_key) {
+            return Err(InMemoryCancellationRegistryError::DuplicateKey);
+        }
+        routes.insert(client_key.clone(), route);
+        drop(routes);
+        Ok(client_key)
+    }
+
+    fn resolve(&self, client: &crate::demux::CancelKey) -> Option<CancellationRoute> {
+        self.routes.lock().ok()?.get(client).cloned()
+    }
+
+    fn detach(&self, client: &crate::demux::CancelKey) -> Option<CancellationRoute> {
+        self.routes.lock().ok()?.remove(client)
+    }
+}
+
+#[cfg(test)]
+mod in_memory_cancellation_registry_tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn key(process_id: u32) -> crate::demux::CancelKey {
+        crate::demux::CancelKey {
+            process_id,
+            secret_key: Bytes::from_static(b"secret"),
+        }
+    }
+
+    #[test]
+    fn preserves_resolves_and_detaches_upstream_keys() {
+        let registry = InMemoryCancellationRegistry::default();
+        let upstream = key(42);
+        let route = CancellationRoute::new(ConnectTarget::new("database"), upstream.clone());
+        assert_eq!(registry.register(route.clone()), Ok(upstream.clone()));
+        assert_eq!(registry.resolve(&upstream), Some(route.clone()));
+        assert_eq!(
+            registry.register(route.clone()),
+            Err(InMemoryCancellationRegistryError::DuplicateKey)
+        );
+        assert_eq!(registry.detach(&upstream), Some(route));
+        assert_eq!(registry.resolve(&upstream), None);
+    }
+}
+
 /// Marker registry used by explicit cancellation rejection.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RejectCancellation;

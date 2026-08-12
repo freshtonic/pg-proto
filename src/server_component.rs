@@ -21,6 +21,29 @@ use crate::{
     transport::Buffered,
 };
 
+fn tls_required_diagnostic() -> BackendMessage {
+    BackendMessage::ErrorResponse(crate::codec::DiagnosticResponse {
+        fields: vec![
+            crate::codec::DiagnosticField {
+                code: b'S',
+                value: Bytes::from_static(b"FATAL"),
+            },
+            crate::codec::DiagnosticField {
+                code: b'V',
+                value: Bytes::from_static(b"FATAL"),
+            },
+            crate::codec::DiagnosticField {
+                code: b'C',
+                value: Bytes::from_static(b"08001"),
+            },
+            crate::codec::DiagnosticField {
+                code: b'M',
+                value: Bytes::from_static(b"Transport Layer Security (TLS) connection is required"),
+            },
+        ],
+    })
+}
+
 /// Async startup routing hook used by the intermediary facade.
 #[allow(clippy::type_complexity)]
 pub(crate) trait StartupResolver<State, Peer, Identity> {
@@ -1332,10 +1355,14 @@ where
                     ));
                 }
                 PreStartupOffer::Startup {
-                    conn: startup_conn,
+                    conn: mut startup_conn,
                     message,
                 } => {
                     if self.tls.required() {
+                        if let Ok(frame) = tls_required_diagnostic().to_frame() {
+                            let _ = startup_conn.push_frame(frame);
+                            let _ = startup_conn.flush().await;
+                        }
                         let _ = startup_conn.into_transport();
                         return Err(RoutedAcceptError::Accept(AcceptError::TlsRequired));
                     }

@@ -804,13 +804,20 @@ fn first_local_rejection_discards_through_sync() {
             .accept_frontend(parse(b"bad"), FrontendHandling::Local)
             .unwrap(),
     );
-    pipeline
-        .accept_frontend(bind(), FrontendHandling::Forward)
-        .unwrap();
+    assert!(matches!(
+        pipeline.try_emit_local(rejected, error()).unwrap(),
+        BackendAction::Emit(BackendMessage::ErrorResponse(_))
+    ));
+    assert!(matches!(
+        pipeline
+            .accept_frontend(bind(), FrontendHandling::Forward)
+            .unwrap()
+            .into_action(),
+        FrontendAction::Discard { .. }
+    ));
     pipeline
         .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
         .unwrap();
-    pipeline.try_emit_local(rejected, error()).unwrap();
     assert_eq!(pipeline.state(), PipelineState::Ready);
     assert_eq!(
         pipeline.len(),

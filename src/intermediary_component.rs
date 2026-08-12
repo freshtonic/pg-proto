@@ -1411,11 +1411,13 @@ where
                 return Err(ForwardError::Frontend(error));
             }
         };
-        let FrontendAction::Forward { message, .. } = admission.into_action() else {
-            unreachable!()
-        };
-        self.upstream.send_wire_raw(message.clone()).await?;
-        Ok(FrontendForwarding::Forwarded(message))
+        match admission.into_action() {
+            FrontendAction::Forward { message, .. } => {
+                self.upstream.send_wire_raw(message.clone()).await?;
+                Ok(FrontendForwarding::Forwarded(message))
+            }
+            FrontendAction::Discard { .. } => Ok(FrontendForwarding::Suppressed(message)),
+        }
     }
 
     /// Receives one legal PostgreSQL response and forwards it downstream in

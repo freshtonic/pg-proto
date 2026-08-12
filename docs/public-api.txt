@@ -5,7 +5,8 @@ pub use client_component::{
     ClientTlsConfig, ClientTlsConfiguration, ClientTlsError, ClientTlsPolicy, ClientTlsProvider,
     ClientTlsStatus, ClientTransport, ConnectError, ConnectTarget, ConnectionChanged,
     ConnectionClean, IdentityHandler, ProtocolLimitError, ProtocolLimits, QueryError,
-    ReloadableClientTls, StartupParameterError, StartupParameters, TrustClientAuthentication,
+    ReloadableClientTls, StartupParameterError, StartupParameters, StaticClientCredentialSession,
+    StaticClientCredentials, StaticCredentialError, TrustClientAuthentication,
 };
 pub use codec::{
     Authentication, BackendMessage, Bind, Close, CopyResponse, DataRow, Describe, DescribeTarget,
@@ -20,11 +21,11 @@ pub use intermediary_component::{
     BackendHoldLimits, BackendMiddlewareOutput, CancellationPolicy, CancellationRoute,
     EstablishmentFailurePolicy, ForwardError, ForwardedMessage, FrontendForwarding,
     FrontendMiddlewareOutput, HeldBackendMessages, IdentityIntermediaryMiddleware,
-    InitialServerContext, Intermediary, IntermediaryAccept, IntermediaryAcceptError,
-    IntermediaryBuildError, IntermediaryBuilder, IntermediaryCancellationRegistry,
-    IntermediaryConnection, IntermediaryContexts, IntermediaryMiddleware,
-    IntermediaryMiddlewareFactory, RejectCancellation, StartupResolutionError,
-    StartupRouteResolver,
+    InMemoryCancellationRegistry, InMemoryCancellationRegistryError, InitialServerContext,
+    Intermediary, IntermediaryAccept, IntermediaryAcceptError, IntermediaryBuildError,
+    IntermediaryBuilder, IntermediaryCancellationRegistry, IntermediaryConnection,
+    IntermediaryContexts, IntermediaryMiddleware, IntermediaryMiddlewareFactory,
+    RejectCancellation, StartupResolutionError, StartupRouteResolver,
 };
 pub use pipeline::{
     BackendProjectionError, BoundedPipeline, FrontendProjectionError, NoPipeline, OperationId,
@@ -41,7 +42,8 @@ pub use server_component::{
     ServerAuthentication, ServerAuthenticationAction, ServerAuthenticationProvider,
     ServerAuthenticationRequest, ServerAuthenticationResponse, ServerBuilder, ServerCancellation,
     ServerConnection, ServerConnectionContext, ServerIdentity, ServerIdentityProvider,
-    ServerProtocolLimits, ServerTlsConfiguration, ServerTlsPolicy, TrustIdentity,
+    ServerProtocolLimits, ServerTlsConfiguration, ServerTlsPolicy,
+    StaticMd5ServerCredentialSession, StaticMd5ServerCredentials, TrustIdentity,
     TrustServerAuthentication,
 };
 pub use startup::{ProtocolVersion, StartupMessage};

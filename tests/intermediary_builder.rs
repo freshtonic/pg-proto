@@ -908,6 +908,7 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .unwrap();
 
         for message in [
+            FrontendMessage::Query(Bytes::from_static(b"BEFORE")),
             FrontendMessage::Parse(Parse {
                 statement: Bytes::from_static(b"s1"),
                 query: Bytes::from_static(b"LOCAL ERROR"),
@@ -931,8 +932,9 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
                 .await
                 .unwrap();
         }
-        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'E');
-        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'Z');
+        for expected in *b"CZEZ" {
+            assert_eq!(read_tagged(&mut downstream_peer).await.0, expected);
+        }
 
         downstream_peer
             .write_all(&frontend_bytes(&FrontendMessage::Query(
@@ -953,6 +955,20 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .await
             .unwrap();
 
+        let (tag, body) = read_tagged(&mut upstream_peer).await;
+        assert_eq!((tag, body.as_slice()), (b'Q', b"BEFORE\0".as_slice()));
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::CommandComplete(
+                Bytes::from_static(b"BEFORE"),
+            )))
+            .await
+            .unwrap();
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
+                pg_proto::TransactionStatus::Idle,
+            )))
+            .await
+            .unwrap();
         assert_eq!(read_tagged(&mut upstream_peer).await.0, b'S');
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
@@ -983,6 +999,10 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .into_session();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
+        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "BEFORE"
+    ));
+    assert!(matches!(
+        session.forward_frontend().await.unwrap(),
         pg_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Parse(_))
     ));
     for _ in 0..2 {
@@ -995,6 +1015,8 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
         session.forward_frontend().await.unwrap(),
         pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Sync)
     ));
+    session.forward_backend().await.unwrap();
+    session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),

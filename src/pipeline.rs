@@ -1058,7 +1058,40 @@ impl<P: PipelinePolicy> Pipeline<P> {
         message: BackendMessage,
     ) -> Result<BackendAction, BackendProjectionError> {
         let prepared = self.prepare_response(local_id, &message);
+        if prepared == PreparedResponse::Deferred
+            && matches!(message, BackendMessage::ErrorResponse(_))
+            && let Some(id) = local_id
+        {
+            self.project_deferred_local_error(id);
+        }
         self.commit_response(prepared, message)
+    }
+
+    fn project_deferred_local_error(&mut self, id: OperationId) {
+        let Some(rejected) = self
+            .operations
+            .iter()
+            .position(|operation| operation.id == id)
+        else {
+            return;
+        };
+        if self.operations[rejected].origin != Origin::Local
+            || !is_extended_kind(self.operations[rejected].kind)
+        {
+            return;
+        }
+
+        let mut sync_accepted = false;
+        for operation in self.operations.iter_mut().skip(rejected + 1) {
+            if operation.kind == OperationKind::Sync {
+                sync_accepted = true;
+                break;
+            }
+            operation.discarded = true;
+        }
+        if !sync_accepted {
+            self.request_state = RequestState::ExtendedError;
+        }
     }
 
     fn commit_response(

@@ -776,13 +776,20 @@ fn local_rejection_waits_behind_forwarded_parse() {
             .accept_frontend(parse(b"b"), FrontendHandling::Local)
             .unwrap(),
     );
-    pipeline
-        .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
-        .unwrap();
     assert!(matches!(
         pipeline.try_emit_local(rejected, error()).unwrap(),
         BackendAction::Deferred(_)
     ));
+    assert!(matches!(
+        pipeline
+            .accept_frontend(describe(), FrontendHandling::Forward)
+            .unwrap()
+            .into_action(),
+        FrontendAction::Discard { .. }
+    ));
+    pipeline
+        .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
+        .unwrap();
     pipeline
         .accept_backend(BackendMessage::ParseComplete)
         .unwrap();

@@ -26,8 +26,11 @@ fuzz_target!(|data: &[u8]| {
             .authentication(TrustClientAuthentication)
             .build()
             .unwrap();
-        let _ = client
+        if let Ok(connection) = client
             .connect(ConnectTarget::new("fuzz"), StartupParameters::new("fuzz"), ())
-            .await;
+            .await
+        {
+            let _ = connection.into_parts();
+        }
     });
 });

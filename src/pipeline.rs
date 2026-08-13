@@ -117,7 +117,8 @@ pub(crate) enum FrontendAction {
         /// Original, unretained frontend message.
         message: FrontendMessage,
     },
-    /// The operation is locally handled and the message can be discarded.
+    /// The operation is locally handled or belongs to a failed extended-query
+    /// cycle and the message must not be sent upstream.
     Discard {
         /// Accepted operation identity.
         id: OperationId,
@@ -736,17 +737,20 @@ impl<P: PipelinePolicy> Pipeline<P> {
         {
             head.response_state = transition.target;
         }
+        let discarded = matches!(self.request_state, RequestState::ExtendedError)
+            && kind != OperationKind::Sync;
         self.operations.push_back(Operation {
             id,
             kind,
             origin,
-            discarded: matches!(self.request_state, RequestState::ExtendedError)
-                && kind != OperationKind::Sync,
+            discarded,
             response_state: initial_response_state(kind),
         });
-        let action = match handling {
-            FrontendHandling::Forward => FrontendAction::Forward { id, message },
-            FrontendHandling::Local => FrontendAction::Discard { id },
+        let action = match (handling, discarded) {
+            (FrontendHandling::Forward, false) => FrontendAction::Forward { id, message },
+            (FrontendHandling::Forward | FrontendHandling::Local, _) => {
+                FrontendAction::Discard { id }
+            }
         };
         let admission = if waiting {
             FrontendAdmission::Waiting(action)

@@ -2158,6 +2158,16 @@ where
             cancellation_registry: self.cancellation_registry.clone(),
             client_cancel_key,
         };
+        // These messages were already inspected by upstream establishment
+        // middleware. Relay them as part of the startup transcript rather than
+        // attributing them to the first operational query.
+        while let Some(message) = connection.upstream.pop_parameter_status() {
+            if let Err(error) = connection.downstream.send_wire_raw(message).await {
+                let _ = connection.detach_cancellation();
+                let _ = connection.teardown();
+                return Err(IntermediaryAcceptError::ServerOutput(error));
+            }
+        }
         if let Some(message) = backend_key_message {
             let expected = message.clone();
             let message = connection

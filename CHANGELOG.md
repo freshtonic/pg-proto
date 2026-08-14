@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.10.7](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.6...pg-proto-v0.10.7) - 2026-08-14
+
+### Fixed
+
+- forward startup parameter statuses
+- keep startup statuses outside query middleware
+
 ## [0.10.6](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.5...pg-proto-v0.10.6) - 2026-08-14
 
 ### Added

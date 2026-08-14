@@ -11,7 +11,7 @@ use pg_proto::{
 };
 
 struct Route;
-impl<Peer> StartupRouteResolver<Peer> for Route {
+impl<Peer: Sync> StartupRouteResolver<Peer> for Route {
     type Error = Infallible;
     async fn resolve(
         &self,

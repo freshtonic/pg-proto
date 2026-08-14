@@ -298,7 +298,9 @@ jobs:
 
       - name: Install nightly Rust
         if: needs.reuse-pr-ci.outputs.tested != 'true'
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-12
 
       - name: Install cargo-fuzz
         if: needs.reuse-pr-ci.outputs.tested != 'true'
@@ -306,4 +308,4 @@ jobs:
 
       - name: Run fuzz target
         if: needs.reuse-pr-ci.outputs.tested != 'true'
-        run: cargo +nightly fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60
+        run: cargo +nightly-2026-08-12 fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60

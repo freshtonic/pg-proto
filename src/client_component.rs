@@ -140,14 +140,17 @@ impl fmt::Debug for ClientTlsConfig {
 
 /// Application-owned source of reloadable client TLS material.
 ///
-/// Resolution futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Resolution futures are [`Send`] so connection establishment can run on a
+/// multithreaded executor.
 pub trait ClientTlsProvider {
     /// Provider resolution failure.
     type Error;
 
     /// Resolves material for one connection attempt.
-    async fn resolve(&self, target: &ConnectTarget) -> Result<ClientTlsConfig, Self::Error>;
+    fn resolve(
+        &self,
+        target: &ConnectTarget,
+    ) -> impl Future<Output = Result<ClientTlsConfig, Self::Error>> + Send;
 }
 
 /// Failure while resolving or establishing client TLS.
@@ -357,8 +360,8 @@ pub enum ClientAuthenticationResponse {
 
 /// Factory for asynchronous, fallible per-connection authentication sessions.
 ///
-/// Authentication futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Authentication futures are [`Send`] so connection establishment can run
+/// on a multithreaded executor.
 pub trait ClientAuthentication {
     /// Typed identity evidence produced after server confirmation.
     type Evidence;
@@ -368,13 +371,16 @@ pub trait ClientAuthentication {
     type Error;
 
     /// Creates fresh authentication state using the selected route.
-    async fn begin(&self, target: &ConnectTarget) -> Result<Self::Session, Self::Error>;
+    fn begin(
+        &self,
+        target: &ConnectTarget,
+    ) -> impl Future<Output = Result<Self::Session, Self::Error>> + Send;
 }
 
 /// Mutable authentication policy state owned by one connection attempt.
 ///
-/// Authentication futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Authentication futures are [`Send`] so connection establishment can run
+/// on a multithreaded executor.
 pub trait ClientAuthenticationSession {
     /// Typed identity evidence produced after server confirmation.
     type Evidence;
@@ -382,13 +388,13 @@ pub trait ClientAuthenticationSession {
     type Error;
 
     /// Answers one server authentication challenge.
-    async fn respond(
+    fn respond(
         &mut self,
         challenge: ClientAuthenticationChallenge,
-    ) -> Result<ClientAuthenticationResponse, Self::Error>;
+    ) -> impl Future<Output = Result<ClientAuthenticationResponse, Self::Error>> + Send;
 
     /// Produces identity evidence after `AuthenticationOk` was received.
-    async fn authenticated(self) -> Result<Self::Evidence, Self::Error>;
+    fn authenticated(self) -> impl Future<Output = Result<Self::Evidence, Self::Error>> + Send;
 }
 
 /// Failure while running an application authentication policy.

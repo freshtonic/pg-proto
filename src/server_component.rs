@@ -60,7 +60,7 @@ pub(crate) trait StartupResolver<State, Peer, Identity> {
         startup: &'a StartupMessage,
         context: &'a ServerConnectionContext<Peer, Identity>,
         state: &'a mut State,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Route, Self::Error>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Route, Self::Error>> + Send + 'a>>;
 }
 
 /// Failure from either server establishment or application startup routing.
@@ -89,7 +89,7 @@ impl<State, Peer, Identity> StartupResolver<State, Peer, Identity> for NoStartup
         _startup: &'a StartupMessage,
         _context: &'a ServerConnectionContext<Peer, Identity>,
         _state: &'a mut State,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -238,8 +238,8 @@ pub enum ServerAuthenticationResponse {
 
 /// Per-connection asynchronous authentication policy.
 ///
-/// Authentication futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Authentication futures are [`Send`] so connection establishment can run
+/// on a multithreaded executor.
 pub trait ServerAuthentication<Peer> {
     /// Typed evidence produced by successful authentication.
     type Identity;
@@ -247,17 +247,17 @@ pub trait ServerAuthentication<Peer> {
     type Error;
 
     /// Starts the application-driven authentication conversation.
-    async fn start(
+    fn start(
         &mut self,
         request: ServerAuthenticationRequest<'_, Peer>,
-    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error>;
+    ) -> impl Future<Output = Result<ServerAuthenticationAction<Self::Identity>, Self::Error>> + Send;
 
     /// Advances the conversation after one protocol response.
-    async fn respond(
+    fn respond(
         &mut self,
         request: ServerAuthenticationRequest<'_, Peer>,
         response: ServerAuthenticationResponse,
-    ) -> Result<ServerAuthenticationAction<Self::Identity>, Self::Error>;
+    ) -> impl Future<Output = Result<ServerAuthenticationAction<Self::Identity>, Self::Error>> + Send;
 }
 
 /// Factory creating one isolated authentication policy per connection.
@@ -309,7 +309,7 @@ impl ServerAuthenticationProvider for StaticMd5ServerCredentials {
     }
 }
 
-impl<Peer> ServerAuthentication<Peer> for StaticMd5ServerCredentialSession {
+impl<Peer: Sync> ServerAuthentication<Peer> for StaticMd5ServerCredentialSession {
     type Identity = ();
     type Error = crate::StaticCredentialError;
 
@@ -560,7 +560,7 @@ impl ServerAuthenticationProvider for TrustServerAuthentication {
     }
 }
 
-impl<Peer> ServerAuthentication<Peer> for TrustServerAuthentication {
+impl<Peer: Sync> ServerAuthentication<Peer> for TrustServerAuthentication {
     type Identity = TrustIdentity;
     type Error = std::convert::Infallible;
 

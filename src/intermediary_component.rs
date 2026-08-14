@@ -267,33 +267,33 @@ impl<'a, Peer> InitialServerContext<'a, Peer> {
 
 /// Required asynchronous startup routing policy.
 ///
-/// Resolution futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Resolution futures are [`Send`] so intermediary sessions can run on a
+/// multithreaded executor.
 pub trait StartupRouteResolver<Peer> {
     /// Application resolver failure.
     type Error;
 
     /// Selects a destination before client-facing authentication begins.
-    async fn resolve(
+    fn resolve(
         &self,
         startup: StartupParameters,
         context: InitialServerContext<'_, Peer>,
-    ) -> Result<ConnectTarget, Self::Error>;
+    ) -> impl Future<Output = Result<ConnectTarget, Self::Error>> + Send;
 }
 
 /// Optional policy that validates or refines a destination after authentication.
 ///
-/// Routing futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Routing futures are [`Send`] so intermediary sessions can run on a
+/// multithreaded executor.
 pub trait AuthenticatedRoutePolicy<Peer, Identity> {
     /// Application policy failure.
     type Error;
     /// Validates or refines the startup-selected target using typed identity evidence.
-    async fn route(
+    fn route(
         &self,
         target: ConnectTarget,
         context: AuthenticatedRouteContext<'_, Peer, Identity>,
-    ) -> Result<ConnectTarget, Self::Error>;
+    ) -> impl Future<Output = Result<ConnectTarget, Self::Error>> + Send;
 }
 
 /// Borrowed facts passed to authenticated route policy.
@@ -321,7 +321,9 @@ impl<Peer, Identity> AuthenticatedRouteContext<'_, Peer, Identity> {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AllowAuthenticatedRoute;
 
-impl<Peer, Identity> AuthenticatedRoutePolicy<Peer, Identity> for AllowAuthenticatedRoute {
+impl<Peer: Sync, Identity: Sync> AuthenticatedRoutePolicy<Peer, Identity>
+    for AllowAuthenticatedRoute
+{
     type Error = std::convert::Infallible;
     async fn route(
         &self,
@@ -488,22 +490,22 @@ impl<'a> AttributedBackendMessages<'a> {
 
 /// Asynchronous, fallible middleware at the forwarding boundary.
 ///
-/// Middleware futures are not required to be [`Send`].
-#[allow(async_fn_in_trait)]
+/// Middleware futures are [`Send`] so intermediary sessions can run on a
+/// multithreaded executor.
 pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     /// Application-defined interception failure.
     type Error;
 
     /// Intercepts a client-originated message after server-role middleware and
     /// before client-role middleware.
-    async fn frontend(
+    fn frontend(
         &mut self,
         _server: &ServerContext,
         _client: &ClientContext,
         _state: &mut State,
         message: crate::codec::FrontendMessage,
-    ) -> Result<FrontendMiddlewareOutput, Self::Error> {
-        Ok(FrontendMiddlewareOutput::Forward(message))
+    ) -> impl Future<Output = Result<FrontendMiddlewareOutput, Self::Error>> + Send {
+        async move { Ok(FrontendMiddlewareOutput::Forward(message)) }
     }
 
     /// Intercepts a client-originated message with the identity reserved for
@@ -512,27 +514,27 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     /// The default preserves existing middleware by delegating to
     /// [`Self::frontend`]. Implementations which attach application state to an
     /// operation should remove that state themselves when they suppress it.
-    async fn frontend_operation(
+    fn frontend_operation(
         &mut self,
         server: &ServerContext,
         client: &ClientContext,
         state: &mut State,
         _operation: OperationId,
         message: crate::codec::FrontendMessage,
-    ) -> Result<FrontendMiddlewareOutput, Self::Error> {
-        self.frontend(server, client, state, message).await
+    ) -> impl Future<Output = Result<FrontendMiddlewareOutput, Self::Error>> + Send {
+        self.frontend(server, client, state, message)
     }
 
     /// Intercepts a PostgreSQL-originated message after client-role middleware
     /// and before server-role middleware.
-    async fn backend(
+    fn backend(
         &mut self,
         _server: &ServerContext,
         _client: &ClientContext,
         _state: &mut State,
         message: crate::codec::BackendMessage,
-    ) -> Result<BackendMiddlewareOutput, Self::Error> {
-        Ok(BackendMiddlewareOutput::Forward(message))
+    ) -> impl Future<Output = Result<BackendMiddlewareOutput, Self::Error>> + Send {
+        async move { Ok(BackendMiddlewareOutput::Forward(message)) }
     }
 
     /// Intercepts a PostgreSQL-originated message with its frontend operation
@@ -540,44 +542,42 @@ pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     ///
     /// Asynchronous backend messages have no operation identity. The default
     /// preserves existing middleware by delegating to [`Self::backend`].
-    async fn backend_operation(
+    fn backend_operation(
         &mut self,
         server: &ServerContext,
         client: &ClientContext,
         state: &mut State,
         _operation: Option<OperationId>,
         message: crate::codec::BackendMessage,
-    ) -> Result<BackendMiddlewareOutput, Self::Error> {
-        self.backend(server, client, state, message).await
+    ) -> impl Future<Output = Result<BackendMiddlewareOutput, Self::Error>> + Send {
+        self.backend(server, client, state, message)
     }
 
     /// Applies policy to an ordered borrowed span of retained backend messages.
-    async fn flush_backend(
+    fn flush_backend(
         &mut self,
         _server: &ServerContext,
         _client: &ClientContext,
         _state: &mut State,
         held: HeldBackendMessages<'_>,
         _reason: BackendFlushReason,
-    ) -> Result<BackendBatchOutput, Self::Error> {
-        Ok(BackendBatchOutput::ReplaceOneToOne(
-            held.iter().cloned().collect(),
-        ))
+    ) -> impl Future<Output = Result<BackendBatchOutput, Self::Error>> + Send {
+        let messages = held.iter().cloned().collect();
+        async move { Ok(BackendBatchOutput::ReplaceOneToOne(messages)) }
     }
 
     /// Applies policy to retained backend messages with operation attribution.
     /// The default preserves existing middleware by delegating to
     /// [`Self::flush_backend`].
-    async fn flush_backend_operations(
+    fn flush_backend_operations(
         &mut self,
         server: &ServerContext,
         client: &ClientContext,
         state: &mut State,
         held: AttributedBackendMessages<'_>,
         reason: BackendFlushReason,
-    ) -> Result<BackendBatchOutput, Self::Error> {
+    ) -> impl Future<Output = Result<BackendBatchOutput, Self::Error>> + Send {
         self.flush_backend(server, client, state, held.messages(), reason)
-            .await
     }
 }
 
@@ -918,7 +918,8 @@ impl<Resolver, State, Peer, Identity>
     crate::server_component::StartupResolver<State, Peer, Identity>
     for StartupResolverAdapter<'_, Resolver>
 where
-    Resolver: StartupRouteResolver<Peer>,
+    Resolver: StartupRouteResolver<Peer> + Sync,
+    Peer: Sync,
 {
     type Route = ConnectTarget;
     type Error = StartupResolutionError<Resolver::Error>;
@@ -932,7 +933,7 @@ where
         startup: &'a crate::startup::StartupMessage,
         context: &'a crate::ServerConnectionContext<Peer, Identity>,
         _state: &'a mut State,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Route, Self::Error>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Route, Self::Error>> + Send + 'a>> {
         let parameters = StartupParameters::from_wire(startup);
         let initial = context
             .tls_if_known()
@@ -1978,7 +1979,8 @@ where
                     <SA::Authentication as crate::ServerAuthentication<Peer>>::Identity,
                 >,
             >,
-        Resolver: StartupRouteResolver<Peer>,
+        Resolver: StartupRouteResolver<Peer> + Sync,
+        Peer: Sync,
         Connector: Fn(&ConnectTarget) -> CW,
         CW: Future<Output = Result<UT, CE>>,
         <CM as crate::MiddlewareFactory<crate::ClientInitialContext>>::Handler:

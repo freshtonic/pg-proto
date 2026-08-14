@@ -6,6 +6,10 @@ use std::{
     convert::Infallible,
     fmt,
     rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use bytes::Bytes;
@@ -53,7 +57,7 @@ impl IntermediaryCancellationRegistry for Registry {
 }
 
 #[derive(Clone)]
-struct Resolver(Rc<RefCell<usize>>);
+struct Resolver(Arc<AtomicUsize>);
 impl StartupRouteResolver<&'static str> for Resolver {
     type Error = Infallible;
     async fn resolve(
@@ -61,7 +65,7 @@ impl StartupRouteResolver<&'static str> for Resolver {
         _: StartupParameters,
         _: InitialServerContext<'_, &'static str>,
     ) -> Result<ConnectTarget, Self::Error> {
-        *self.0.borrow_mut() += 1;
+        self.0.fetch_add(1, Ordering::Relaxed);
         Ok(ConnectTarget::new("db").with_metadata("tenant", "a"))
     }
 }
@@ -146,7 +150,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     let (upstream_io, mut upstream) = tokio::io::duplex(4096);
     let (cancel_io, mut cancel_upstream) = tokio::io::duplex(4096);
     let transports = Rc::new(RefCell::new(VecDeque::from([upstream_io, cancel_io])));
-    let resolver_calls = Rc::new(RefCell::new(0));
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
     let observed = Rc::new(RefCell::new(Vec::new()));
     let registry = Registry(Rc::new(RefCell::new(HashMap::new())));
 
@@ -234,7 +238,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     let proxy_key = downstream_task.await.unwrap();
     upstream_task.await.unwrap();
     assert_eq!(session.cancellation_key(), Some(&proxy_key));
-    assert_eq!(*resolver_calls.borrow(), 1);
+    assert_eq!(resolver_calls.load(Ordering::Relaxed), 1);
     assert_eq!(
         registry
             .resolve(&proxy_key)
@@ -263,7 +267,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     assert_eq!(&forwarded[8..12], &7_u32.to_be_bytes());
     assert_eq!(&forwarded[12..], b"upstream");
     assert_eq!(
-        *resolver_calls.borrow(),
+        resolver_calls.load(Ordering::Relaxed),
         1,
         "cancellation bypasses startup routing"
     );
@@ -287,7 +291,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
         error,
         pg_proto::IntermediaryAcceptError::CancellationRejected
     ));
-    assert_eq!(*resolver_calls.borrow(), 1);
+    assert_eq!(resolver_calls.load(Ordering::Relaxed), 1);
 }
 
 #[test]

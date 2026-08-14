@@ -1297,6 +1297,21 @@ impl<Transport, State, Cleanliness, Evidence, Handler>
 
 impl<Transport, Cleanliness, Evidence, Handler>
     ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>
+where
+    Transport: AsyncRead + Unpin,
+{
+    pub(crate) fn pop_parameter_status(&mut self) -> Option<crate::codec::BackendMessage> {
+        self.connection.pop_parameter_status().map(|status| {
+            crate::codec::BackendMessage::ParameterStatus {
+                name: status.name,
+                value: status.value,
+            }
+        })
+    }
+}
+
+impl<Transport, Cleanliness, Evidence, Handler>
+    ClientConnectionCore<Transport, Cleanliness, Evidence, Handler>
 {
     pub(crate) const fn context(&self) -> &ClientConnectionContext<Evidence> {
         &self.context

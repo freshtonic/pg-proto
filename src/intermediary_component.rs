@@ -2158,6 +2158,56 @@ where
             cancellation_registry: self.cancellation_registry.clone(),
             client_cancel_key,
         };
+        while let Some(message) = connection.upstream.pop_parameter_status() {
+            let message = connection
+                .boundary
+                .backend(
+                    connection.downstream.context(),
+                    connection.upstream.context(),
+                    &mut connection.state,
+                    message,
+                )
+                .await;
+            let message = match message {
+                Ok(BackendMiddlewareOutput::Forward(message)) => message,
+                Ok(
+                    BackendMiddlewareOutput::Suppress(_)
+                    | BackendMiddlewareOutput::Expand(_)
+                    | BackendMiddlewareOutput::Hold,
+                ) => {
+                    let _ = connection.detach_cancellation();
+                    let _ = connection.teardown();
+                    return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "middleware suppressed or expanded startup parameter status",
+                    )));
+                }
+                Err(error) => {
+                    let _ = connection.detach_cancellation();
+                    let _ = connection.teardown();
+                    return Err(IntermediaryAcceptError::Middleware(error));
+                }
+            };
+            let message = connection
+                .downstream
+                .intercept_backend(&mut connection.state, message);
+            if !matches!(
+                message,
+                crate::codec::BackendMessage::ParameterStatus { .. }
+            ) {
+                let _ = connection.detach_cancellation();
+                let _ = connection.teardown();
+                return Err(IntermediaryAcceptError::ServerOutput(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "middleware rejected startup parameter status",
+                )));
+            }
+            if let Err(error) = connection.downstream.send_wire_raw(message).await {
+                let _ = connection.detach_cancellation();
+                let _ = connection.teardown();
+                return Err(IntermediaryAcceptError::ServerOutput(error));
+            }
+        }
         if let Some(message) = backend_key_message {
             let expected = message.clone();
             let message = connection

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.10.6](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.5...pg-proto-v0.10.6) - 2026-08-14
+
+### Added
+
+- make intermediary futures sendable
+
+### Changed
+
+- pin fuzz jobs to dated nightly
+
+### Documentation
+
+- require sync peer in intermediary example
+
 ## [0.10.5](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.4...pg-proto-v0.10.5) - 2026-08-13
 
 ### Fixed

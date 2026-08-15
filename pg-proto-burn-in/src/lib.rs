@@ -795,6 +795,8 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 37] = [
     "backend.SyncResponse.Ready",
 ];
 
+const OPTIONAL_SMOKE_COVERAGE: [&str; 1] = ["backend.DescribeResponse.Error"];
+
 fn coverage_report(observed: &[String]) -> Result<CoverageReport, Box<dyn Error>> {
     let stages: BTreeSet<_> = observed
         .iter()
@@ -807,7 +809,12 @@ fn coverage_report(observed: &[String]) -> Result<CoverageReport, Box<dyn Error>
         .filter(|id| !id.starts_with("smoke."))
         .collect();
     let required: BTreeSet<_> = REQUIRED_SMOKE_COVERAGE.into_iter().collect();
-    let unknown: Vec<_> = observed.difference(&required).copied().collect();
+    let known: BTreeSet<_> = required
+        .iter()
+        .copied()
+        .chain(OPTIONAL_SMOKE_COVERAGE)
+        .collect();
+    let unknown: Vec<_> = observed.difference(&known).copied().collect();
     if !unknown.is_empty() {
         return Err(format!("unknown required coverage IDs: {}", unknown.join(", ")).into());
     }
@@ -842,6 +849,9 @@ async fn spawn_authenticated_child(
 ) -> Result<Child, Box<dyn Error>> {
     let mut command = Command::new(executable);
     command.args([role, "--address", &address.to_string()]);
+    if role == "driver-child" {
+        command.arg("--basic");
+    }
     if let Some(password) = password {
         command.args(["--password", password]);
     }
@@ -1344,6 +1354,24 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .get(0);
     if value != 42 {
         return Err(format!("expected 42, got {value}").into());
+    }
+    if arguments.iter().any(|argument| argument == "--basic") {
+        drop(client);
+        timeout(CHILD_TIMEOUT, connection_task).await???;
+        return write_event(&ChildEvent::Completed {
+            version: 1,
+            value: Some(value),
+            coverage: Vec::new(),
+            fixtures: None,
+            data_scenarios: Vec::new(),
+            query_lifecycle: Vec::new(),
+            error_scenarios: Vec::new(),
+            copy_scenarios: Vec::new(),
+            async_traffic: None,
+            cancellation: None,
+            cancellation_registry: None,
+        })
+        .await;
     }
     let mut async_traffic = AsyncTrafficResult::default();
     if let Ok(notifier_address) = option(arguments, "--notify-address") {
@@ -2444,6 +2472,19 @@ mod tests {
         observed.push("backend.Renamed.WithoutMigration".into());
         let error = coverage_report(&observed).expect_err("unknown ID must fail");
         assert!(error.to_string().contains("unknown required coverage IDs"));
+    }
+
+    #[test]
+    fn optional_error_transition_is_known_but_not_required() {
+        let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
+        observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
+        observed.push("backend.DescribeResponse.Error".into());
+        let report = coverage_report(&observed).expect("optional known coverage");
+        assert!(
+            report
+                .observed_ids
+                .contains(&"backend.DescribeResponse.Error".into())
+        );
     }
 
     #[test]

@@ -409,6 +409,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             names
         })
         .into_values();
+    let module_name = &module;
     let transition_descriptors = states.iter().flat_map(|state| {
         let source = &state.name;
         state.transitions.iter().map(move |transition| {
@@ -420,6 +421,7 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
                 ChoiceKind::Mixed => unreachable!("validated mixed transition has a direction"),
             };
             quote!(RuntimeTransition {
+                id: concat!(stringify!(#module_name), ".", stringify!(#source), ".", stringify!(#event)),
                 source: RuntimeState::#source,
                 event: Event::#event,
                 target: RuntimeState::#target,
@@ -964,6 +966,8 @@ fn expand(protocol: Protocol) -> Result<proc_macro2::TokenStream> {
             /// One edge in the generated runtime transition table.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct RuntimeTransition {
+                /// Stable catalogue identifier generated from protocol, phase, and event.
+                pub id: &'static str,
                 /// Phase from which the event is legal.
                 pub source: RuntimeState,
                 /// Event which advances the protocol.

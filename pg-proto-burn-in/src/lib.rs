@@ -32,6 +32,8 @@ use tokio::{
     time::timeout,
 };
 
+mod scripted;
+
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs the requested harness command.
@@ -112,11 +114,34 @@ enum ChildEvent {
 
 async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let profile = option(arguments, "--profile")?;
+    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    tokio::fs::create_dir_all(&artifacts).await?;
+
+    if profile == "scripted" {
+        let coverage = scripted::run().await?;
+        let result = RunResult {
+            schema_version: 1,
+            command: "conformance".into(),
+            profile: profile.into(),
+            postgres_version: "not-applicable".into(),
+            scenario: ScenarioResult {
+                name: "scripted-exceptional-paths".into(),
+                value: 0,
+            },
+            fixtures: FixtureResult::default(),
+            data_scenarios: Vec::new(),
+            coverage: CoverageReport {
+                observed_ids: coverage.clone(),
+                scripted: coverage,
+                ..CoverageReport::default()
+            },
+            success: true,
+        };
+        return write_artifacts(&artifacts, &result).await;
+    }
     if profile != "smoke" {
         return Err(format!("unsupported conformance profile: {profile}").into());
     }
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
-    tokio::fs::create_dir_all(&artifacts).await?;
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
@@ -670,8 +695,8 @@ async fn write_artifacts(path: &Path, result: &RunResult) -> Result<(), Box<dyn 
     atomic_write(&path.join("result.json"), &json).await?;
     let status = if result.success { "PASS" } else { "FAIL" };
     let markdown = format!(
-        "# pg-proto smoke conformance\n\n{status}: `{}` returned `{}` through PostgreSQL {}.\n",
-        result.scenario.name, result.scenario.value, result.postgres_version
+        "# pg-proto {} conformance\n\n{status}: `{}` completed with result `{}` (PostgreSQL: {}).\n",
+        result.profile, result.scenario.name, result.scenario.value, result.postgres_version
     );
     atomic_write(&path.join("summary.md"), markdown.as_bytes()).await
 }

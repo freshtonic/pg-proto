@@ -29,6 +29,11 @@ Immutable facts about one protocol connection, including endpoint metadata and
 negotiated transport properties.
 _Avoid_: Connection state, session metadata
 
+**Connection cleanliness**:
+Evidence of whether a protocol-ready connection may retain session-local changes
+that prevent unconditional reuse.
+_Avoid_: Protocol readiness, connection state
+
 **Startup resolver**:
 Intermediary policy that selects an initial client-role destination using an
 accepted startup packet and the initial server-role connection context.

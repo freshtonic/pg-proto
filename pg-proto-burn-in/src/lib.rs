@@ -12,8 +12,8 @@ use std::{
     time::Duration,
 };
 
-use bytes::{BufMut, BytesMut};
-use futures_util::TryStreamExt;
+use bytes::{BufMut, Bytes, BytesMut};
+use futures_util::{SinkExt, TryStreamExt};
 use pg_proto::{
     BackendMessage, BackendMiddlewareOutput, BoundedPipeline, CancelKey, CancellationPolicy,
     CancellationRoute, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
@@ -67,6 +67,8 @@ struct RunResult {
     data_scenarios: Vec<DataScenarioResult>,
     query_lifecycle: Vec<QueryLifecycleResult>,
     error_scenarios: Vec<SqlErrorScenarioResult>,
+    #[serde(default)]
+    copy_scenarios: Vec<CopyScenarioResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     async_traffic: Option<AsyncTrafficResult>,
     coverage: CoverageReport,
@@ -141,6 +143,19 @@ struct ParameterStatusResult {
     value: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CopyScenarioResult {
+    name: String,
+    direction: String,
+    payload_bytes: u64,
+    chunks: u64,
+    completed: bool,
+    aborted: bool,
+    failed: bool,
+    recovered: bool,
+    validated: bool,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoverageReport {
     observed_ids: Vec<String>,
@@ -172,6 +187,8 @@ enum ChildEvent {
         #[serde(default)]
         error_scenarios: Vec<SqlErrorScenarioResult>,
         #[serde(default)]
+        copy_scenarios: Vec<CopyScenarioResult>,
+        #[serde(default)]
         async_traffic: Option<Box<AsyncTrafficResult>>,
     },
 }
@@ -196,6 +213,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            copy_scenarios: Vec::new(),
             async_traffic: None,
             coverage: CoverageReport {
                 observed_ids: coverage.clone(),
@@ -227,6 +245,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            copy_scenarios,
             async_traffic,
         )) => RunResult {
             schema_version: 1,
@@ -241,6 +260,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: data_scenarios.clone(),
             query_lifecycle: query_lifecycle.clone(),
             error_scenarios: error_scenarios.clone(),
+            copy_scenarios: copy_scenarios.clone(),
             async_traffic: Some(async_traffic.clone()),
             coverage: coverage_report(coverage)?,
             authentication_profiles: Vec::new(),
@@ -259,6 +279,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            copy_scenarios: Vec::new(),
             async_traffic: None,
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
@@ -291,6 +312,7 @@ async fn run_authentication_conformance(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        copy_scenarios: Vec::new(),
         async_traffic: None,
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
@@ -544,6 +566,7 @@ async fn supervise_smoke(
         Vec<DataScenarioResult>,
         Vec<QueryLifecycleResult>,
         Vec<SqlErrorScenarioResult>,
+        Vec<CopyScenarioResult>,
         AsyncTrafficResult,
     ),
     Box<dyn Error>,
@@ -564,7 +587,7 @@ async fn supervise_smoke(
             "--address",
             &upstream.to_string(),
             "--connections",
-            "3",
+            "4",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -594,6 +617,7 @@ async fn supervise_smoke(
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        copy_scenarios,
         mut async_traffic,
     ) = match completed {
         ChildEvent::Completed {
@@ -603,6 +627,7 @@ async fn supervise_smoke(
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            copy_scenarios,
             async_traffic: Some(async_traffic),
             ..
         } => (
@@ -612,6 +637,7 @@ async fn supervise_smoke(
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            copy_scenarios,
             *async_traffic,
         ),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
@@ -640,6 +666,7 @@ async fn supervise_smoke(
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        copy_scenarios,
         async_traffic,
     ))
 }
@@ -669,7 +696,7 @@ const REQUIRED_SMOKE_STAGES: [&str; 7] = [
     "smoke.extended-select.driver-validated",
 ];
 
-const REQUIRED_SMOKE_COVERAGE: [&str; 28] = [
+const REQUIRED_SMOKE_COVERAGE: [&str; 37] = [
     "backend.BindResponse.Complete",
     "backend.BindResponse.Error",
     "backend.Building.Bind",
@@ -682,8 +709,17 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 28] = [
     "backend.DescribeResponse.RowDescription",
     "backend.ExecuteResponse.CommandComplete",
     "backend.ExecuteResponse.Continue",
+    "backend.ExecuteResponse.CopyIn",
+    "backend.ExecuteResponse.CopyOut",
     "backend.ExecuteResponse.Error",
     "backend.ExecuteResponse.PortalSuspended",
+    "backend.ExtendedCopyIn.Data",
+    "backend.ExtendedCopyIn.Done",
+    "backend.ExtendedCopyInDone.CommandComplete",
+    "backend.ExtendedCopyInDone.Error",
+    "backend.ExtendedCopyOut.Data",
+    "backend.ExtendedCopyOut.Done",
+    "backend.ExtendedCopyOutDone.CommandComplete",
     "backend.Building.Flush",
     "backend.ParseResponse.Complete",
     "backend.ParseResponse.Error",
@@ -1022,6 +1058,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        copy_scenarios: Vec::new(),
         async_traffic: Some(Box::new(AsyncTrafficResult {
             parameter_status: accumulated.parameter_status.unwrap_or_default(),
             backend_key_forwarded: accumulated.causally_unattributed.contains("backend-key"),
@@ -1103,6 +1140,7 @@ async fn run_tls_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        copy_scenarios: Vec::new(),
         async_traffic: None,
     })
     .await
@@ -1171,6 +1209,7 @@ async fn run_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        copy_scenarios: Vec::new(),
         async_traffic: None,
     })
     .await
@@ -1268,6 +1307,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let error_scenarios = run_sql_error_scenarios(&mut client, proxy).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
+    let copy_scenarios = run_copy_connection(proxy, option(arguments, "--password").ok()).await?;
     query_lifecycle.push(run_flush_lifecycle(proxy).await?);
     write_event(&ChildEvent::Completed {
         version: 1,
@@ -1280,9 +1320,31 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        copy_scenarios,
         async_traffic: Some(Box::new(async_traffic)),
     })
     .await
+}
+
+async fn run_copy_connection(
+    proxy: SocketAddr,
+    password: Option<&str>,
+) -> Result<Vec<CopyScenarioResult>, Box<dyn Error>> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(proxy.ip().to_string())
+        .port(proxy.port())
+        .user("postgres")
+        .dbname("postgres");
+    if let Some(password) = password {
+        config.password(password);
+    }
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+    let connection_task = tokio::spawn(connection);
+    let scenarios = run_copy_scenarios(&client).await?;
+    drop(client);
+    timeout(CHILD_TIMEOUT, connection_task).await???;
+    Ok(scenarios)
 }
 
 async fn run_sql_error_scenarios(
@@ -1582,6 +1644,256 @@ async fn run_query_lifecycles(
         .await?,
     );
     Ok(results)
+}
+
+async fn run_copy_scenarios(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<CopyScenarioResult>, Box<dyn Error>> {
+    client
+        .batch_execute(
+            "DROP SCHEMA IF EXISTS burnin_copy CASCADE; \
+             CREATE SCHEMA burnin_copy; \
+             CREATE TABLE burnin_copy.small_values (id integer PRIMARY KEY, payload text); \
+             CREATE TABLE burnin_copy.large_values (id integer PRIMARY KEY, payload text); \
+             CREATE TABLE burnin_copy.abort_values (id integer PRIMARY KEY);",
+        )
+        .await?;
+    let small_in_statement = client
+        .prepare("COPY burnin_copy.small_values (id, payload) FROM STDIN")
+        .await?;
+    let large_in_statement = client
+        .prepare("COPY burnin_copy.large_values (id, payload) FROM STDIN")
+        .await?;
+    let abort_in_statement = client
+        .prepare("COPY burnin_copy.abort_values (id) FROM STDIN")
+        .await?;
+    let small_out_statement = client
+        .prepare("COPY (SELECT id, payload FROM burnin_copy.small_values ORDER BY id) TO STDOUT")
+        .await?;
+    let large_out_statement = client
+        .prepare("COPY (SELECT id, payload FROM burnin_copy.large_values ORDER BY id) TO STDOUT")
+        .await?;
+
+    let small = b"1\talpha\n2\tbeta\n3\t\\N\n".to_vec();
+    let small_chunks: Vec<Bytes> = small.chunks(3).map(Bytes::copy_from_slice).collect();
+    let small_rows = copy_in_chunks(client, &small_in_statement, &small_chunks, false).await?;
+    let small_valid = small_rows == 3
+        && client
+            .query_one(
+                "SELECT count(*)::bigint FROM burnin_copy.small_values \
+                 WHERE (id, payload) IN ((1, 'alpha'), (2, 'beta')) OR (id = 3 AND payload IS NULL)",
+                &[],
+            )
+            .await?
+            .get::<_, i64>(0)
+            == 3;
+    let small_recovered = copy_recovered(client).await?;
+
+    let large = deterministic_copy_payload(2_048);
+    let large_chunks: Vec<Bytes> = large.chunks(257).map(Bytes::copy_from_slice).collect();
+    let large_rows = copy_in_chunks(client, &large_in_statement, &large_chunks, true).await?;
+    let aggregate = client
+        .query_one(
+            "SELECT count(*)::bigint, sum(id)::bigint, sum(octet_length(payload))::bigint \
+             FROM burnin_copy.large_values",
+            &[],
+        )
+        .await?;
+    let expected_payload_bytes: i64 = (1..=2_048)
+        .map(|id| format!("copy-payload-{id:04}-{}", "x".repeat(id % 31)).len() as i64)
+        .sum();
+    let large_valid = large_rows == 2_048
+        && aggregate.get::<_, i64>(0) == 2_048
+        && aggregate.get::<_, i64>(1) == 2_098_176
+        && aggregate.get::<_, i64>(2) == expected_payload_bytes;
+    let large_recovered = copy_recovered(client).await?;
+
+    let failure_bytes = Bytes::from_static(b"not-an-integer\n");
+    let failure = {
+        let sink = client.copy_in::<_, Bytes>(&abort_in_statement).await?;
+        tokio::pin!(sink);
+        sink.as_mut().send(failure_bytes.clone()).await?;
+        sink.as_mut().finish().await
+    };
+    let failure_is_expected = failure
+        .as_ref()
+        .err()
+        .and_then(tokio_postgres::Error::as_db_error)
+        .is_some_and(|error| {
+            error.code() == &tokio_postgres::error::SqlState::INVALID_TEXT_REPRESENTATION
+        });
+    let failure_recovered = copy_recovered(client).await?;
+    let failed_rows = client
+        .query_one("SELECT count(*)::bigint FROM burnin_copy.abort_values", &[])
+        .await?
+        .get::<_, i64>(0);
+
+    let (small_out, small_out_chunks) = copy_out_bytes(client, &small_out_statement, false).await?;
+    let small_out_recovered = copy_recovered(client).await?;
+
+    let (large_out, large_out_chunks) = copy_out_bytes(client, &large_out_statement, true).await?;
+    let large_out_recovered = copy_recovered(client).await?;
+
+    let (early_bytes, early_chunks) = {
+        let stream = client.copy_out(&large_out_statement).await?;
+        tokio::pin!(stream);
+        let first = stream
+            .as_mut()
+            .try_next()
+            .await?
+            .ok_or("COPY OUT produced no data before abort")?;
+        (first.len() as u64, 1_u64)
+        // Dropping the response stream early exercises client-side COPY OUT abandonment.
+    };
+    let early_recovered = copy_recovered(client).await?;
+
+    Ok(vec![
+        copy_result(
+            "copy-in-small-chunked",
+            "in",
+            small.len(),
+            small_chunks.len(),
+            true,
+            false,
+            false,
+            small_recovered,
+            small_valid,
+        ),
+        copy_result(
+            "copy-in-large-backpressured",
+            "in",
+            large.len(),
+            large_chunks.len(),
+            true,
+            false,
+            false,
+            large_recovered,
+            large_valid,
+        ),
+        copy_result(
+            "copy-in-malformed-failure",
+            "in",
+            failure_bytes.len(),
+            1,
+            false,
+            false,
+            true,
+            failure_recovered,
+            failure_is_expected && failed_rows == 0,
+        ),
+        copy_result(
+            "copy-out-small",
+            "out",
+            small_out.len(),
+            small_out_chunks,
+            true,
+            false,
+            false,
+            small_out_recovered,
+            small_out == small,
+        ),
+        copy_result(
+            "copy-out-large-slow-consumer",
+            "out",
+            large_out.len(),
+            large_out_chunks,
+            true,
+            false,
+            false,
+            large_out_recovered,
+            large_out == large,
+        ),
+        copy_result(
+            "copy-out-early-abort",
+            "out",
+            early_bytes as usize,
+            early_chunks as usize,
+            false,
+            true,
+            false,
+            early_recovered,
+            early_bytes > 0,
+        ),
+    ])
+}
+
+async fn copy_in_chunks(
+    client: &tokio_postgres::Client,
+    statement: &tokio_postgres::Statement,
+    chunks: &[Bytes],
+    slow: bool,
+) -> Result<u64, Box<dyn Error>> {
+    let sink = client.copy_in::<_, Bytes>(statement).await?;
+    tokio::pin!(sink);
+    for (index, chunk) in chunks.iter().enumerate() {
+        sink.as_mut().send(chunk.clone()).await?;
+        if slow && index % 16 == 15 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+    Ok(sink.as_mut().finish().await?)
+}
+
+async fn copy_out_bytes(
+    client: &tokio_postgres::Client,
+    statement: &tokio_postgres::Statement,
+    slow: bool,
+) -> Result<(Vec<u8>, usize), Box<dyn Error>> {
+    let stream = client.copy_out(statement).await?;
+    tokio::pin!(stream);
+    let mut bytes = Vec::new();
+    let mut chunks = 0;
+    while let Some(chunk) = stream.as_mut().try_next().await? {
+        bytes.extend_from_slice(&chunk);
+        chunks += 1;
+        if slow {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+    Ok((bytes, chunks))
+}
+
+fn deterministic_copy_payload(rows: usize) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for id in 1..=rows {
+        payload.extend_from_slice(
+            format!("{id}\tcopy-payload-{id:04}-{}\n", "x".repeat(id % 31)).as_bytes(),
+        );
+    }
+    payload
+}
+
+async fn copy_recovered(client: &tokio_postgres::Client) -> Result<bool, Box<dyn Error>> {
+    Ok(client
+        .query_one("SELECT 1::int4", &[])
+        .await?
+        .get::<_, i32>(0)
+        == 1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_result(
+    name: &str,
+    direction: &str,
+    payload_bytes: usize,
+    chunks: usize,
+    completed: bool,
+    aborted: bool,
+    failed: bool,
+    recovered: bool,
+    validated: bool,
+) -> CopyScenarioResult {
+    CopyScenarioResult {
+        name: name.into(),
+        direction: direction.into(),
+        payload_bytes: payload_bytes as u64,
+        chunks: chunks as u64,
+        completed,
+        aborted,
+        failed,
+        recovered,
+        validated,
+    }
 }
 
 async fn lifecycle_result(
@@ -1941,7 +2253,7 @@ mod tests {
         let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
         observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
         let report = coverage_report(&observed).expect("complete known coverage");
-        assert_eq!(report.observed_ids.len(), 28);
+        assert_eq!(report.observed_ids.len(), 37);
         assert!(report.missing.is_empty());
     }
 

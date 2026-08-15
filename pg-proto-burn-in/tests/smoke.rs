@@ -72,6 +72,30 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         assert_eq!(outcome["ready_after"], true);
         assert_eq!(outcome["validated"], true);
     }
+    let copy = result["copy_scenarios"]
+        .as_array()
+        .expect("COPY scenario results");
+    for (name, direction, completed, aborted, failed) in [
+        ("copy-in-small-chunked", "in", true, false, false),
+        ("copy-in-large-backpressured", "in", true, false, false),
+        ("copy-in-malformed-failure", "in", false, false, true),
+        ("copy-out-small", "out", true, false, false),
+        ("copy-out-large-slow-consumer", "out", true, false, false),
+        ("copy-out-early-abort", "out", false, true, false),
+    ] {
+        let outcome = copy
+            .iter()
+            .find(|outcome| outcome["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} COPY scenario"));
+        assert_eq!(outcome["direction"], direction);
+        assert_eq!(outcome["completed"], completed);
+        assert_eq!(outcome["aborted"], aborted);
+        assert_eq!(outcome["failed"], failed);
+        assert_eq!(outcome["recovered"], true);
+        assert_eq!(outcome["validated"], true);
+        assert!(outcome["chunks"].as_u64().unwrap() > 0);
+        assert!(outcome["payload_bytes"].as_u64().unwrap() > 0);
+    }
     assert_eq!(result["fixtures"]["version"], 1);
     assert_eq!(
         result["fixtures"]["expected_checksum"],
@@ -136,7 +160,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .expect("coverage IDs")
             .len(),
-        28
+        37
     );
     assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
     assert_eq!(
@@ -144,7 +168,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .unwrap()
             .len(),
-        28
+        37
     );
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());

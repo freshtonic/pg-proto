@@ -738,6 +738,19 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ) -> FrontendAdmission {
         let (kind, next_state) = classify_frontend(prepared.request_state, &message)
             .expect("phase-typed frontend replacement has a ledger classification");
+        if matches!(prepared.request_state, RequestState::CopyIn)
+            && matches!(kind, OperationKind::CopyDone | OperationKind::CopyFail)
+            && let Some(sync) = self
+                .operations
+                .iter_mut()
+                .rev()
+                .find(|operation| operation.kind == OperationKind::Sync && !operation.discarded)
+        {
+            // PostgreSQL ignores the Sync that began the extended execution once
+            // that execution enters COPY IN. The Sync sent after CopyDone/CopyFail
+            // is the sole recovery barrier and produces the ReadyForQuery.
+            sync.discarded = true;
+        }
         let waiting = !self.operations.is_empty();
         let id = OperationId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);

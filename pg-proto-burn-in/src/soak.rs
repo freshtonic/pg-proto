@@ -386,6 +386,7 @@ async fn execute(
             &upstream.to_string(),
             "--connections",
             &connections.to_string(),
+            "--allow-abrupt-disconnects",
         ])
         .kill_on_drop(true)
         .stdout(Stdio::piped())

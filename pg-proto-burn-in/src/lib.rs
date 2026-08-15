@@ -1054,6 +1054,9 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
     let connection_count = option(arguments, "--connections")
         .unwrap_or("1")
         .parse::<usize>()?;
+    let allow_abrupt_disconnects = arguments
+        .iter()
+        .any(|argument| argument == "--allow-abrupt-disconnects");
     if let Ok(password) = option(arguments, "--password") {
         if let Ok(root) = option(arguments, "--tls-root") {
             return run_tls_credential_intermediary(upstream, password, root).await;
@@ -1113,7 +1116,10 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
                     Ok(_) => {}
                     Err(error) => {
                         let message = format!("intermediary forwarding failed: {error:?}");
-                        let _transports = session.teardown();
+                        let (_, _, state, ..) = session.teardown();
+                        if allow_abrupt_disconnects {
+                            return Ok(Some(state));
+                        }
                         return Err(io::Error::other(message));
                     }
                 }

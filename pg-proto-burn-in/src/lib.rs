@@ -43,6 +43,7 @@ use tokio::{
 };
 
 mod scripted;
+mod soak;
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -50,9 +51,12 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
     match arguments.get(1).map(String::as_str) {
         Some("conformance") => run_conformance(&arguments).await,
+        Some("soak") => soak::run_soak(&arguments).await,
+        Some("replay") => soak::run_replay(&arguments).await,
+        Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("intermediary-child") => run_intermediary_child(&arguments).await,
         Some("driver-child") => run_driver_child(&arguments).await,
-        _ => Err("usage: pg-proto-burn-in conformance --profile smoke --artifacts DIR".into()),
+        _ => Err("usage: pg-proto-burn-in <conformance|soak|replay> [options]".into()),
     }
 }
 

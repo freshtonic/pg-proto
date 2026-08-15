@@ -414,7 +414,7 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
     let certificate_der = generated.cert.der().to_vec();
     let certificate_path = artifacts.join("tls-root.der");
     tokio::fs::write(&certificate_path, &certificate_der).await?;
-    let setup = b"#!/bin/sh\nset -eu\ncp /docker-entrypoint-initdb.d/server.crt /var/lib/postgresql/server.crt\ncp /docker-entrypoint-initdb.d/server.key /var/lib/postgresql/server.key\nchown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key\nchmod 600 /var/lib/postgresql/server.key\nprintf '\\nssl=on\\nssl_cert_file=\"/var/lib/postgresql/server.crt\"\\nssl_key_file=\"/var/lib/postgresql/server.key\"\\n' >> \"$PGDATA/postgresql.conf\"\n".to_vec();
+    let setup = b"#!/bin/sh\nset -eu\ncp /docker-entrypoint-initdb.d/server.crt /var/lib/postgresql/server.crt\ncp /docker-entrypoint-initdb.d/server.key /var/lib/postgresql/server.key\nchown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key\nchmod 600 /var/lib/postgresql/server.key\nprintf \"\\nssl=on\\nssl_cert_file='/var/lib/postgresql/server.crt'\\nssl_key_file='/var/lib/postgresql/server.key'\\n\" >> \"$PGDATA/postgresql.conf\"\n".to_vec();
     let image = Postgres::default()
         .with_password("postgres")
         .with_tag("18-alpine")
@@ -427,7 +427,9 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
             CopyDataSource::Data(generated.cert.pem().into_bytes()),
         )
         .with_copy_to(
-            CopyTargetOptions::new("/docker-entrypoint-initdb.d/server.key").with_mode(0o600),
+            // Init scripts run as `postgres`; the copied archive is root-owned.
+            // The script immediately installs the key as postgres-owned mode 0600.
+            CopyTargetOptions::new("/docker-entrypoint-initdb.d/server.key").with_mode(0o644),
             CopyDataSource::Data(generated.signing_key.serialize_pem().into_bytes()),
         );
     let container = image.start().await?;
@@ -766,6 +768,7 @@ async fn run_tls_credential_intermediary(
     password: &str,
     root: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(tokio::fs::read(root).await?))?;
     let tls = RootedTls(ClientTlsConfig::new(

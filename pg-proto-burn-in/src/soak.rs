@@ -376,9 +376,11 @@ async fn execute(
         .filter(|entry| entry.phase == Phase::BoundedConcurrency)
         .cloned()
         .collect();
-    // Five sampling connections and one deliberately terminated connection are
-    // included in the intermediary's finite connection budget.
-    let connections = usize::from(!long.is_empty()) + churn.len() + concurrent.len() + 6;
+    // Five sampling connections, one deliberately terminated connection, and
+    // one final graceful teardown connection are included in the
+    // intermediary's finite connection budget. Keeping teardown distinct
+    // prevents the last checkpoint from racing process exit on Linux.
+    let connections = usize::from(!long.is_empty()) + churn.len() + concurrent.len() + 7;
     let mut intermediary = Command::new(executable)
         .args([
             "intermediary-child",
@@ -453,6 +455,7 @@ async fn execute(
         )
         .await?,
     );
+    run_child(executable, listen_addr, &[]).await?;
     let ChildEvent::Completed { .. } = read_event(&mut intermediary).await? else {
         return Err("expected soak intermediary completion event".into());
     };

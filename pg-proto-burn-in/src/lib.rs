@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::TryStreamExt;
 use pg_proto::{
     BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
     ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
@@ -19,6 +20,7 @@ use pg_proto::{
     TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ImageExt, runners::AsyncRunner},
@@ -49,6 +51,8 @@ struct RunResult {
     profile: String,
     postgres_version: String,
     scenario: ScenarioResult,
+    fixtures: FixtureResult,
+    data_scenarios: Vec<DataScenarioResult>,
     coverage: CoverageReport,
     success: bool,
 }
@@ -57,6 +61,24 @@ struct RunResult {
 struct ScenarioResult {
     name: String,
     value: i32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct FixtureResult {
+    version: u32,
+    expected_checksum: String,
+    actual_checksum: String,
+    checksum_verified: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DataScenarioResult {
+    name: String,
+    rows: u64,
+    bytes: u64,
+    nulls: u64,
+    digest: Option<String>,
+    validated: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -81,6 +103,10 @@ enum ChildEvent {
         version: u32,
         value: Option<i32>,
         coverage: Vec<String>,
+        #[serde(default)]
+        fixtures: Option<FixtureResult>,
+        #[serde(default)]
+        data_scenarios: Vec<DataScenarioResult>,
     },
 }
 
@@ -94,7 +120,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
-        Ok((value, coverage)) => RunResult {
+        Ok((value, coverage, fixtures, data_scenarios)) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
@@ -103,6 +129,8 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 name: "extended-select-scalar".into(),
                 value: *value,
             },
+            fixtures: fixtures.clone(),
+            data_scenarios: data_scenarios.clone(),
             coverage: coverage_report(coverage)?,
             success: true,
         },
@@ -115,6 +143,8 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 name: "extended-select-scalar".into(),
                 value: 0,
             },
+            fixtures: FixtureResult::default(),
+            data_scenarios: Vec::new(),
             coverage: CoverageReport::default(),
             success: false,
         },
@@ -123,7 +153,9 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     outcome.map(|_| ())
 }
 
-async fn supervise_smoke(executable: &str) -> Result<(i32, Vec<String>), Box<dyn Error>> {
+async fn supervise_smoke(
+    executable: &str,
+) -> Result<(i32, Vec<String>, FixtureResult, Vec<DataScenarioResult>), Box<dyn Error>> {
     let container = Postgres::default()
         .with_host_auth()
         .with_tag("18-alpine")
@@ -143,12 +175,14 @@ async fn supervise_smoke(executable: &str) -> Result<(i32, Vec<String>), Box<dyn
 
     let mut driver = spawn_child(executable, "driver-child", listen_addr).await?;
     let completed = read_event(&mut driver).await?;
-    let (value, mut coverage) = match completed {
+    let (value, mut coverage, fixtures, data_scenarios) = match completed {
         ChildEvent::Completed {
             value: Some(value),
             coverage,
+            fixtures: Some(fixtures),
+            data_scenarios,
             ..
-        } => (value, coverage),
+        } => (value, coverage, fixtures, data_scenarios),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
     };
     wait_success(&mut driver, "driver").await?;
@@ -163,7 +197,7 @@ async fn supervise_smoke(executable: &str) -> Result<(i32, Vec<String>), Box<dyn
     coverage.extend(intermediary_coverage);
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
-    Ok((value, coverage))
+    Ok((value, coverage, fixtures, data_scenarios))
 }
 
 const REQUIRED_SMOKE_STAGES: [&str; 7] = [
@@ -176,13 +210,14 @@ const REQUIRED_SMOKE_STAGES: [&str; 7] = [
     "smoke.extended-select.driver-validated",
 ];
 
-const REQUIRED_SMOKE_COVERAGE: [&str; 15] = [
+const REQUIRED_SMOKE_COVERAGE: [&str; 16] = [
     "backend.BindResponse.Complete",
     "backend.Building.Describe",
     "backend.Building.Execute",
     "backend.Building.Sync",
     "backend.CloseResponse.Complete",
     "backend.DescribeResponse.ParameterDescription",
+    "backend.DescribeResponse.NoData",
     "backend.DescribeResponse.RowDescription",
     "backend.ExecuteResponse.CommandComplete",
     "backend.ExecuteResponse.Continue",
@@ -373,6 +408,8 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         version: 1,
         value: None,
         coverage: coverage.into_iter().collect(),
+        fixtures: None,
+        data_scenarios: Vec::new(),
     })
     .await
 }
@@ -391,6 +428,8 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if value != 42 {
         return Err(format!("expected 42, got {value}").into());
     }
+    let fixtures = install_and_verify_fixtures(&client).await?;
+    let data_scenarios = run_data_scenarios(&client).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
     write_event(&ChildEvent::Completed {
@@ -400,8 +439,222 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             "smoke.extended-select.driver-emitted".into(),
             "smoke.extended-select.driver-validated".into(),
         ],
+        fixtures: Some(fixtures),
+        data_scenarios,
     })
     .await
+}
+
+const FIXTURE_SCHEMA: &str = include_str!("../fixtures/schema-v1.sql");
+const FIXTURE_SEED: &str = include_str!("../fixtures/seed-v1.sql");
+const FIXTURE_CHECKSUM: &str = "214b809aeff4f6934f7e091a05051fa0";
+
+async fn install_and_verify_fixtures(
+    client: &tokio_postgres::Client,
+) -> Result<FixtureResult, Box<dyn Error>> {
+    client.execute(FIXTURE_SCHEMA, &[]).await?;
+    client.execute(FIXTURE_SEED, &[]).await?;
+    let first = fixture_checksum(client).await?;
+    client.execute(FIXTURE_SCHEMA, &[]).await?;
+    client.execute(FIXTURE_SEED, &[]).await?;
+    let actual = fixture_checksum(client).await?;
+    if first != actual || actual != FIXTURE_CHECKSUM {
+        return Err(format!(
+            "fixture checksum mismatch: expected {FIXTURE_CHECKSUM}, first {first}, actual {actual}"
+        )
+        .into());
+    }
+    Ok(FixtureResult {
+        version: 1,
+        expected_checksum: FIXTURE_CHECKSUM.into(),
+        actual_checksum: actual,
+        checksum_verified: true,
+    })
+}
+
+async fn fixture_checksum(client: &tokio_postgres::Client) -> Result<String, Box<dyn Error>> {
+    let row = client
+        .query_one(
+            "SELECT md5(format('%s:%s:%s:%s:%s:%s:%s:%s:%s', \
+             (SELECT count(*) FROM burnin_type_lab.samples), \
+             (SELECT sum(scalar) FROM burnin_type_lab.samples), \
+             (SELECT count(*) FROM burnin_type_lab.bulk_values), \
+             (SELECT sum(id) FROM burnin_type_lab.bulk_values), \
+             (SELECT count(*) FROM burnin_type_lab.bulk_values WHERE nullable_text IS NULL), \
+             (SELECT count(*) FROM burnin_commerce.customers), \
+             (SELECT count(*) FROM burnin_commerce.products), \
+             (SELECT count(*) FROM burnin_commerce.orders), \
+             (SELECT count(*) FROM burnin_commerce.order_lines)))",
+            &[],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+async fn run_data_scenarios(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<DataScenarioResult>, Box<dyn Error>> {
+    let zero = client
+        .query("SELECT id FROM burnin_type_lab.samples WHERE id < 0", &[])
+        .await?;
+    let typed = client
+        .query_one(
+            "SELECT scalar, nullable_text, binary_value, tags, document, wide_text \
+             FROM burnin_type_lab.samples WHERE id = 1",
+            &[],
+        )
+        .await?;
+    let scalar: i32 = typed.get(0);
+    let nullable: Option<String> = typed.get(1);
+    let binary: Vec<u8> = typed.get(2);
+    let tags: Vec<String> = typed.get(3);
+    let document: serde_json::Value = typed.get(4);
+    let wide: String = typed.get(5);
+    if scalar != 10
+        || nullable.is_some()
+        || binary != [0, 1, 2, 255]
+        || tags != ["alpha", "one"]
+        || document != serde_json::json!({"kind": "alpha", "enabled": true})
+        || wide != "wide-alpha-".repeat(40)
+    {
+        return Err("typed fixture row did not match its checked-in value".into());
+    }
+
+    let small = client
+        .query(
+            "SELECT id FROM burnin_type_lab.bulk_values WHERE id <= 7 ORDER BY id",
+            &[],
+        )
+        .await?;
+    let medium = client
+        .query(
+            "SELECT id, nullable_text FROM burnin_type_lab.bulk_values \
+             WHERE id <= 128 ORDER BY id",
+            &[],
+        )
+        .await?;
+    let medium_nulls = medium
+        .iter()
+        .filter(|row| row.get::<_, Option<&str>>(1).is_none())
+        .count() as u64;
+    let joined = client
+        .query(
+            "SELECT c.id, count(DISTINCT o.id)::bigint, count(ol.*)::bigint \
+             FROM burnin_commerce.customers c \
+             JOIN burnin_commerce.orders o ON o.customer_id = c.id \
+             JOIN burnin_commerce.order_lines ol ON ol.order_id = o.id \
+             GROUP BY c.id ORDER BY c.id",
+            &[],
+        )
+        .await?;
+    if joined.len() != 64
+        || joined
+            .iter()
+            .any(|row| row.get::<_, i64>(1) != 4 || row.get::<_, i64>(2) != 8)
+    {
+        return Err("commerce join did not produce the deterministic cardinalities".into());
+    }
+
+    let large = stream_large_result(client).await?;
+    Ok(vec![
+        scenario("zero-rows", zero.len(), 0, 0),
+        scenario("one-typed-row", 1, binary.len() + wide.len(), 1),
+        scenario(
+            "small-narrow",
+            small.len(),
+            small.len() * size_of::<i32>(),
+            0,
+        ),
+        scenario(
+            "medium-nullable",
+            medium.len(),
+            medium
+                .iter()
+                .map(|row| row.get::<_, Option<&str>>(1).map_or(0, str::len))
+                .sum(),
+            medium_nulls,
+        ),
+        scenario("commerce-join", joined.len(), joined.len() * 20, 0),
+        large,
+    ])
+}
+
+fn scenario(name: &str, rows: usize, bytes: usize, nulls: u64) -> DataScenarioResult {
+    DataScenarioResult {
+        name: name.into(),
+        rows: rows as u64,
+        bytes: bytes as u64,
+        nulls,
+        digest: None,
+        validated: true,
+    }
+}
+
+async fn stream_large_result(
+    client: &tokio_postgres::Client,
+) -> Result<DataScenarioResult, Box<dyn Error>> {
+    use tokio_postgres::types::ToSql;
+
+    let rows = client
+        .query_raw(
+            "SELECT id, nullable_text, binary_value, wide_text \
+             FROM burnin_type_lab.bulk_values ORDER BY id",
+            std::iter::empty::<&(dyn ToSql + Sync)>(),
+        )
+        .await?;
+    tokio::pin!(rows);
+    let mut digest = Sha256::new();
+    let mut row_count = 0_u64;
+    let mut byte_count = 0_u64;
+    let mut null_count = 0_u64;
+    while let Some(row) = rows.try_next().await? {
+        let id: i32 = row.get(0);
+        let nullable: Option<&str> = row.get(1);
+        let binary: &[u8] = row.get(2);
+        let wide: &str = row.get(3);
+        digest.update(id.to_be_bytes());
+        match nullable {
+            Some(value) => {
+                digest.update([1]);
+                digest.update((value.len() as u64).to_be_bytes());
+                digest.update(value.as_bytes());
+                byte_count += value.len() as u64;
+            }
+            None => {
+                digest.update([0]);
+                null_count += 1;
+            }
+        }
+        digest.update((binary.len() as u64).to_be_bytes());
+        digest.update(binary);
+        digest.update((wide.len() as u64).to_be_bytes());
+        digest.update(wide.as_bytes());
+        byte_count += size_of::<i32>() as u64 + binary.len() as u64 + wide.len() as u64;
+        row_count += 1;
+    }
+    if row_count != 4096 || null_count != 819 {
+        return Err(
+            format!("unexpected streamed counts: rows={row_count}, nulls={null_count}").into(),
+        );
+    }
+    Ok(DataScenarioResult {
+        name: "large-streamed".into(),
+        rows: row_count,
+        bytes: byte_count,
+        nulls: null_count,
+        digest: Some(hex_digest(digest.finalize().as_slice())),
+        validated: true,
+    })
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    result
 }
 
 async fn write_event(event: &ChildEvent) -> Result<(), Box<dyn Error>> {
@@ -454,7 +707,7 @@ mod tests {
         let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
         observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
         let report = coverage_report(&observed).expect("complete known coverage");
-        assert_eq!(report.observed_ids.len(), 15);
+        assert_eq!(report.observed_ids.len(), 16);
         assert!(report.missing.is_empty());
     }
 

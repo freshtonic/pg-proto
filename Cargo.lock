@@ -1509,9 +1509,11 @@ dependencies = [
 name = "pg-proto-burn-in"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "pg-proto",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "testcontainers-modules",
  "tokio",
@@ -1613,6 +1615,8 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]

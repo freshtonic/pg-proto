@@ -28,12 +28,50 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert_eq!(result["scenario"]["name"], "extended-select-scalar");
     assert_eq!(result["scenario"]["value"], 42);
     assert_eq!(result["success"], true);
+    assert_eq!(result["fixtures"]["version"], 1);
+    assert_eq!(
+        result["fixtures"]["expected_checksum"],
+        "214b809aeff4f6934f7e091a05051fa0"
+    );
+    assert_eq!(result["fixtures"]["checksum_verified"], true);
+    assert_eq!(
+        result["fixtures"]["actual_checksum"],
+        result["fixtures"]["expected_checksum"]
+    );
+    let scenarios = result["data_scenarios"]
+        .as_array()
+        .expect("data scenario results");
+    for (name, rows) in [
+        ("zero-rows", 0),
+        ("one-typed-row", 1),
+        ("small-narrow", 7),
+        ("medium-nullable", 128),
+        ("commerce-join", 64),
+        ("large-streamed", 4096),
+    ] {
+        let scenario = scenarios
+            .iter()
+            .find(|scenario| scenario["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} scenario"));
+        assert_eq!(scenario["rows"], rows);
+        assert_eq!(scenario["validated"], true);
+    }
+    let large = scenarios
+        .iter()
+        .find(|scenario| scenario["name"] == "large-streamed")
+        .expect("large streamed result");
+    assert_eq!(large["bytes"], 1_784_970);
+    assert_eq!(large["nulls"], 819);
+    assert_eq!(
+        large["digest"],
+        "191b550a26addc17754b296d2f0e554dcfb7e666030f2c9ecc35d7d1b41b80d3"
+    );
     assert_eq!(
         result["coverage"]["observed_ids"]
             .as_array()
             .expect("coverage IDs")
             .len(),
-        15
+        16
     );
     assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
     assert_eq!(
@@ -41,7 +79,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .unwrap()
             .len(),
-        15
+        16
     );
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());

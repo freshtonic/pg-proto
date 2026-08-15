@@ -1,26 +1,27 @@
 //! Multi-process PostgreSQL protocol verification harness.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     convert::Infallible,
     error::Error,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bytes::{BufMut, BytesMut};
 use futures_util::TryStreamExt;
 use pg_proto::{
-    BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsConfig,
-    ClientTlsPolicy, ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage,
-    InitialServerContext, Intermediary, IntermediaryMiddleware, ProtocolTransitionDirection,
-    ProtocolTransitionObservation, Server, ServerConnectionContext, ServerTlsPolicy, SslMode,
-    StartupParameters, StartupRouteResolver, StaticClientCredentials, TrustClientAuthentication,
-    TrustIdentity, TrustServerAuthentication,
+    BackendMessage, BackendMiddlewareOutput, BoundedPipeline, CancelKey, CancellationPolicy,
+    CancellationRoute, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
+    ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
+    Intermediary, IntermediaryCancellationRegistry, IntermediaryMiddleware, OperationId,
+    ProtocolTransitionDirection, ProtocolTransitionObservation, Server, ServerConnectionContext,
+    ServerTlsPolicy, SslMode, StartupParameters, StartupRouteResolver, StaticClientCredentials,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use postgres_protocol::message::{backend, frontend};
 use rcgen::generate_simple_self_signed;
@@ -66,6 +67,8 @@ struct RunResult {
     data_scenarios: Vec<DataScenarioResult>,
     query_lifecycle: Vec<QueryLifecycleResult>,
     error_scenarios: Vec<SqlErrorScenarioResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    async_traffic: Option<AsyncTrafficResult>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -122,6 +125,22 @@ struct SqlErrorScenarioResult {
     connection_clean: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct AsyncTrafficResult {
+    notice_message: String,
+    notification_channel: String,
+    notification_payload: String,
+    parameter_status: ParameterStatusResult,
+    backend_key_forwarded: bool,
+    causally_unattributed: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ParameterStatusResult {
+    name: String,
+    value: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoverageReport {
     observed_ids: Vec<String>,
@@ -152,6 +171,8 @@ enum ChildEvent {
         query_lifecycle: Vec<QueryLifecycleResult>,
         #[serde(default)]
         error_scenarios: Vec<SqlErrorScenarioResult>,
+        #[serde(default)]
+        async_traffic: Option<Box<AsyncTrafficResult>>,
     },
 }
 
@@ -175,6 +196,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            async_traffic: None,
             coverage: CoverageReport {
                 observed_ids: coverage.clone(),
                 scripted: coverage,
@@ -198,25 +220,32 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
-        Ok((value, coverage, fixtures, data_scenarios, query_lifecycle, error_scenarios)) => {
-            RunResult {
-                schema_version: 1,
-                command: "conformance".into(),
-                profile: profile.into(),
-                postgres_version: "18".into(),
-                scenario: ScenarioResult {
-                    name: "extended-select-scalar".into(),
-                    value: *value,
-                },
-                fixtures: fixtures.clone(),
-                data_scenarios: data_scenarios.clone(),
-                query_lifecycle: query_lifecycle.clone(),
-                error_scenarios: error_scenarios.clone(),
-                coverage: coverage_report(coverage)?,
-                authentication_profiles: Vec::new(),
-                success: true,
-            }
-        }
+        Ok((
+            value,
+            coverage,
+            fixtures,
+            data_scenarios,
+            query_lifecycle,
+            error_scenarios,
+            async_traffic,
+        )) => RunResult {
+            schema_version: 1,
+            command: "conformance".into(),
+            profile: profile.into(),
+            postgres_version: "18".into(),
+            scenario: ScenarioResult {
+                name: "extended-select-scalar".into(),
+                value: *value,
+            },
+            fixtures: fixtures.clone(),
+            data_scenarios: data_scenarios.clone(),
+            query_lifecycle: query_lifecycle.clone(),
+            error_scenarios: error_scenarios.clone(),
+            async_traffic: Some(async_traffic.clone()),
+            coverage: coverage_report(coverage)?,
+            authentication_profiles: Vec::new(),
+            success: true,
+        },
         Err(_) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
@@ -230,6 +259,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            async_traffic: None,
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -261,6 +291,7 @@ async fn run_authentication_conformance(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        async_traffic: None,
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
@@ -513,6 +544,7 @@ async fn supervise_smoke(
         Vec<DataScenarioResult>,
         Vec<QueryLifecycleResult>,
         Vec<SqlErrorScenarioResult>,
+        AsyncTrafficResult,
     ),
     Box<dyn Error>,
 > {
@@ -543,38 +575,62 @@ async fn supervise_smoke(
         event => return Err(format!("expected intermediary ready event, got {event:?}").into()),
     };
 
-    let mut driver = spawn_child(executable, "driver-child", listen_addr).await?;
+    let mut driver = Command::new(executable)
+        .args([
+            "driver-child",
+            "--address",
+            &listen_addr.to_string(),
+            "--notify-address",
+            &upstream.to_string(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
     let completed = read_event(&mut driver).await?;
-    let (value, mut coverage, fixtures, data_scenarios, query_lifecycle, error_scenarios) =
-        match completed {
-            ChildEvent::Completed {
-                value: Some(value),
-                coverage,
-                fixtures: Some(fixtures),
-                data_scenarios,
-                query_lifecycle,
-                error_scenarios,
-                ..
-            } => (
-                value,
-                coverage,
-                fixtures,
-                data_scenarios,
-                query_lifecycle,
-                error_scenarios,
-            ),
-            event => return Err(format!("expected driver completion event, got {event:?}").into()),
-        };
+    let (
+        value,
+        mut coverage,
+        fixtures,
+        data_scenarios,
+        query_lifecycle,
+        error_scenarios,
+        mut async_traffic,
+    ) = match completed {
+        ChildEvent::Completed {
+            value: Some(value),
+            coverage,
+            fixtures: Some(fixtures),
+            data_scenarios,
+            query_lifecycle,
+            error_scenarios,
+            async_traffic: Some(async_traffic),
+            ..
+        } => (
+            value,
+            coverage,
+            fixtures,
+            data_scenarios,
+            query_lifecycle,
+            error_scenarios,
+            *async_traffic,
+        ),
+        event => return Err(format!("expected driver completion event, got {event:?}").into()),
+    };
     wait_success(&mut driver, "driver").await?;
     let intermediary_completed = read_event(&mut intermediary).await?;
     let ChildEvent::Completed {
         coverage: intermediary_coverage,
+        async_traffic: Some(intermediary_async),
         ..
     } = intermediary_completed
     else {
         return Err("expected intermediary completion event".into());
     };
     coverage.extend(intermediary_coverage);
+    async_traffic.parameter_status = intermediary_async.parameter_status;
+    async_traffic.backend_key_forwarded = intermediary_async.backend_key_forwarded;
+    async_traffic.causally_unattributed = intermediary_async.causally_unattributed;
+    validate_async_traffic(&async_traffic)?;
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
     Ok((
@@ -584,7 +640,23 @@ async fn supervise_smoke(
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        async_traffic,
     ))
+}
+
+fn validate_async_traffic(evidence: &AsyncTrafficResult) -> Result<(), Box<dyn Error>> {
+    let expected = ["backend-key", "notice", "notification", "parameter-status"];
+    if evidence.notice_message != "burn-in notice"
+        || evidence.notification_channel != "burn_in_events"
+        || evidence.notification_payload != "fixture-ready"
+        || evidence.parameter_status.name != "application_name"
+        || evidence.parameter_status.value != "pg-proto-burn-in-async"
+        || !evidence.backend_key_forwarded
+        || evidence.causally_unattributed != expected
+    {
+        return Err(format!("incomplete asynchronous traffic evidence: {evidence:?}").into());
+    }
+    Ok(())
 }
 
 const REQUIRED_SMOKE_STAGES: [&str; 7] = [
@@ -667,18 +739,6 @@ fn coverage_report(observed: &[String]) -> Result<CoverageReport, Box<dyn Error>
     })
 }
 
-async fn spawn_child(
-    executable: &str,
-    role: &str,
-    address: SocketAddr,
-) -> Result<Child, Box<dyn Error>> {
-    Ok(Command::new(executable)
-        .args([role, "--address", &address.to_string()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?)
-}
-
 async fn spawn_authenticated_child(
     executable: &str,
     role: &str,
@@ -718,6 +778,46 @@ async fn wait_success(child: &mut Child, role: &str) -> Result<(), Box<dyn Error
 #[derive(Clone, Copy)]
 struct Route(SocketAddr);
 
+#[derive(Clone, Default)]
+struct FourByteCancellationRegistry {
+    routes: Arc<Mutex<HashMap<CancelKey, CancellationRoute>>>,
+}
+
+impl IntermediaryCancellationRegistry for FourByteCancellationRegistry {
+    type Error = io::Error;
+
+    fn register(&self, route: CancellationRoute) -> Result<CancelKey, Self::Error> {
+        let upstream = route.upstream_key();
+        let secret = upstream
+            .secret_key
+            .get(..4)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short cancellation key"))?;
+        let client = CancelKey {
+            process_id: upstream.process_id,
+            secret_key: bytes::Bytes::copy_from_slice(secret),
+        };
+        let mut routes = self
+            .routes
+            .lock()
+            .map_err(|_| io::Error::other("cancellation registry poisoned"))?;
+        if routes.insert(client.clone(), route).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "duplicate cancellation key",
+            ));
+        }
+        Ok(client)
+    }
+
+    fn resolve(&self, client: &CancelKey) -> Option<CancellationRoute> {
+        self.routes.lock().ok()?.get(client).cloned()
+    }
+
+    fn detach(&self, client: &CancelKey) -> Option<CancellationRoute> {
+        self.routes.lock().ok()?.remove(client)
+    }
+}
+
 #[derive(Clone)]
 struct RootedTls(ClientTlsConfig);
 
@@ -730,9 +830,40 @@ impl ClientTlsProvider for RootedTls {
 }
 
 #[derive(Default)]
-struct CoverageState(BTreeSet<String>);
+struct CoverageState {
+    transitions: BTreeSet<String>,
+    causally_unattributed: BTreeSet<String>,
+    parameter_status: Option<ParameterStatusResult>,
+}
 
 struct CoverageObserver;
+
+impl CoverageObserver {
+    fn observe_async(
+        state: &mut CoverageState,
+        operation: Option<OperationId>,
+        message: &BackendMessage,
+    ) {
+        let kind = match message {
+            BackendMessage::NoticeResponse(_) => "notice",
+            BackendMessage::NotificationResponse { .. } => "notification",
+            BackendMessage::ParameterStatus { name, value } => {
+                if operation.is_none() && name.as_ref() == b"application_name" {
+                    state.parameter_status = Some(ParameterStatusResult {
+                        name: String::from_utf8_lossy(name).into_owned(),
+                        value: String::from_utf8_lossy(value).into_owned(),
+                    });
+                }
+                "parameter-status"
+            }
+            BackendMessage::BackendKeyData { .. } => "backend-key",
+            _ => return,
+        };
+        if operation.is_none() {
+            state.causally_unattributed.insert(kind.into());
+        }
+    }
+}
 
 impl
     IntermediaryMiddleware<
@@ -750,7 +881,7 @@ impl
         state: &mut CoverageState,
         observation: ProtocolTransitionObservation,
     ) {
-        state.0.insert(observation.id.to_owned());
+        state.transitions.insert(observation.id.to_owned());
         let stages: &[&str] = match observation.direction {
             ProtocolTransitionDirection::Frontend => &[
                 "smoke.extended-select.server-decoded",
@@ -763,8 +894,31 @@ impl
             ],
         };
         state
-            .0
+            .transitions
             .extend(stages.iter().map(|stage| (*stage).to_owned()));
+    }
+
+    async fn backend(
+        &mut self,
+        _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _client: &ClientConnectionContext<()>,
+        state: &mut CoverageState,
+        message: BackendMessage,
+    ) -> Result<BackendMiddlewareOutput, Self::Error> {
+        Self::observe_async(state, None, &message);
+        Ok(BackendMiddlewareOutput::Forward(message))
+    }
+
+    async fn backend_operation(
+        &mut self,
+        _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _client: &ClientConnectionContext<()>,
+        state: &mut CoverageState,
+        operation: Option<OperationId>,
+        message: BackendMessage,
+    ) -> Result<BackendMiddlewareOutput, Self::Error> {
+        Self::observe_async(state, operation, &message);
+        Ok(BackendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -807,7 +961,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             .server(server)
             .client(client)
             .startup_resolver(Route(upstream))
-            .cancellation(CancellationPolicy::Reject)
+            .cancellation_registry(FourByteCancellationRegistry::default())
             .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
             .middleware(
                 |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
@@ -837,7 +991,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
                 match session.forward_next().await {
                     Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
                         let (_, _, state, ..) = session.teardown();
-                        return Ok::<_, io::Error>(state.0);
+                        return Ok::<_, io::Error>(state);
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -849,18 +1003,31 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             }
         });
     }
-    let mut coverage = BTreeSet::new();
+    let mut accumulated = CoverageState::default();
     while let Some(result) = sessions.join_next().await {
-        coverage.extend(result??);
+        let state = result??;
+        accumulated.transitions.extend(state.transitions);
+        accumulated
+            .causally_unattributed
+            .extend(state.causally_unattributed);
+        if state.parameter_status.is_some() {
+            accumulated.parameter_status = state.parameter_status;
+        }
     }
     write_event(&ChildEvent::Completed {
         version: 1,
         value: None,
-        coverage: coverage.into_iter().collect(),
+        coverage: accumulated.transitions.into_iter().collect(),
         fixtures: None,
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        async_traffic: Some(Box::new(AsyncTrafficResult {
+            parameter_status: accumulated.parameter_status.unwrap_or_default(),
+            backend_key_forwarded: accumulated.causally_unattributed.contains("backend-key"),
+            causally_unattributed: accumulated.causally_unattributed.into_iter().collect(),
+            ..AsyncTrafficResult::default()
+        })),
     })
     .await
 }
@@ -918,7 +1085,7 @@ async fn run_tls_credential_intermediary(
         match session.forward_next().await {
             Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
                 let (_, _, state, ..) = session.teardown();
-                break state.0;
+                break state.transitions;
             }
             Ok(_) => {}
             Err(error) => {
@@ -936,6 +1103,7 @@ async fn run_tls_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        async_traffic: None,
     })
     .await
 }
@@ -985,7 +1153,7 @@ async fn run_credential_intermediary(
         match session.forward_next().await {
             Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
                 let (_, _, state, ..) = session.teardown();
-                break state.0;
+                break state.transitions;
             }
             Ok(_) => {}
             Err(error) => {
@@ -1003,6 +1171,7 @@ async fn run_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        async_traffic: None,
     })
     .await
 }
@@ -1018,11 +1187,80 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if let Ok(password) = option(arguments, "--password") {
         config.password(password);
     }
-    let (mut client, connection) = config.connect(tokio_postgres::NoTls).await?;
-    let connection_task = tokio::spawn(connection);
-    let value: i32 = client.query_one("SELECT 42::int4", &[]).await?.get(0);
+    let (mut client, mut connection) = config
+        .connect(tokio_postgres::NoTls)
+        .await
+        .map_err(|error| format!("driver startup failed: {error:?}"))?;
+    let (async_tx, mut async_rx) = tokio::sync::mpsc::unbounded_channel();
+    let connection_task = tokio::spawn(async move {
+        while let Some(message) =
+            std::future::poll_fn(|context| connection.poll_message(context)).await
+        {
+            let message = message.map_err(io::Error::other)?;
+            async_tx
+                .send(message)
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "async receiver closed"))?;
+        }
+        Ok::<_, io::Error>(())
+    });
+    let value: i32 = client
+        .query_one("SELECT 42::int4", &[])
+        .await
+        .map_err(|error| format!("initial SELECT failed: {error:?}"))?
+        .get(0);
     if value != 42 {
         return Err(format!("expected 42, got {value}").into());
+    }
+    let mut async_traffic = AsyncTrafficResult::default();
+    if let Ok(notifier_address) = option(arguments, "--notify-address") {
+        client
+            .batch_execute("LISTEN burn_in_events")
+            .await
+            .map_err(|error| format!("LISTEN failed: {error}"))?;
+        client
+            .batch_execute("SET application_name = 'pg-proto-burn-in-async'")
+            .await
+            .map_err(|error| format!("SET application_name failed: {error}"))?;
+        client
+            .batch_execute("DO $$ BEGIN RAISE NOTICE 'burn-in notice'; END $$")
+            .await
+            .map_err(|error| format!("RAISE NOTICE failed: {error}"))?;
+        let notifier_address: SocketAddr = notifier_address.parse()?;
+        let mut notifier_config = tokio_postgres::Config::new();
+        notifier_config
+            .host(notifier_address.ip().to_string())
+            .port(notifier_address.port())
+            .user("postgres")
+            .dbname("postgres");
+        let (notifier, notifier_connection) =
+            notifier_config.connect(tokio_postgres::NoTls).await?;
+        let notifier_task = tokio::spawn(notifier_connection);
+        notifier
+            .batch_execute("NOTIFY burn_in_events, 'fixture-ready'")
+            .await
+            .map_err(|error| format!("NOTIFY failed: {error}"))?;
+        drop(notifier);
+        timeout(CHILD_TIMEOUT, notifier_task).await???;
+
+        while async_traffic.notice_message.is_empty()
+            || async_traffic.notification_channel.is_empty()
+        {
+            match timeout(CHILD_TIMEOUT, async_rx.recv()).await? {
+                Some(tokio_postgres::AsyncMessage::Notice(notice)) => {
+                    if notice.message() == "burn-in notice" {
+                        async_traffic.notice_message = notice.message().into();
+                    }
+                }
+                Some(tokio_postgres::AsyncMessage::Notification(notification))
+                    if notification.channel() == "burn_in_events" =>
+                {
+                    async_traffic.notification_channel = notification.channel().into();
+                    async_traffic.notification_payload = notification.payload().into();
+                }
+                None => return Err("connection ended before asynchronous evidence arrived".into()),
+                _ => {}
+            }
+        }
     }
     let fixtures = install_and_verify_fixtures(&client).await?;
     let data_scenarios = run_data_scenarios(&client).await?;
@@ -1042,6 +1280,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        async_traffic: Some(Box::new(async_traffic)),
     })
     .await
 }

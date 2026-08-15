@@ -82,6 +82,27 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         result["fixtures"]["actual_checksum"],
         result["fixtures"]["expected_checksum"]
     );
+    assert_eq!(result["async_traffic"]["notice_message"], "burn-in notice");
+    assert_eq!(
+        result["async_traffic"]["notification_channel"],
+        "burn_in_events"
+    );
+    assert_eq!(
+        result["async_traffic"]["notification_payload"],
+        "fixture-ready"
+    );
+    assert_eq!(
+        result["async_traffic"]["parameter_status"],
+        serde_json::json!({
+            "name": "application_name",
+            "value": "pg-proto-burn-in-async"
+        })
+    );
+    assert_eq!(result["async_traffic"]["backend_key_forwarded"], true);
+    assert_eq!(
+        result["async_traffic"]["causally_unattributed"],
+        serde_json::json!(["backend-key", "notice", "notification", "parameter-status"])
+    );
     let scenarios = result["data_scenarios"]
         .as_array()
         .expect("data scenario results");

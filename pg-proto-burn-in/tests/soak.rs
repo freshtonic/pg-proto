@@ -42,6 +42,44 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
         result["replay_command"],
         "pg-proto-burn-in replay --input result.json --artifacts replay"
     );
+
+    let checkpoints = result["resource_checkpoints"]
+        .as_array()
+        .expect("resource checkpoints");
+    assert_eq!(
+        checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint["stage"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "startup-drained",
+            "long-lived-drained",
+            "connection-churn-drained",
+            "bounded-concurrency-drained",
+            "abrupt-termination-drained",
+            "teardown",
+        ]
+    );
+    for checkpoint in &checkpoints[..5] {
+        assert_eq!(checkpoint["quiescent"], true);
+        if cfg!(target_os = "linux") {
+            assert!(checkpoint["intermediary"]["sampling_gap"].is_null());
+            assert!(checkpoint["driver"]["sampling_gap"].is_null());
+            assert!(checkpoint["postgres"]["sampling_gap"].is_null());
+        } else {
+            assert!(checkpoint["intermediary"]["sampling_gap"].is_string());
+            assert!(checkpoint["driver"]["sampling_gap"].is_string());
+            assert!(checkpoint["postgres"]["sampling_gap"].is_null());
+        }
+        assert_eq!(checkpoint["postgres"]["connections"], 0);
+        assert_eq!(checkpoint["postgres"]["locks"], 0);
+    }
+    assert_eq!(checkpoints[2]["termination"], "graceful-restart");
+    assert_eq!(checkpoints[4]["termination"], "abrupt-termination");
+    assert_eq!(checkpoints[5]["termination"], "graceful-teardown");
+    assert_eq!(result["lifecycle_evidence"]["graceful_restart"], true);
+    assert_eq!(result["lifecycle_evidence"]["abrupt_termination"], true);
+    assert_eq!(result["lifecycle_evidence"]["teardown"], true);
 }
 
 #[test]

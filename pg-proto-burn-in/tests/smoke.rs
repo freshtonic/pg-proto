@@ -28,6 +28,31 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert_eq!(result["scenario"]["name"], "extended-select-scalar");
     assert_eq!(result["scenario"]["value"], 42);
     assert_eq!(result["success"], true);
+    let error_scenarios = result["error_scenarios"]
+        .as_array()
+        .expect("SQL error scenario results");
+    for (name, sqlstate) in [
+        ("syntax", "42601"),
+        ("missing-table", "42P01"),
+        ("type", "42883"),
+        ("arithmetic", "22012"),
+        ("constraint", "23505"),
+        ("permission", "42501"),
+        ("failed-transaction", "25P02"),
+        ("timeout", "57014"),
+        ("serialization", "40001"),
+        ("deadlock", "40P01"),
+        ("invalidated-prepare", "0A000"),
+    ] {
+        let outcome = error_scenarios
+            .iter()
+            .find(|outcome| outcome["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} SQL error scenario"));
+        assert_eq!(outcome["expected_sqlstate"], sqlstate);
+        assert_eq!(outcome["actual_sqlstate"], sqlstate);
+        assert_eq!(outcome["protocol_ready"], true);
+        assert_eq!(outcome["connection_clean"], true);
+    }
     let lifecycle = result["query_lifecycle"]
         .as_array()
         .expect("query lifecycle results");
@@ -90,7 +115,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .expect("coverage IDs")
             .len(),
-        23
+        28
     );
     assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
     assert_eq!(
@@ -98,7 +123,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .unwrap()
             .len(),
-        23
+        28
     );
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());

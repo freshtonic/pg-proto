@@ -8,6 +8,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -64,6 +65,7 @@ struct RunResult {
     fixtures: FixtureResult,
     data_scenarios: Vec<DataScenarioResult>,
     query_lifecycle: Vec<QueryLifecycleResult>,
+    error_scenarios: Vec<SqlErrorScenarioResult>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -111,6 +113,15 @@ struct QueryLifecycleResult {
     validated: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SqlErrorScenarioResult {
+    name: String,
+    expected_sqlstate: String,
+    actual_sqlstate: String,
+    protocol_ready: bool,
+    connection_clean: bool,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoverageReport {
     observed_ids: Vec<String>,
@@ -139,6 +150,8 @@ enum ChildEvent {
         data_scenarios: Vec<DataScenarioResult>,
         #[serde(default)]
         query_lifecycle: Vec<QueryLifecycleResult>,
+        #[serde(default)]
+        error_scenarios: Vec<SqlErrorScenarioResult>,
     },
 }
 
@@ -161,6 +174,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             fixtures: FixtureResult::default(),
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
+            error_scenarios: Vec::new(),
             coverage: CoverageReport {
                 observed_ids: coverage.clone(),
                 scripted: coverage,
@@ -184,22 +198,25 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
-        Ok((value, coverage, fixtures, data_scenarios, query_lifecycle)) => RunResult {
-            schema_version: 1,
-            command: "conformance".into(),
-            profile: profile.into(),
-            postgres_version: "18".into(),
-            scenario: ScenarioResult {
-                name: "extended-select-scalar".into(),
-                value: *value,
-            },
-            fixtures: fixtures.clone(),
-            data_scenarios: data_scenarios.clone(),
-            query_lifecycle: query_lifecycle.clone(),
-            coverage: coverage_report(coverage)?,
-            authentication_profiles: Vec::new(),
-            success: true,
-        },
+        Ok((value, coverage, fixtures, data_scenarios, query_lifecycle, error_scenarios)) => {
+            RunResult {
+                schema_version: 1,
+                command: "conformance".into(),
+                profile: profile.into(),
+                postgres_version: "18".into(),
+                scenario: ScenarioResult {
+                    name: "extended-select-scalar".into(),
+                    value: *value,
+                },
+                fixtures: fixtures.clone(),
+                data_scenarios: data_scenarios.clone(),
+                query_lifecycle: query_lifecycle.clone(),
+                error_scenarios: error_scenarios.clone(),
+                coverage: coverage_report(coverage)?,
+                authentication_profiles: Vec::new(),
+                success: true,
+            }
+        }
         Err(_) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
@@ -212,6 +229,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             fixtures: FixtureResult::default(),
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
+            error_scenarios: Vec::new(),
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -242,6 +260,7 @@ async fn run_authentication_conformance(
         fixtures: FixtureResult::default(),
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
@@ -493,6 +512,7 @@ async fn supervise_smoke(
         FixtureResult,
         Vec<DataScenarioResult>,
         Vec<QueryLifecycleResult>,
+        Vec<SqlErrorScenarioResult>,
     ),
     Box<dyn Error>,
 > {
@@ -506,7 +526,17 @@ async fn supervise_smoke(
         container.get_host_port_ipv4(5432).await?,
     );
 
-    let mut intermediary = spawn_child(executable, "intermediary-child", upstream).await?;
+    let mut intermediary = Command::new(executable)
+        .args([
+            "intermediary-child",
+            "--address",
+            &upstream.to_string(),
+            "--connections",
+            "3",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
     let ready = read_event(&mut intermediary).await?;
     let listen_addr = match ready {
         ChildEvent::Ready { listen_addr, .. } => listen_addr,
@@ -515,17 +545,26 @@ async fn supervise_smoke(
 
     let mut driver = spawn_child(executable, "driver-child", listen_addr).await?;
     let completed = read_event(&mut driver).await?;
-    let (value, mut coverage, fixtures, data_scenarios, query_lifecycle) = match completed {
-        ChildEvent::Completed {
-            value: Some(value),
-            coverage,
-            fixtures: Some(fixtures),
-            data_scenarios,
-            query_lifecycle,
-            ..
-        } => (value, coverage, fixtures, data_scenarios, query_lifecycle),
-        event => return Err(format!("expected driver completion event, got {event:?}").into()),
-    };
+    let (value, mut coverage, fixtures, data_scenarios, query_lifecycle, error_scenarios) =
+        match completed {
+            ChildEvent::Completed {
+                value: Some(value),
+                coverage,
+                fixtures: Some(fixtures),
+                data_scenarios,
+                query_lifecycle,
+                error_scenarios,
+                ..
+            } => (
+                value,
+                coverage,
+                fixtures,
+                data_scenarios,
+                query_lifecycle,
+                error_scenarios,
+            ),
+            event => return Err(format!("expected driver completion event, got {event:?}").into()),
+        };
     wait_success(&mut driver, "driver").await?;
     let intermediary_completed = read_event(&mut intermediary).await?;
     let ChildEvent::Completed {
@@ -538,7 +577,14 @@ async fn supervise_smoke(
     coverage.extend(intermediary_coverage);
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
-    Ok((value, coverage, fixtures, data_scenarios, query_lifecycle))
+    Ok((
+        value,
+        coverage,
+        fixtures,
+        data_scenarios,
+        query_lifecycle,
+        error_scenarios,
+    ))
 }
 
 const REQUIRED_SMOKE_STAGES: [&str; 7] = [
@@ -551,8 +597,9 @@ const REQUIRED_SMOKE_STAGES: [&str; 7] = [
     "smoke.extended-select.driver-validated",
 ];
 
-const REQUIRED_SMOKE_COVERAGE: [&str; 23] = [
+const REQUIRED_SMOKE_COVERAGE: [&str; 28] = [
     "backend.BindResponse.Complete",
+    "backend.BindResponse.Error",
     "backend.Building.Bind",
     "backend.Building.Describe",
     "backend.Building.Execute",
@@ -563,9 +610,11 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 23] = [
     "backend.DescribeResponse.RowDescription",
     "backend.ExecuteResponse.CommandComplete",
     "backend.ExecuteResponse.Continue",
+    "backend.ExecuteResponse.Error",
     "backend.ExecuteResponse.PortalSuspended",
     "backend.Building.Flush",
     "backend.ParseResponse.Complete",
+    "backend.ParseResponse.Error",
     "backend.Ready.Bind",
     "backend.Ready.Close",
     "backend.Ready.Execute",
@@ -573,6 +622,8 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 23] = [
     "backend.Ready.Terminate",
     "backend.Ready.Query",
     "backend.Simple.Continue",
+    "backend.Simple.Error",
+    "backend.SimpleError.Ready",
     "backend.Simple.Ready",
     "backend.SyncResponse.Ready",
 ];
@@ -731,6 +782,9 @@ impl StartupRouteResolver<SocketAddr> for Route {
 
 async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let upstream: SocketAddr = option(arguments, "--address")?.parse()?;
+    let connection_count = option(arguments, "--connections")
+        .unwrap_or("1")
+        .parse::<usize>()?;
     if let Ok(password) = option(arguments, "--password") {
         if let Ok(root) = option(arguments, "--tls-root") {
             return run_tls_credential_intermediary(upstream, password, root).await;
@@ -748,18 +802,20 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         .authentication(TrustClientAuthentication)
         .build()
         .map_err(debug_error)?;
-    let intermediary = Intermediary::builder()
-        .server(server)
-        .client(client)
-        .startup_resolver(Route(upstream))
-        .cancellation(CancellationPolicy::Reject)
-        .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
-        .middleware(
-            |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-             _: &ClientConnectionContext<()>| CoverageObserver,
-        )
-        .build()
-        .map_err(debug_error)?;
+    let intermediary = Arc::new(
+        Intermediary::builder()
+            .server(server)
+            .client(client)
+            .startup_resolver(Route(upstream))
+            .cancellation(CancellationPolicy::Reject)
+            .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
+            .middleware(
+                |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+                 _: &ClientConnectionContext<()>| CoverageObserver,
+            )
+            .build()
+            .map_err(debug_error)?,
+    );
 
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     write_event(&ChildEvent::Ready {
@@ -767,28 +823,35 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         listen_addr: listener.local_addr()?,
     })
     .await?;
-    let mut coverage = BTreeSet::new();
-    for _ in 0..2 {
+    let mut sessions = tokio::task::JoinSet::new();
+    for _ in 0..connection_count {
         let (transport, peer) = listener.accept().await?;
-        let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
-            .await
-            .map_err(debug_error)?
-            .into_session();
-        loop {
-            match session.forward_next().await {
-                Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
-                    let (_, _, state, ..) = session.teardown();
-                    coverage.extend(state.0);
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    let message = format!("intermediary forwarding failed: {error:?}");
-                    let _transports = session.teardown();
-                    return Err(message.into());
+        let intermediary = Arc::clone(&intermediary);
+        sessions.spawn(async move {
+            let mut session =
+                Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
+                    .await
+                    .map_err(debug_error)?
+                    .into_session();
+            loop {
+                match session.forward_next().await {
+                    Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                        let (_, _, state, ..) = session.teardown();
+                        return Ok::<_, io::Error>(state.0);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let message = format!("intermediary forwarding failed: {error:?}");
+                        let _transports = session.teardown();
+                        return Err(io::Error::other(message));
+                    }
                 }
             }
-        }
+        });
+    }
+    let mut coverage = BTreeSet::new();
+    while let Some(result) = sessions.join_next().await {
+        coverage.extend(result??);
     }
     write_event(&ChildEvent::Completed {
         version: 1,
@@ -797,6 +860,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         fixtures: None,
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
     })
     .await
 }
@@ -871,6 +935,7 @@ async fn run_tls_credential_intermediary(
         fixtures: None,
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
     })
     .await
 }
@@ -937,6 +1002,7 @@ async fn run_credential_intermediary(
         fixtures: None,
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
     })
     .await
 }
@@ -961,6 +1027,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let fixtures = install_and_verify_fixtures(&client).await?;
     let data_scenarios = run_data_scenarios(&client).await?;
     let mut query_lifecycle = run_query_lifecycles(&mut client).await?;
+    let error_scenarios = run_sql_error_scenarios(&mut client, proxy).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
     query_lifecycle.push(run_flush_lifecycle(proxy).await?);
@@ -974,8 +1041,250 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         fixtures: Some(fixtures),
         data_scenarios,
         query_lifecycle,
+        error_scenarios,
     })
     .await
+}
+
+async fn run_sql_error_scenarios(
+    client: &mut tokio_postgres::Client,
+    proxy: SocketAddr,
+) -> Result<Vec<SqlErrorScenarioResult>, Box<dyn Error>> {
+    let mut outcomes = Vec::new();
+
+    for (name, sql, expected) in [
+        ("syntax", "SELEC 1", "42601"),
+        (
+            "missing-table",
+            "SELECT * FROM burnin_table_that_does_not_exist",
+            "42P01",
+        ),
+        ("type", "SELECT TRUE + 1", "42883"),
+        ("arithmetic", "SELECT 1 / 0", "22012"),
+    ] {
+        let error = client
+            .batch_execute(sql)
+            .await
+            .expect_err("error scenario unexpectedly succeeded");
+        outcomes.push(error_outcome(client, name, expected, &error).await?);
+    }
+
+    client
+        .batch_execute(
+            "CREATE TEMP TABLE burnin_constraint_error (id integer PRIMARY KEY); \
+             INSERT INTO burnin_constraint_error VALUES (1)",
+        )
+        .await?;
+    let constraint = client
+        .execute("INSERT INTO burnin_constraint_error VALUES (1)", &[])
+        .await
+        .expect_err("duplicate key unexpectedly succeeded");
+    client
+        .batch_execute("DROP TABLE burnin_constraint_error")
+        .await?;
+    outcomes.push(error_outcome(client, "constraint", "23505", &constraint).await?);
+
+    client
+        .batch_execute(
+            "CREATE ROLE burnin_no_access; \
+             CREATE TABLE burnin_permission_error (id integer); \
+             SET ROLE burnin_no_access",
+        )
+        .await?;
+    let permission = client
+        .query("SELECT * FROM burnin_permission_error", &[])
+        .await
+        .expect_err("unprivileged query unexpectedly succeeded");
+    client
+        .batch_execute("RESET ROLE; DROP TABLE burnin_permission_error; DROP ROLE burnin_no_access")
+        .await?;
+    outcomes.push(error_outcome(client, "permission", "42501", &permission).await?);
+
+    let transaction = client.transaction().await?;
+    transaction
+        .batch_execute("SELECT 1 / 0")
+        .await
+        .expect_err("transaction arithmetic error unexpectedly succeeded");
+    let aborted = transaction
+        .query("SELECT 1", &[])
+        .await
+        .expect_err("failed transaction unexpectedly accepted a query");
+    transaction.rollback().await?;
+    outcomes.push(error_outcome(client, "failed-transaction", "25P02", &aborted).await?);
+
+    client
+        .batch_execute("SET statement_timeout = '25ms'")
+        .await?;
+    let timed_out = client
+        .query("SELECT pg_sleep(0.2)", &[])
+        .await
+        .expect_err("timed statement unexpectedly completed");
+    client.batch_execute("RESET statement_timeout").await?;
+    outcomes.push(error_outcome(client, "timeout", "57014", &timed_out).await?);
+
+    let (mut other, other_connection) = connect_driver(proxy).await?;
+    let other_task = tokio::spawn(other_connection);
+
+    client
+        .batch_execute(
+            "CREATE TABLE burnin_serialization_error (id integer PRIMARY KEY, value integer); \
+             INSERT INTO burnin_serialization_error VALUES (1, 0)",
+        )
+        .await?;
+    let first = client.transaction().await?;
+    let second = other.transaction().await?;
+    first
+        .batch_execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+        .await?;
+    second
+        .batch_execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+        .await?;
+    first
+        .query_one(
+            "SELECT value FROM burnin_serialization_error WHERE id = 1",
+            &[],
+        )
+        .await?;
+    second
+        .query_one(
+            "SELECT value FROM burnin_serialization_error WHERE id = 1",
+            &[],
+        )
+        .await?;
+    first
+        .execute(
+            "UPDATE burnin_serialization_error SET value = value + 1 WHERE id = 1",
+            &[],
+        )
+        .await?;
+    first.commit().await?;
+    let serialization = second
+        .execute(
+            "UPDATE burnin_serialization_error SET value = value + 1 WHERE id = 1",
+            &[],
+        )
+        .await
+        .expect_err("serialization conflict unexpectedly succeeded");
+    second.rollback().await?;
+    client
+        .batch_execute("DROP TABLE burnin_serialization_error")
+        .await?;
+    outcomes.push(error_outcome(client, "serialization", "40001", &serialization).await?);
+
+    client
+        .batch_execute(
+            "SET deadlock_timeout = '25ms'; \
+             CREATE TABLE burnin_deadlock_error (id integer PRIMARY KEY); \
+             INSERT INTO burnin_deadlock_error VALUES (1), (2)",
+        )
+        .await?;
+    let first = client.transaction().await?;
+    let second = other.transaction().await?;
+    first
+        .execute(
+            "SELECT id FROM burnin_deadlock_error WHERE id = 1 FOR UPDATE",
+            &[],
+        )
+        .await?;
+    second
+        .execute(
+            "SELECT id FROM burnin_deadlock_error WHERE id = 2 FOR UPDATE",
+            &[],
+        )
+        .await?;
+    let (left, right) = tokio::join!(
+        first.execute("UPDATE burnin_deadlock_error SET id = id WHERE id = 2", &[]),
+        second.execute("UPDATE burnin_deadlock_error SET id = id WHERE id = 1", &[]),
+    );
+    let deadlock = left
+        .err()
+        .or_else(|| right.err())
+        .ok_or("deadlock unexpectedly succeeded")?;
+    first.rollback().await?;
+    second.rollback().await?;
+    client
+        .batch_execute("RESET deadlock_timeout; DROP TABLE burnin_deadlock_error")
+        .await?;
+    outcomes.push(error_outcome(client, "deadlock", "40P01", &deadlock).await?);
+
+    client
+        .batch_execute(
+            "CREATE TABLE burnin_prepare_error (value integer); \
+             INSERT INTO burnin_prepare_error VALUES (1)",
+        )
+        .await?;
+    let statement = client
+        .prepare("SELECT value FROM burnin_prepare_error")
+        .await?;
+    other
+        .batch_execute("ALTER TABLE burnin_prepare_error ALTER COLUMN value TYPE bigint")
+        .await?;
+    let invalidated = client
+        .query(&statement, &[])
+        .await
+        .expect_err("invalidated prepared result unexpectedly succeeded");
+    drop(statement);
+    client
+        .batch_execute("DROP TABLE burnin_prepare_error")
+        .await?;
+    outcomes.push(error_outcome(client, "invalidated-prepare", "0A000", &invalidated).await?);
+
+    drop(other);
+    timeout(CHILD_TIMEOUT, other_task).await???;
+    Ok(outcomes)
+}
+
+async fn connect_driver(
+    proxy: SocketAddr,
+) -> Result<
+    (
+        tokio_postgres::Client,
+        tokio_postgres::Connection<tokio_postgres::Socket, tokio_postgres::tls::NoTlsStream>,
+    ),
+    tokio_postgres::Error,
+> {
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(proxy.ip().to_string())
+        .port(proxy.port())
+        .user("postgres")
+        .dbname("postgres");
+    config.connect(tokio_postgres::NoTls).await
+}
+
+async fn error_outcome(
+    client: &tokio_postgres::Client,
+    name: &str,
+    expected: &str,
+    error: &tokio_postgres::Error,
+) -> Result<SqlErrorScenarioResult, Box<dyn Error>> {
+    let actual = error
+        .as_db_error()
+        .ok_or_else(|| format!("{name} did not return a PostgreSQL error"))?
+        .code()
+        .code();
+    if actual != expected {
+        return Err(format!("{name} returned SQLSTATE {actual}, expected {expected}").into());
+    }
+    let protocol_ready = client
+        .query_one("SELECT 1::int4", &[])
+        .await?
+        .get::<_, i32>(0)
+        == 1;
+    let connection_clean = client
+        .query_one(
+            "SELECT current_user = 'postgres' AND current_setting('statement_timeout') = '0'",
+            &[],
+        )
+        .await?
+        .get(0);
+    Ok(SqlErrorScenarioResult {
+        name: name.into(),
+        expected_sqlstate: expected.into(),
+        actual_sqlstate: actual.into(),
+        protocol_ready,
+        connection_clean,
+    })
 }
 
 async fn run_query_lifecycles(
@@ -1393,7 +1702,7 @@ mod tests {
         let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
         observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
         let report = coverage_report(&observed).expect("complete known coverage");
-        assert_eq!(report.observed_ids.len(), 23);
+        assert_eq!(report.observed_ids.len(), 28);
         assert!(report.missing.is_empty());
     }
 

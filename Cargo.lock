@@ -1511,6 +1511,8 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "pg-proto",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

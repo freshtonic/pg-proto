@@ -13,17 +13,23 @@ use std::{
 
 use futures_util::TryStreamExt;
 use pg_proto::{
-    BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
-    ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
-    IntermediaryMiddleware, ProtocolTransitionDirection, ProtocolTransitionObservation, Server,
-    ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
-    StaticClientCredentials, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
+    BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsConfig,
+    ClientTlsPolicy, ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage,
+    InitialServerContext, Intermediary, IntermediaryMiddleware, ProtocolTransitionDirection,
+    ProtocolTransitionObservation, Server, ServerConnectionContext, ServerTlsPolicy, SslMode,
+    StartupParameters, StartupRouteResolver, StaticClientCredentials, TrustClientAuthentication,
+    TrustIdentity, TrustServerAuthentication,
+};
+use rcgen::generate_simple_self_signed;
+use rustls::{
+    RootCertStore,
+    pki_types::{CertificateDer, ServerName},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{ImageExt, runners::AsyncRunner},
+    testcontainers::{CopyDataSource, CopyTargetOptions, ImageExt, runners::AsyncRunner},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -204,7 +210,7 @@ async fn run_authentication_conformance(
     executable: &str,
     artifacts: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let outcome = supervise_authentication(executable).await;
+    let outcome = supervise_authentication(executable, artifacts).await;
     let profiles = outcome.as_ref().map_or_else(
         |_| authentication_profile_results(false),
         |()| authentication_profile_results(true),
@@ -298,11 +304,59 @@ fn authentication_profile_results(executed: bool) -> Vec<AuthenticationProfileRe
     .collect()
 }
 
-async fn supervise_authentication(executable: &str) -> Result<(), Box<dyn Error>> {
+async fn supervise_authentication(
+    executable: &str,
+    artifacts: &Path,
+) -> Result<(), Box<dyn Error>> {
     run_password_profile(executable, "trust", None).await?;
     run_password_profile(executable, "password", Some("postgres")).await?;
     run_password_profile(executable, "md5", Some("postgres")).await?;
     run_password_profile(executable, "scram-sha-256", Some("postgres")).await?;
+    run_tls_profile(executable, artifacts).await?;
+    run_tls_rejection_profile(executable, artifacts).await?;
+    Ok(())
+}
+
+async fn run_tls_rejection_profile(
+    executable: &str,
+    artifacts: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let generated = generate_simple_self_signed(vec!["localhost".into()])?;
+    let certificate_path = artifacts.join("rejection-root.der");
+    tokio::fs::write(&certificate_path, generated.cert.der()).await?;
+    let container = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+    let mut intermediary = Command::new(executable)
+        .args([
+            "intermediary-child",
+            "--address",
+            &upstream.to_string(),
+            "--password",
+            "postgres",
+            "--tls-root",
+            certificate_path.to_str().ok_or("non-UTF8 TLS root path")?,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected rejection intermediary ready event".into());
+    };
+    let mut driver =
+        spawn_authenticated_child(executable, "driver-child", listen_addr, None).await?;
+    let driver_status = timeout(CHILD_TIMEOUT, driver.wait()).await??;
+    let intermediary_status = timeout(CHILD_TIMEOUT, intermediary.wait()).await??;
+    if driver_status.success() || intermediary_status.success() {
+        return Err("required TLS unexpectedly accepted a plaintext PostgreSQL server".into());
+    }
+    drop(container);
     Ok(())
 }
 
@@ -313,6 +367,15 @@ async fn run_password_profile(
 ) -> Result<(), Box<dyn Error>> {
     let image = if host_auth == "trust" {
         Postgres::default().with_host_auth().with_tag("18-alpine")
+    } else if host_auth == "md5" {
+        Postgres::default()
+            .with_password(password.expect("MD5 authentication requires a password"))
+            .with_init_sql(
+                b"SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';"
+                    .to_vec(),
+            )
+            .with_tag("18-alpine")
+            .with_env_var("POSTGRES_HOST_AUTH_METHOD", "md5")
     } else {
         Postgres::default()
             .with_password(password.expect("password authentication requires a password"))
@@ -342,6 +405,63 @@ async fn run_password_profile(
         return Err(format!("{host_auth} intermediary did not complete").into());
     };
     wait_success(&mut intermediary, "intermediary").await?;
+    drop(container);
+    Ok(())
+}
+
+async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<dyn Error>> {
+    let generated = generate_simple_self_signed(vec!["localhost".into()])?;
+    let certificate_der = generated.cert.der().to_vec();
+    let certificate_path = artifacts.join("tls-root.der");
+    tokio::fs::write(&certificate_path, &certificate_der).await?;
+    let setup = b"#!/bin/sh\nset -eu\ncp /docker-entrypoint-initdb.d/server.crt /var/lib/postgresql/server.crt\ncp /docker-entrypoint-initdb.d/server.key /var/lib/postgresql/server.key\nchown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key\nchmod 600 /var/lib/postgresql/server.key\nprintf '\\nssl=on\\nssl_cert_file=\"/var/lib/postgresql/server.crt\"\\nssl_key_file=\"/var/lib/postgresql/server.key\"\\n' >> \"$PGDATA/postgresql.conf\"\n".to_vec();
+    let image = Postgres::default()
+        .with_password("postgres")
+        .with_tag("18-alpine")
+        .with_copy_to(
+            CopyTargetOptions::new("/docker-entrypoint-initdb.d/00_tls.sh").with_mode(0o755),
+            CopyDataSource::Data(setup),
+        )
+        .with_copy_to(
+            "/docker-entrypoint-initdb.d/server.crt",
+            CopyDataSource::Data(generated.cert.pem().into_bytes()),
+        )
+        .with_copy_to(
+            CopyTargetOptions::new("/docker-entrypoint-initdb.d/server.key").with_mode(0o600),
+            CopyDataSource::Data(generated.signing_key.serialize_pem().into_bytes()),
+        );
+    let container = image.start().await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+    let mut intermediary = Command::new(executable)
+        .args([
+            "intermediary-child",
+            "--address",
+            &upstream.to_string(),
+            "--password",
+            "postgres",
+            "--tls-root",
+            certificate_path.to_str().ok_or("non-UTF8 TLS root path")?,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected TLS intermediary ready event".into());
+    };
+    let mut driver =
+        spawn_authenticated_child(executable, "driver-child", listen_addr, None).await?;
+    let ChildEvent::Completed {
+        value: Some(42), ..
+    } = read_event(&mut driver).await?
+    else {
+        return Err("TLS driver did not validate SELECT".into());
+    };
+    wait_success(&mut driver, "TLS driver").await?;
+    let _ = read_event(&mut intermediary).await?;
+    wait_success(&mut intermediary, "TLS intermediary").await?;
     drop(container);
     Ok(())
 }
@@ -512,6 +632,17 @@ async fn wait_success(child: &mut Child, role: &str) -> Result<(), Box<dyn Error
 #[derive(Clone, Copy)]
 struct Route(SocketAddr);
 
+#[derive(Clone)]
+struct RootedTls(ClientTlsConfig);
+
+impl ClientTlsProvider for RootedTls {
+    type Error = Infallible;
+
+    async fn resolve(&self, _: &ConnectTarget) -> Result<ClientTlsConfig, Self::Error> {
+        Ok(self.0.clone())
+    }
+}
+
 #[derive(Default)]
 struct CoverageState(BTreeSet<String>);
 
@@ -566,6 +697,9 @@ impl StartupRouteResolver<SocketAddr> for Route {
 async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let upstream: SocketAddr = option(arguments, "--address")?.parse()?;
     if let Ok(password) = option(arguments, "--password") {
+        if let Ok(root) = option(arguments, "--tls-root") {
+            return run_tls_credential_intermediary(upstream, password, root).await;
+        }
         return run_credential_intermediary(upstream, password).await;
     }
     let server = Server::builder()
@@ -613,6 +747,78 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             Err(error) => {
                 let message = format!("intermediary forwarding failed: {error:?}");
                 let _transports = session.teardown();
+                return Err(message.into());
+            }
+        }
+    };
+    write_event(&ChildEvent::Completed {
+        version: 1,
+        value: None,
+        coverage: coverage.into_iter().collect(),
+        fixtures: None,
+        data_scenarios: Vec::new(),
+    })
+    .await
+}
+
+async fn run_tls_credential_intermediary(
+    upstream: SocketAddr,
+    password: &str,
+    root: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(tokio::fs::read(root).await?))?;
+    let tls = RootedTls(ClientTlsConfig::new(
+        ServerName::try_from("localhost")?.to_owned(),
+        roots,
+    ));
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .map_err(debug_error)?;
+    let client = Client::builder()
+        .connector(move |_| TcpStream::connect(upstream))
+        .tls(ClientTlsPolicy::libpq(SslMode::Require, tls))
+        .authentication(StaticClientCredentials::new(
+            "postgres",
+            password.to_owned(),
+        ))
+        .build()
+        .map_err(debug_error)?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route(upstream))
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(64).expect("non-zero TLS pipeline capacity"))
+        .middleware(
+            |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+             _: &ClientConnectionContext<()>| CoverageObserver,
+        )
+        .build()
+        .map_err(debug_error)?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    write_event(&ChildEvent::Ready {
+        version: 1,
+        listen_addr: listener.local_addr()?,
+    })
+    .await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
+        .await
+        .map_err(debug_error)?
+        .into_session();
+    let coverage = loop {
+        match session.forward_next().await {
+            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                let (_, _, state, ..) = session.teardown();
+                break state.0;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let message = format!("TLS intermediary forwarding failed: {error:?}");
+                let _ = session.teardown();
                 return Err(message.into());
             }
         }
@@ -985,6 +1191,10 @@ mod tests {
         REQUIRED_SMOKE_COVERAGE, REQUIRED_SMOKE_STAGES, authentication_profile_results,
         coverage_report,
     };
+    use pg_proto::{
+        ClientAuthentication, ClientAuthenticationChallenge, ClientAuthenticationSession,
+        ConnectTarget, StaticClientCredentials, StaticCredentialError,
+    };
 
     #[test]
     fn required_smoke_coverage_is_stable_and_complete() {
@@ -1015,5 +1225,22 @@ mod tests {
         );
         assert_eq!(profiles[0].id, "auth.plaintext.trust");
         assert_eq!(profiles[6].id, "auth.tls.rejection");
+    }
+
+    #[tokio::test]
+    async fn plus_only_offer_is_explicitly_unsupported_without_channel_binding() {
+        let mut credentials = StaticClientCredentials::new("postgres", "postgres")
+            .begin(&ConnectTarget::new("postgres"))
+            .await
+            .expect("credential session");
+        let result = credentials
+            .respond(ClientAuthenticationChallenge::Sasl(vec![
+                b"SCRAM-SHA-256-PLUS".as_slice().into(),
+            ]))
+            .await;
+        assert!(matches!(
+            result,
+            Err(StaticCredentialError::UnsupportedAuthentication)
+        ));
     }
 }

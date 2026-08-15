@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::{BufMut, BytesMut};
 use futures_util::TryStreamExt;
 use pg_proto::{
     BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsConfig,
@@ -20,6 +21,7 @@ use pg_proto::{
     StartupParameters, StartupRouteResolver, StaticClientCredentials, TrustClientAuthentication,
     TrustIdentity, TrustServerAuthentication,
 };
+use postgres_protocol::message::{backend, frontend};
 use rcgen::generate_simple_self_signed;
 use rustls::{
     RootCertStore,
@@ -32,7 +34,7 @@ use testcontainers_modules::{
     testcontainers::{CopyDataSource, CopyTargetOptions, ImageExt, runners::AsyncRunner},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
     time::timeout,
@@ -61,6 +63,7 @@ struct RunResult {
     scenario: ScenarioResult,
     fixtures: FixtureResult,
     data_scenarios: Vec<DataScenarioResult>,
+    query_lifecycle: Vec<QueryLifecycleResult>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -101,6 +104,13 @@ struct DataScenarioResult {
     validated: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct QueryLifecycleResult {
+    name: String,
+    ready_after: bool,
+    validated: bool,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoverageReport {
     observed_ids: Vec<String>,
@@ -127,6 +137,8 @@ enum ChildEvent {
         fixtures: Option<FixtureResult>,
         #[serde(default)]
         data_scenarios: Vec<DataScenarioResult>,
+        #[serde(default)]
+        query_lifecycle: Vec<QueryLifecycleResult>,
     },
 }
 
@@ -148,6 +160,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             },
             fixtures: FixtureResult::default(),
             data_scenarios: Vec::new(),
+            query_lifecycle: Vec::new(),
             coverage: CoverageReport {
                 observed_ids: coverage.clone(),
                 scripted: coverage,
@@ -171,7 +184,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
-        Ok((value, coverage, fixtures, data_scenarios)) => RunResult {
+        Ok((value, coverage, fixtures, data_scenarios, query_lifecycle)) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
@@ -182,6 +195,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             },
             fixtures: fixtures.clone(),
             data_scenarios: data_scenarios.clone(),
+            query_lifecycle: query_lifecycle.clone(),
             coverage: coverage_report(coverage)?,
             authentication_profiles: Vec::new(),
             success: true,
@@ -197,6 +211,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             },
             fixtures: FixtureResult::default(),
             data_scenarios: Vec::new(),
+            query_lifecycle: Vec::new(),
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -226,6 +241,7 @@ async fn run_authentication_conformance(
         },
         fixtures: FixtureResult::default(),
         data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
@@ -470,7 +486,16 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
 
 async fn supervise_smoke(
     executable: &str,
-) -> Result<(i32, Vec<String>, FixtureResult, Vec<DataScenarioResult>), Box<dyn Error>> {
+) -> Result<
+    (
+        i32,
+        Vec<String>,
+        FixtureResult,
+        Vec<DataScenarioResult>,
+        Vec<QueryLifecycleResult>,
+    ),
+    Box<dyn Error>,
+> {
     let container = Postgres::default()
         .with_host_auth()
         .with_tag("18-alpine")
@@ -490,14 +515,15 @@ async fn supervise_smoke(
 
     let mut driver = spawn_child(executable, "driver-child", listen_addr).await?;
     let completed = read_event(&mut driver).await?;
-    let (value, mut coverage, fixtures, data_scenarios) = match completed {
+    let (value, mut coverage, fixtures, data_scenarios, query_lifecycle) = match completed {
         ChildEvent::Completed {
             value: Some(value),
             coverage,
             fixtures: Some(fixtures),
             data_scenarios,
+            query_lifecycle,
             ..
-        } => (value, coverage, fixtures, data_scenarios),
+        } => (value, coverage, fixtures, data_scenarios, query_lifecycle),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
     };
     wait_success(&mut driver, "driver").await?;
@@ -512,7 +538,7 @@ async fn supervise_smoke(
     coverage.extend(intermediary_coverage);
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
-    Ok((value, coverage, fixtures, data_scenarios))
+    Ok((value, coverage, fixtures, data_scenarios, query_lifecycle))
 }
 
 const REQUIRED_SMOKE_STAGES: [&str; 7] = [
@@ -525,8 +551,9 @@ const REQUIRED_SMOKE_STAGES: [&str; 7] = [
     "smoke.extended-select.driver-validated",
 ];
 
-const REQUIRED_SMOKE_COVERAGE: [&str; 16] = [
+const REQUIRED_SMOKE_COVERAGE: [&str; 23] = [
     "backend.BindResponse.Complete",
+    "backend.Building.Bind",
     "backend.Building.Describe",
     "backend.Building.Execute",
     "backend.Building.Sync",
@@ -536,11 +563,17 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 16] = [
     "backend.DescribeResponse.RowDescription",
     "backend.ExecuteResponse.CommandComplete",
     "backend.ExecuteResponse.Continue",
+    "backend.ExecuteResponse.PortalSuspended",
+    "backend.Building.Flush",
     "backend.ParseResponse.Complete",
     "backend.Ready.Bind",
     "backend.Ready.Close",
+    "backend.Ready.Execute",
     "backend.Ready.Parse",
     "backend.Ready.Terminate",
+    "backend.Ready.Query",
+    "backend.Simple.Continue",
+    "backend.Simple.Ready",
     "backend.SyncResponse.Ready",
 ];
 
@@ -734,31 +767,36 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         listen_addr: listener.local_addr()?,
     })
     .await?;
-    let (transport, peer) = listener.accept().await?;
-    let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
-        .await
-        .map_err(debug_error)?
-        .into_session();
-    let coverage = loop {
-        match session.forward_next().await {
-            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
-                let (_, _, state, ..) = session.teardown();
-                break state.0;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                let message = format!("intermediary forwarding failed: {error:?}");
-                let _transports = session.teardown();
-                return Err(message.into());
+    let mut coverage = BTreeSet::new();
+    for _ in 0..2 {
+        let (transport, peer) = listener.accept().await?;
+        let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
+            .await
+            .map_err(debug_error)?
+            .into_session();
+        loop {
+            match session.forward_next().await {
+                Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                    let (_, _, state, ..) = session.teardown();
+                    coverage.extend(state.0);
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let message = format!("intermediary forwarding failed: {error:?}");
+                    let _transports = session.teardown();
+                    return Err(message.into());
+                }
             }
         }
-    };
+    }
     write_event(&ChildEvent::Completed {
         version: 1,
         value: None,
         coverage: coverage.into_iter().collect(),
         fixtures: None,
         data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
     })
     .await
 }
@@ -832,6 +870,7 @@ async fn run_tls_credential_intermediary(
         coverage: coverage.into_iter().collect(),
         fixtures: None,
         data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
     })
     .await
 }
@@ -897,6 +936,7 @@ async fn run_credential_intermediary(
         coverage: coverage.into_iter().collect(),
         fixtures: None,
         data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
     })
     .await
 }
@@ -912,7 +952,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if let Ok(password) = option(arguments, "--password") {
         config.password(password);
     }
-    let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+    let (mut client, connection) = config.connect(tokio_postgres::NoTls).await?;
     let connection_task = tokio::spawn(connection);
     let value: i32 = client.query_one("SELECT 42::int4", &[]).await?.get(0);
     if value != 42 {
@@ -920,8 +960,10 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let fixtures = install_and_verify_fixtures(&client).await?;
     let data_scenarios = run_data_scenarios(&client).await?;
+    let mut query_lifecycle = run_query_lifecycles(&mut client).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
+    query_lifecycle.push(run_flush_lifecycle(proxy).await?);
     write_event(&ChildEvent::Completed {
         version: 1,
         value: Some(value),
@@ -931,8 +973,155 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         ],
         fixtures: Some(fixtures),
         data_scenarios,
+        query_lifecycle,
     })
     .await
+}
+
+async fn run_query_lifecycles(
+    client: &mut tokio_postgres::Client,
+) -> Result<Vec<QueryLifecycleResult>, Box<dyn Error>> {
+    let simple = client.simple_query("SELECT 11::int4").await?;
+    let simple_valid = simple.iter().any(|message| {
+        matches!(message, tokio_postgres::SimpleQueryMessage::Row(row) if row.get(0) == Some("11"))
+    });
+    let mut results = vec![lifecycle_result(client, "simple-query", simple_valid).await?];
+
+    let unnamed = client
+        .query_typed_one(
+            "SELECT $1::int4",
+            &[(&12_i32, tokio_postgres::types::Type::INT4)],
+        )
+        .await?;
+    results
+        .push(lifecycle_result(client, "unnamed-extended", unnamed.get::<_, i32>(0) == 12).await?);
+
+    let transaction = client.transaction().await?;
+    let statement = transaction
+        .prepare("SELECT value::int4 FROM generate_series(1, 5) value ORDER BY value")
+        .await?;
+    let portal = transaction.bind(&statement, &[]).await?;
+    let first = transaction.query_portal(&portal, 2).await?;
+    let second = transaction.query_portal(&portal, 2).await?;
+    let third = transaction.query_portal(&portal, 2).await?;
+    let values: Vec<i32> = first
+        .iter()
+        .chain(&second)
+        .chain(&third)
+        .map(|row| row.get(0))
+        .collect();
+    let suspended_valid =
+        values == [1, 2, 3, 4, 5] && first.len() == 2 && second.len() == 2 && third.len() == 1;
+    drop(portal);
+    drop(statement);
+    transaction.commit().await?;
+    results.push(lifecycle_result(client, "named-statement-and-portal", suspended_valid).await?);
+    results.push(lifecycle_result(client, "portal-suspension", suspended_valid).await?);
+
+    let binary = client.query_one("SELECT $1::int4 + 1", &[&41_i32]).await?;
+    results.push(lifecycle_result(client, "binary-formats", binary.get::<_, i32>(0) == 42).await?);
+
+    let (left, right) = tokio::try_join!(
+        client.query_one("SELECT 21::int4", &[]),
+        client.query_one("SELECT 22::int4", &[]),
+    )?;
+    results.push(
+        lifecycle_result(
+            client,
+            "pipelined-extended",
+            left.get::<_, i32>(0) == 21 && right.get::<_, i32>(0) == 22,
+        )
+        .await?,
+    );
+    Ok(results)
+}
+
+async fn lifecycle_result(
+    client: &tokio_postgres::Client,
+    name: &str,
+    validated: bool,
+) -> Result<QueryLifecycleResult, Box<dyn Error>> {
+    let ready_after = client
+        .query_one("SELECT 1::int4", &[])
+        .await?
+        .get::<_, i32>(0)
+        == 1;
+    Ok(QueryLifecycleResult {
+        name: name.into(),
+        ready_after,
+        validated,
+    })
+}
+
+async fn run_flush_lifecycle(proxy: SocketAddr) -> Result<QueryLifecycleResult, Box<dyn Error>> {
+    let mut stream = TcpStream::connect(proxy).await?;
+    let mut startup = BytesMut::new();
+    startup.put_i32(0);
+    startup.put_i32(196_608);
+    startup.extend_from_slice(b"user\0postgres\0database\0postgres\0\0");
+    let startup_len = startup.len() as i32;
+    startup[..4].copy_from_slice(&startup_len.to_be_bytes());
+    stream.write_all(&startup).await?;
+    let _startup_messages = read_until_ready(&mut stream).await?;
+
+    let mut messages = BytesMut::new();
+    frontend::parse("", "SELECT 23::int4", std::iter::empty(), &mut messages)?;
+    frontend::bind(
+        "",
+        "",
+        std::iter::empty::<i16>(),
+        std::iter::empty::<()>(),
+        |(), _| -> Result<postgres_protocol::IsNull, Box<dyn Error + Send + Sync>> {
+            Ok(postgres_protocol::IsNull::Yes)
+        },
+        [1_i16],
+        &mut messages,
+    )
+    .map_err(|error| match error {
+        postgres_protocol::message::frontend::BindError::Conversion(error) => {
+            io::Error::other(error)
+        }
+        postgres_protocol::message::frontend::BindError::Serialization(error) => error,
+    })?;
+    frontend::describe(b'P', "", &mut messages)?;
+    frontend::execute("", 0, &mut messages)?;
+    frontend::flush(&mut messages);
+    frontend::sync(&mut messages);
+    stream.write_all(&messages).await?;
+    let result_rows = read_until_ready(&mut stream).await?;
+
+    let mut recovery = BytesMut::new();
+    frontend::query("SELECT 1::int4", &mut recovery)?;
+    stream.write_all(&recovery).await?;
+    let recovery_rows = read_until_ready(&mut stream).await?;
+    let mut terminate = BytesMut::new();
+    frontend::terminate(&mut terminate);
+    stream.write_all(&terminate).await?;
+    Ok(QueryLifecycleResult {
+        name: "flush-and-sync".into(),
+        ready_after: recovery_rows == 1,
+        validated: result_rows == 1,
+    })
+}
+
+async fn read_until_ready(stream: &mut TcpStream) -> Result<usize, Box<dyn Error>> {
+    let mut input = BytesMut::new();
+    let mut data_rows = 0;
+    loop {
+        while let Some(message) = backend::Message::parse(&mut input)? {
+            match message {
+                backend::Message::ErrorResponse(_) => {
+                    return Err("PostgreSQL error during raw lifecycle".into());
+                }
+                backend::Message::DataRow(_) => data_rows += 1,
+                backend::Message::ReadyForQuery(_) => return Ok(data_rows),
+                _ => {}
+            }
+        }
+        if stream.read_buf(&mut input).await? == 0 {
+            return Err("PostgreSQL closed before ReadyForQuery".into());
+        }
+    }
 }
 
 const FIXTURE_SCHEMA: &str = include_str!("../fixtures/schema-v1.sql");
@@ -1204,7 +1393,7 @@ mod tests {
         let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
         observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
         let report = coverage_report(&observed).expect("complete known coverage");
-        assert_eq!(report.observed_ids.len(), 16);
+        assert_eq!(report.observed_ids.len(), 23);
         assert!(report.missing.is_empty());
     }
 

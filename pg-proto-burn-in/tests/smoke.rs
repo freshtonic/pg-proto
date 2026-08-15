@@ -28,6 +28,25 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert_eq!(result["scenario"]["name"], "extended-select-scalar");
     assert_eq!(result["scenario"]["value"], 42);
     assert_eq!(result["success"], true);
+    let lifecycle = result["query_lifecycle"]
+        .as_array()
+        .expect("query lifecycle results");
+    for scenario in [
+        "simple-query",
+        "unnamed-extended",
+        "named-statement-and-portal",
+        "binary-formats",
+        "portal-suspension",
+        "pipelined-extended",
+        "flush-and-sync",
+    ] {
+        let outcome = lifecycle
+            .iter()
+            .find(|outcome| outcome["name"] == scenario)
+            .unwrap_or_else(|| panic!("missing {scenario} lifecycle scenario"));
+        assert_eq!(outcome["ready_after"], true);
+        assert_eq!(outcome["validated"], true);
+    }
     assert_eq!(result["fixtures"]["version"], 1);
     assert_eq!(
         result["fixtures"]["expected_checksum"],
@@ -71,7 +90,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .expect("coverage IDs")
             .len(),
-        16
+        23
     );
     assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
     assert_eq!(
@@ -79,7 +98,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
             .as_array()
             .unwrap()
             .len(),
-        16
+        23
     );
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());

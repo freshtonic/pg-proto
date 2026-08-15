@@ -1509,8 +1509,10 @@ dependencies = [
 name = "pg-proto-burn-in"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures-util",
  "pg-proto",
+ "postgres-protocol",
  "rcgen",
  "rustls",
  "serde",

@@ -28,6 +28,24 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert_eq!(result["scenario"]["name"], "extended-select-scalar");
     assert_eq!(result["scenario"]["value"], 42);
     assert_eq!(result["success"], true);
+    assert_eq!(
+        result["coverage"]["observed_ids"]
+            .as_array()
+            .expect("coverage IDs")
+            .len(),
+        15
+    );
+    assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        result["coverage"]["real_postgres"]
+            .as_array()
+            .unwrap()
+            .len(),
+        15
+    );
+    for disposition in ["scripted", "indirect", "missing", "exempted"] {
+        assert!(result["coverage"][disposition].is_array());
+    }
 
     let summary =
         fs::read_to_string(artifacts.path().join("summary.md")).expect("read Markdown artifact");

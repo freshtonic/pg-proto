@@ -546,6 +546,21 @@ impl Default for Pipeline<NoPipeline> {
 }
 
 impl<P: PipelinePolicy> Pipeline<P> {
+    pub(crate) fn frontend_transition_id(&self, message: &FrontendMessage) -> Option<&'static str> {
+        let state = generated_request_state(self.request_state);
+        let event = backend::project_external(state, message)?;
+        Some(backend::transition(state, event)?.id)
+    }
+
+    pub(crate) fn backend_transition_id(&self, message: &BackendMessage) -> Option<&'static str> {
+        let PreparedResponse::Emit { response_state, .. } = self.prepare_response(None, message)
+        else {
+            return None;
+        };
+        let event = backend::project_internal(response_state, message)?;
+        Some(backend::transition(response_state, event)?.id)
+    }
+
     /// Returns the identity that will be assigned to the next accepted
     /// frontend operation.
     pub(crate) const fn next_operation_id(&self) -> OperationId {
@@ -1183,8 +1198,14 @@ fn project_frontend(
     state: RequestState,
     message: &FrontendMessage,
 ) -> Option<(OperationKind, RequestState)> {
+    let generated_state = generated_request_state(state);
+    backend::project_external(generated_state, message)?;
+    classify_frontend(state, message)
+}
+
+const fn generated_request_state(state: RequestState) -> backend::RuntimeState {
     use RequestState as S;
-    let generated_state = match state {
+    match state {
         S::Ready => backend::RuntimeState::Ready,
         S::Extended { .. } => backend::RuntimeState::Building,
         S::ExtendedError => backend::RuntimeState::ExtendedError,
@@ -1192,9 +1213,7 @@ fn project_frontend(
         S::CopyOut => backend::RuntimeState::ExtendedCopyOut,
         S::CopyBoth => backend::RuntimeState::ExtendedCopyBoth,
         S::Terminated => backend::RuntimeState::Terminated,
-    };
-    backend::project_external(generated_state, message)?;
-    classify_frontend(state, message)
+    }
 }
 
 fn classify_frontend(

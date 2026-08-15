@@ -1,6 +1,7 @@
 //! Multi-process PostgreSQL protocol verification harness.
 
 use std::{
+    collections::BTreeSet,
     convert::Infallible,
     error::Error,
     io,
@@ -11,9 +12,11 @@ use std::{
 };
 
 use pg_proto::{
-    BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, ForwardedMessage,
-    FrontendMessage, InitialServerContext, Intermediary, Server, ServerTlsPolicy,
-    StartupParameters, StartupRouteResolver, TrustClientAuthentication, TrustServerAuthentication,
+    BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
+    ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
+    IntermediaryMiddleware, ProtocolTransitionDirection, ProtocolTransitionObservation, Server,
+    ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::{
@@ -46,6 +49,7 @@ struct RunResult {
     profile: String,
     postgres_version: String,
     scenario: ScenarioResult,
+    coverage: CoverageReport,
     success: bool,
 }
 
@@ -53,6 +57,17 @@ struct RunResult {
 struct ScenarioResult {
     name: String,
     value: i32,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CoverageReport {
+    observed_ids: Vec<String>,
+    stages: Vec<String>,
+    real_postgres: Vec<String>,
+    scripted: Vec<String>,
+    indirect: Vec<String>,
+    missing: Vec<String>,
+    exempted: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +80,7 @@ enum ChildEvent {
     Completed {
         version: u32,
         value: Option<i32>,
+        coverage: Vec<String>,
     },
 }
 
@@ -78,7 +94,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 
     let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
     let result = match &outcome {
-        Ok(value) => RunResult {
+        Ok((value, coverage)) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
@@ -87,6 +103,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 name: "extended-select-scalar".into(),
                 value: *value,
             },
+            coverage: coverage_report(coverage)?,
             success: true,
         },
         Err(_) => RunResult {
@@ -98,6 +115,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 name: "extended-select-scalar".into(),
                 value: 0,
             },
+            coverage: CoverageReport::default(),
             success: false,
         },
     };
@@ -105,7 +123,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     outcome.map(|_| ())
 }
 
-async fn supervise_smoke(executable: &str) -> Result<i32, Box<dyn Error>> {
+async fn supervise_smoke(executable: &str) -> Result<(i32, Vec<String>), Box<dyn Error>> {
     let container = Postgres::default()
         .with_host_auth()
         .with_tag("18-alpine")
@@ -125,23 +143,94 @@ async fn supervise_smoke(executable: &str) -> Result<i32, Box<dyn Error>> {
 
     let mut driver = spawn_child(executable, "driver-child", listen_addr).await?;
     let completed = read_event(&mut driver).await?;
-    let value = match completed {
+    let (value, mut coverage) = match completed {
         ChildEvent::Completed {
-            value: Some(value), ..
-        } => value,
+            value: Some(value),
+            coverage,
+            ..
+        } => (value, coverage),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
     };
     wait_success(&mut driver, "driver").await?;
     let intermediary_completed = read_event(&mut intermediary).await?;
-    if !matches!(intermediary_completed, ChildEvent::Completed { .. }) {
-        return Err(format!(
-            "expected intermediary completion event, got {intermediary_completed:?}"
-        )
-        .into());
-    }
+    let ChildEvent::Completed {
+        coverage: intermediary_coverage,
+        ..
+    } = intermediary_completed
+    else {
+        return Err("expected intermediary completion event".into());
+    };
+    coverage.extend(intermediary_coverage);
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
-    Ok(value)
+    Ok((value, coverage))
+}
+
+const REQUIRED_SMOKE_STAGES: [&str; 7] = [
+    "smoke.extended-select.driver-emitted",
+    "smoke.extended-select.server-decoded",
+    "smoke.extended-select.middleware-observed",
+    "smoke.extended-select.client-encoded",
+    "smoke.extended-select.postgres-accepted",
+    "smoke.extended-select.return-traversed",
+    "smoke.extended-select.driver-validated",
+];
+
+const REQUIRED_SMOKE_COVERAGE: [&str; 15] = [
+    "backend.BindResponse.Complete",
+    "backend.Building.Describe",
+    "backend.Building.Execute",
+    "backend.Building.Sync",
+    "backend.CloseResponse.Complete",
+    "backend.DescribeResponse.ParameterDescription",
+    "backend.DescribeResponse.RowDescription",
+    "backend.ExecuteResponse.CommandComplete",
+    "backend.ExecuteResponse.Continue",
+    "backend.ParseResponse.Complete",
+    "backend.Ready.Bind",
+    "backend.Ready.Close",
+    "backend.Ready.Parse",
+    "backend.Ready.Terminate",
+    "backend.SyncResponse.Ready",
+];
+
+fn coverage_report(observed: &[String]) -> Result<CoverageReport, Box<dyn Error>> {
+    let stages: BTreeSet<_> = observed
+        .iter()
+        .map(String::as_str)
+        .filter(|id| id.starts_with("smoke."))
+        .collect();
+    let observed: BTreeSet<_> = observed
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.starts_with("smoke."))
+        .collect();
+    let required: BTreeSet<_> = REQUIRED_SMOKE_COVERAGE.into_iter().collect();
+    let unknown: Vec<_> = observed.difference(&required).copied().collect();
+    if !unknown.is_empty() {
+        return Err(format!("unknown required coverage IDs: {}", unknown.join(", ")).into());
+    }
+    let missing: Vec<String> = required
+        .difference(&observed)
+        .map(|id| (*id).to_owned())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("missing required coverage IDs: {}", missing.join(", ")).into());
+    }
+    let required_stages: BTreeSet<_> = REQUIRED_SMOKE_STAGES.into_iter().collect();
+    if stages != required_stages {
+        return Err("smoke scenario did not record all seven observation stages".into());
+    }
+    let observed_ids: Vec<_> = observed.into_iter().map(str::to_owned).collect();
+    Ok(CoverageReport {
+        real_postgres: observed_ids.clone(),
+        observed_ids,
+        stages: stages.into_iter().map(str::to_owned).collect(),
+        scripted: Vec::new(),
+        indirect: Vec::new(),
+        missing: Vec::new(),
+        exempted: Vec::new(),
+    })
 }
 
 async fn spawn_child(
@@ -178,6 +267,45 @@ async fn wait_success(child: &mut Child, role: &str) -> Result<(), Box<dyn Error
 #[derive(Clone, Copy)]
 struct Route(SocketAddr);
 
+#[derive(Default)]
+struct CoverageState(BTreeSet<String>);
+
+struct CoverageObserver;
+
+impl
+    IntermediaryMiddleware<
+        CoverageState,
+        ServerConnectionContext<SocketAddr, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for CoverageObserver
+{
+    type Error = Infallible;
+
+    async fn observe_transition(
+        &mut self,
+        _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _client: &ClientConnectionContext<()>,
+        state: &mut CoverageState,
+        observation: ProtocolTransitionObservation,
+    ) {
+        state.0.insert(observation.id.to_owned());
+        let stages: &[&str] = match observation.direction {
+            ProtocolTransitionDirection::Frontend => &[
+                "smoke.extended-select.server-decoded",
+                "smoke.extended-select.middleware-observed",
+                "smoke.extended-select.client-encoded",
+            ],
+            ProtocolTransitionDirection::Backend => &[
+                "smoke.extended-select.postgres-accepted",
+                "smoke.extended-select.return-traversed",
+            ],
+        };
+        state
+            .0
+            .extend(stages.iter().map(|stage| (*stage).to_owned()));
+    }
+}
+
 impl StartupRouteResolver<SocketAddr> for Route {
     type Error = Infallible;
 
@@ -209,6 +337,10 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         .startup_resolver(Route(upstream))
         .cancellation(CancellationPolicy::Reject)
         .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
+        .middleware(
+            |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+             _: &ClientConnectionContext<()>| CoverageObserver,
+        )
         .build()
         .map_err(debug_error)?;
 
@@ -219,15 +351,15 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
     })
     .await?;
     let (transport, peer) = listener.accept().await?;
-    let mut session = Box::pin(intermediary.accept(transport, peer, ()))
+    let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
         .await
         .map_err(debug_error)?
         .into_session();
-    loop {
+    let coverage = loop {
         match session.forward_next().await {
             Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
-                let _transports = session.teardown();
-                break;
+                let (_, _, state, ..) = session.teardown();
+                break state.0;
             }
             Ok(_) => {}
             Err(error) => {
@@ -236,10 +368,11 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
                 return Err(message.into());
             }
         }
-    }
+    };
     write_event(&ChildEvent::Completed {
         version: 1,
         value: None,
+        coverage: coverage.into_iter().collect(),
     })
     .await
 }
@@ -263,6 +396,10 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     write_event(&ChildEvent::Completed {
         version: 1,
         value: Some(value),
+        coverage: vec![
+            "smoke.extended-select.driver-emitted".into(),
+            "smoke.extended-select.driver-validated".into(),
+        ],
     })
     .await
 }
@@ -306,4 +443,27 @@ fn option<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, Box<dyn Er
 
 fn debug_error(error: impl std::fmt::Debug) -> io::Error {
     io::Error::other(format!("{error:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REQUIRED_SMOKE_COVERAGE, REQUIRED_SMOKE_STAGES, coverage_report};
+
+    #[test]
+    fn required_smoke_coverage_is_stable_and_complete() {
+        let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
+        observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
+        let report = coverage_report(&observed).expect("complete known coverage");
+        assert_eq!(report.observed_ids.len(), 15);
+        assert!(report.missing.is_empty());
+    }
+
+    #[test]
+    fn unknown_coverage_fails_conformance() {
+        let mut observed: Vec<_> = REQUIRED_SMOKE_COVERAGE.map(str::to_owned).into();
+        observed.extend(REQUIRED_SMOKE_STAGES.map(str::to_owned));
+        observed.push("backend.Renamed.WithoutMigration".into());
+        let error = coverage_report(&observed).expect_err("unknown ID must fail");
+        assert!(error.to_string().contains("unknown required coverage IDs"));
+    }
 }

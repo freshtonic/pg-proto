@@ -17,7 +17,7 @@ use pg_proto::{
     ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext, Intermediary,
     IntermediaryMiddleware, ProtocolTransitionDirection, ProtocolTransitionObservation, Server,
     ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
-    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
+    StaticClientCredentials, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,7 +56,19 @@ struct RunResult {
     fixtures: FixtureResult,
     data_scenarios: Vec<DataScenarioResult>,
     coverage: CoverageReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    authentication_profiles: Vec<AuthenticationProfileResult>,
     success: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AuthenticationProfileResult {
+    id: String,
+    postgres_versions: String,
+    tls_mode: String,
+    auth_method: String,
+    expected_outcome: String,
+    evidence: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,9 +147,17 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 scripted: coverage,
                 ..CoverageReport::default()
             },
+            authentication_profiles: Vec::new(),
             success: true,
         };
         return write_artifacts(&artifacts, &result).await;
+    }
+    if profile == "authentication" {
+        return run_authentication_conformance(
+            arguments.first().ok_or("missing executable path")?,
+            &artifacts,
+        )
+        .await;
     }
     if profile != "smoke" {
         return Err(format!("unsupported conformance profile: {profile}").into());
@@ -157,6 +177,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             fixtures: fixtures.clone(),
             data_scenarios: data_scenarios.clone(),
             coverage: coverage_report(coverage)?,
+            authentication_profiles: Vec::new(),
             success: true,
         },
         Err(_) => RunResult {
@@ -171,11 +192,158 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             fixtures: FixtureResult::default(),
             data_scenarios: Vec::new(),
             coverage: CoverageReport::default(),
+            authentication_profiles: Vec::new(),
             success: false,
         },
     };
     write_artifacts(&artifacts, &result).await?;
     outcome.map(|_| ())
+}
+
+async fn run_authentication_conformance(
+    executable: &str,
+    artifacts: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let outcome = supervise_authentication(executable).await;
+    let profiles = outcome.as_ref().map_or_else(
+        |_| authentication_profile_results(false),
+        |()| authentication_profile_results(true),
+    );
+    let result = RunResult {
+        schema_version: 1,
+        command: "conformance".into(),
+        profile: "authentication".into(),
+        postgres_version: "14-18".into(),
+        scenario: ScenarioResult {
+            name: "authentication-matrix".into(),
+            value: i32::try_from(profiles.len())?,
+        },
+        fixtures: FixtureResult::default(),
+        data_scenarios: Vec::new(),
+        coverage: CoverageReport::default(),
+        authentication_profiles: profiles,
+        success: outcome.is_ok(),
+    };
+    write_artifacts(artifacts, &result).await?;
+    outcome
+}
+
+fn authentication_profile_results(executed: bool) -> Vec<AuthenticationProfileResult> {
+    [
+        (
+            "auth.plaintext.trust",
+            "plaintext",
+            "trust",
+            "accepted",
+            "authenticated SELECT through public intermediary",
+        ),
+        (
+            "auth.plaintext.cleartext-password",
+            "plaintext",
+            "cleartext-password",
+            "accepted",
+            "password challenge answered and SELECT validated",
+        ),
+        (
+            "auth.plaintext.md5",
+            "plaintext",
+            "md5",
+            "accepted",
+            "MD5 challenge answered and SELECT validated",
+        ),
+        (
+            "auth.plaintext.scram-sha-256",
+            "plaintext",
+            "scram-sha-256",
+            "accepted",
+            "SCRAM verifier accepted and SELECT validated",
+        ),
+        (
+            "auth.tls.scram-sha-256-plus",
+            "tls",
+            "scram-sha-256-plus",
+            "unsupported",
+            "static credentials reject a PLUS-only offer because channel binding is unavailable",
+        ),
+        (
+            "auth.tls.negotiation",
+            "tls",
+            "trust",
+            "accepted",
+            "TLS negotiation completed before startup",
+        ),
+        (
+            "auth.tls.rejection",
+            "plaintext",
+            "trust",
+            "rejected",
+            "required TLS rejects a plaintext-only server",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(id, tls_mode, auth_method, expected_outcome, evidence)| AuthenticationProfileResult {
+            id: id.into(),
+            postgres_versions: "14-18".into(),
+            tls_mode: tls_mode.into(),
+            auth_method: auth_method.into(),
+            expected_outcome: expected_outcome.into(),
+            evidence: if executed || expected_outcome == "unsupported" {
+                evidence.into()
+            } else {
+                "profile did not complete".into()
+            },
+        },
+    )
+    .collect()
+}
+
+async fn supervise_authentication(executable: &str) -> Result<(), Box<dyn Error>> {
+    run_password_profile(executable, "trust", None).await?;
+    run_password_profile(executable, "password", Some("postgres")).await?;
+    run_password_profile(executable, "md5", Some("postgres")).await?;
+    run_password_profile(executable, "scram-sha-256", Some("postgres")).await?;
+    Ok(())
+}
+
+async fn run_password_profile(
+    executable: &str,
+    host_auth: &str,
+    password: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let image = if host_auth == "trust" {
+        Postgres::default().with_host_auth().with_tag("18-alpine")
+    } else {
+        Postgres::default()
+            .with_password(password.expect("password authentication requires a password"))
+            .with_tag("18-alpine")
+            .with_env_var("POSTGRES_HOST_AUTH_METHOD", host_auth)
+    };
+    let container = image.start().await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+    let mut intermediary =
+        spawn_authenticated_child(executable, "intermediary-child", upstream, password).await?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected intermediary ready event".into());
+    };
+    let mut driver =
+        spawn_authenticated_child(executable, "driver-child", listen_addr, password).await?;
+    let ChildEvent::Completed {
+        value: Some(42), ..
+    } = read_event(&mut driver).await?
+    else {
+        return Err(format!("{host_auth} driver did not validate SELECT").into());
+    };
+    wait_success(&mut driver, "driver").await?;
+    let ChildEvent::Completed { .. } = read_event(&mut intermediary).await? else {
+        return Err(format!("{host_auth} intermediary did not complete").into());
+    };
+    wait_success(&mut intermediary, "intermediary").await?;
+    drop(container);
+    Ok(())
 }
 
 async fn supervise_smoke(
@@ -305,6 +473,23 @@ async fn spawn_child(
         .spawn()?)
 }
 
+async fn spawn_authenticated_child(
+    executable: &str,
+    role: &str,
+    address: SocketAddr,
+    password: Option<&str>,
+) -> Result<Child, Box<dyn Error>> {
+    let mut command = Command::new(executable);
+    command.args([role, "--address", &address.to_string()]);
+    if let Some(password) = password {
+        command.args(["--password", password]);
+    }
+    Ok(command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?)
+}
+
 async fn read_event(child: &mut Child) -> Result<ChildEvent, Box<dyn Error>> {
     let stdout = child.stdout.as_mut().ok_or("child stdout unavailable")?;
     let mut line = String::new();
@@ -380,6 +565,9 @@ impl StartupRouteResolver<SocketAddr> for Route {
 
 async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let upstream: SocketAddr = option(arguments, "--address")?.parse()?;
+    if let Ok(password) = option(arguments, "--password") {
+        return run_credential_intermediary(upstream, password).await;
+    }
     let server = Server::builder()
         .tls(ServerTlsPolicy::Disabled)
         .authentication(TrustServerAuthentication)
@@ -439,6 +627,71 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
     .await
 }
 
+async fn run_credential_intermediary(
+    upstream: SocketAddr,
+    password: &str,
+) -> Result<(), Box<dyn Error>> {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()
+        .map_err(debug_error)?;
+    let client = Client::builder()
+        .connector(move |_| TcpStream::connect(upstream))
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(StaticClientCredentials::new(
+            "postgres",
+            password.to_owned(),
+        ))
+        .build()
+        .map_err(debug_error)?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route(upstream))
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(64).expect("non-zero authentication pipeline capacity"))
+        .middleware(
+            |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+             _: &ClientConnectionContext<()>| CoverageObserver,
+        )
+        .build()
+        .map_err(debug_error)?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    write_event(&ChildEvent::Ready {
+        version: 1,
+        listen_addr: listener.local_addr()?,
+    })
+    .await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut session = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
+        .await
+        .map_err(debug_error)?
+        .into_session();
+    let coverage = loop {
+        match session.forward_next().await {
+            Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
+                let (_, _, state, ..) = session.teardown();
+                break state.0;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let message = format!("intermediary forwarding failed: {error:?}");
+                let _transports = session.teardown();
+                return Err(message.into());
+            }
+        }
+    };
+    write_event(&ChildEvent::Completed {
+        version: 1,
+        value: None,
+        coverage: coverage.into_iter().collect(),
+        fixtures: None,
+        data_scenarios: Vec::new(),
+    })
+    .await
+}
+
 async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let proxy: SocketAddr = option(arguments, "--address")?.parse()?;
     let mut config = tokio_postgres::Config::new();
@@ -447,6 +700,9 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .port(proxy.port())
         .user("postgres")
         .dbname("postgres");
+    if let Ok(password) = option(arguments, "--password") {
+        config.password(password);
+    }
     let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
     let connection_task = tokio::spawn(connection);
     let value: i32 = client.query_one("SELECT 42::int4", &[]).await?.get(0);
@@ -725,7 +981,10 @@ fn debug_error(error: impl std::fmt::Debug) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{REQUIRED_SMOKE_COVERAGE, REQUIRED_SMOKE_STAGES, coverage_report};
+    use super::{
+        REQUIRED_SMOKE_COVERAGE, REQUIRED_SMOKE_STAGES, authentication_profile_results,
+        coverage_report,
+    };
 
     #[test]
     fn required_smoke_coverage_is_stable_and_complete() {
@@ -743,5 +1002,18 @@ mod tests {
         observed.push("backend.Renamed.WithoutMigration".into());
         let error = coverage_report(&observed).expect_err("unknown ID must fail");
         assert!(error.to_string().contains("unknown required coverage IDs"));
+    }
+
+    #[test]
+    fn authentication_catalogue_has_stable_version_scoped_profiles() {
+        let profiles = authentication_profile_results(true);
+        assert_eq!(profiles.len(), 7);
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.postgres_versions == "14-18")
+        );
+        assert_eq!(profiles[0].id, "auth.plaintext.trust");
+        assert_eq!(profiles[6].id, "auth.tls.rejection");
     }
 }

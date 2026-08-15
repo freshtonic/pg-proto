@@ -91,3 +91,56 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert!(summary.contains("42"));
     assert!(summary.contains("PASS"));
 }
+
+#[test]
+#[ignore = "requires a Docker-compatible container runtime"]
+fn authentication_profile_writes_versioned_security_evidence() {
+    let artifacts = tempfile::tempdir().expect("artifact directory");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args(["conformance", "--profile", "authentication", "--artifacts"])
+        .arg(artifacts.path())
+        .output()
+        .expect("run authentication profile");
+
+    assert!(
+        output.status.success(),
+        "authentication profile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifacts.path().join("result.json")).expect("result artifact"),
+    )
+    .expect("valid result JSON");
+    assert_eq!(result["schema_version"], 1);
+    assert_eq!(result["profile"], "authentication");
+    let profiles = result["authentication_profiles"]
+        .as_array()
+        .expect("authentication profile evidence");
+    let stable_ids: Vec<_> = profiles
+        .iter()
+        .map(|profile| profile["id"].as_str().expect("stable profile ID"))
+        .collect();
+    assert_eq!(
+        stable_ids,
+        [
+            "auth.plaintext.trust",
+            "auth.plaintext.cleartext-password",
+            "auth.plaintext.md5",
+            "auth.plaintext.scram-sha-256",
+            "auth.tls.scram-sha-256-plus",
+            "auth.tls.negotiation",
+            "auth.tls.rejection",
+        ]
+    );
+    assert!(
+        profiles
+            .iter()
+            .all(|profile| profile["postgres_versions"] == "14-18")
+    );
+    assert!(
+        profiles
+            .iter()
+            .all(|profile| profile["evidence"].as_str().is_some())
+    );
+}

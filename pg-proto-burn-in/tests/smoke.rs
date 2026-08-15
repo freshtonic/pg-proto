@@ -127,6 +127,17 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         result["async_traffic"]["causally_unattributed"],
         serde_json::json!(["backend-key", "notice", "notification", "parameter-status"])
     );
+    assert_eq!(
+        result["cancellation"],
+        serde_json::json!({
+            "selected_sqlstate": "57014",
+            "selected_session_survived": true,
+            "unaffected_value": 7,
+            "unaffected_session_survived": true,
+            "all_keys_rewritten": true,
+            "mappings_after_teardown": 0
+        })
+    );
     let scenarios = result["data_scenarios"]
         .as_array()
         .expect("data scenario results");

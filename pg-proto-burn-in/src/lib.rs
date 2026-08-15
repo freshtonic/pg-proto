@@ -8,7 +8,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,10 +21,10 @@ use pg_proto::{
     BackendMessage, BackendMiddlewareOutput, BoundedPipeline, CancelKey, CancellationPolicy,
     CancellationRoute, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
     ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
-    Intermediary, IntermediaryCancellationRegistry, IntermediaryMiddleware, OperationId,
-    ProtocolTransitionDirection, ProtocolTransitionObservation, Server, ServerConnectionContext,
-    ServerTlsPolicy, SslMode, StartupParameters, StartupRouteResolver, StaticClientCredentials,
-    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
+    Intermediary, IntermediaryAccept, IntermediaryCancellationRegistry, IntermediaryMiddleware,
+    OperationId, ProtocolTransitionDirection, ProtocolTransitionObservation, Server,
+    ServerConnectionContext, ServerTlsPolicy, SslMode, StartupParameters, StartupRouteResolver,
+    StaticClientCredentials, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use postgres_protocol::message::{backend, frontend};
 use rcgen::generate_simple_self_signed;
@@ -75,6 +78,8 @@ struct RunResult {
     copy_scenarios: Vec<CopyScenarioResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     async_traffic: Option<AsyncTrafficResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cancellation: Option<CancellationResult>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -160,6 +165,22 @@ struct CopyScenarioResult {
     validated: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CancellationResult {
+    selected_sqlstate: String,
+    selected_session_survived: bool,
+    unaffected_value: i32,
+    unaffected_session_survived: bool,
+    all_keys_rewritten: bool,
+    mappings_after_teardown: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CancellationRegistryResult {
+    all_keys_rewritten: bool,
+    mappings_after_teardown: usize,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoverageReport {
     observed_ids: Vec<String>,
@@ -194,6 +215,10 @@ enum ChildEvent {
         copy_scenarios: Vec<CopyScenarioResult>,
         #[serde(default)]
         async_traffic: Option<Box<AsyncTrafficResult>>,
+        #[serde(default)]
+        cancellation: Option<Box<CancellationResult>>,
+        #[serde(default)]
+        cancellation_registry: Option<CancellationRegistryResult>,
     },
 }
 
@@ -219,6 +244,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             error_scenarios: Vec::new(),
             copy_scenarios: Vec::new(),
             async_traffic: None,
+            cancellation: None,
             coverage: CoverageReport {
                 observed_ids: coverage.clone(),
                 scripted: coverage,
@@ -251,6 +277,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             error_scenarios,
             copy_scenarios,
             async_traffic,
+            cancellation,
         )) => RunResult {
             schema_version: 1,
             command: "conformance".into(),
@@ -266,6 +293,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             error_scenarios: error_scenarios.clone(),
             copy_scenarios: copy_scenarios.clone(),
             async_traffic: Some(async_traffic.clone()),
+            cancellation: Some(cancellation.clone()),
             coverage: coverage_report(coverage)?,
             authentication_profiles: Vec::new(),
             success: true,
@@ -285,6 +313,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             error_scenarios: Vec::new(),
             copy_scenarios: Vec::new(),
             async_traffic: None,
+            cancellation: None,
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -318,6 +347,7 @@ async fn run_authentication_conformance(
         error_scenarios: Vec::new(),
         copy_scenarios: Vec::new(),
         async_traffic: None,
+        cancellation: None,
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
@@ -572,6 +602,7 @@ async fn supervise_smoke(
         Vec<SqlErrorScenarioResult>,
         Vec<CopyScenarioResult>,
         AsyncTrafficResult,
+        CancellationResult,
     ),
     Box<dyn Error>,
 > {
@@ -591,7 +622,7 @@ async fn supervise_smoke(
             "--address",
             &upstream.to_string(),
             "--connections",
-            "4",
+            "7",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -623,6 +654,7 @@ async fn supervise_smoke(
         error_scenarios,
         copy_scenarios,
         mut async_traffic,
+        mut cancellation,
     ) = match completed {
         ChildEvent::Completed {
             value: Some(value),
@@ -633,6 +665,8 @@ async fn supervise_smoke(
             error_scenarios,
             copy_scenarios,
             async_traffic: Some(async_traffic),
+            cancellation: Some(cancellation),
+            cancellation_registry: None,
             ..
         } => (
             value,
@@ -643,6 +677,7 @@ async fn supervise_smoke(
             error_scenarios,
             copy_scenarios,
             *async_traffic,
+            *cancellation,
         ),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
     };
@@ -651,6 +686,7 @@ async fn supervise_smoke(
     let ChildEvent::Completed {
         coverage: intermediary_coverage,
         async_traffic: Some(intermediary_async),
+        cancellation_registry: Some(cancellation_registry),
         ..
     } = intermediary_completed
     else {
@@ -660,7 +696,10 @@ async fn supervise_smoke(
     async_traffic.parameter_status = intermediary_async.parameter_status;
     async_traffic.backend_key_forwarded = intermediary_async.backend_key_forwarded;
     async_traffic.causally_unattributed = intermediary_async.causally_unattributed;
+    cancellation.all_keys_rewritten = cancellation_registry.all_keys_rewritten;
+    cancellation.mappings_after_teardown = cancellation_registry.mappings_after_teardown;
     validate_async_traffic(&async_traffic)?;
+    validate_cancellation(&cancellation)?;
     wait_success(&mut intermediary, "intermediary").await?;
     drop(container);
     Ok((
@@ -672,7 +711,21 @@ async fn supervise_smoke(
         error_scenarios,
         copy_scenarios,
         async_traffic,
+        cancellation,
     ))
+}
+
+fn validate_cancellation(evidence: &CancellationResult) -> Result<(), Box<dyn Error>> {
+    if evidence.selected_sqlstate != "57014"
+        || !evidence.selected_session_survived
+        || evidence.unaffected_value != 7
+        || !evidence.unaffected_session_survived
+        || !evidence.all_keys_rewritten
+        || evidence.mappings_after_teardown != 0
+    {
+        return Err(format!("incomplete cancellation evidence: {evidence:?}").into());
+    }
+    Ok(())
 }
 
 fn validate_async_traffic(evidence: &AsyncTrafficResult) -> Result<(), Box<dyn Error>> {
@@ -821,6 +874,19 @@ struct Route(SocketAddr);
 #[derive(Clone, Default)]
 struct FourByteCancellationRegistry {
     routes: Arc<Mutex<HashMap<CancelKey, CancellationRoute>>>,
+    registrations: Arc<AtomicUsize>,
+    rewrites: Arc<AtomicUsize>,
+}
+
+impl FourByteCancellationRegistry {
+    fn evidence(&self) -> CancellationRegistryResult {
+        let registrations = self.registrations.load(Ordering::Relaxed);
+        CancellationRegistryResult {
+            all_keys_rewritten: registrations > 0
+                && self.rewrites.load(Ordering::Relaxed) == registrations,
+            mappings_after_teardown: self.routes.lock().map_or(usize::MAX, |routes| routes.len()),
+        }
+    }
 }
 
 impl IntermediaryCancellationRegistry for FourByteCancellationRegistry {
@@ -828,14 +894,17 @@ impl IntermediaryCancellationRegistry for FourByteCancellationRegistry {
 
     fn register(&self, route: CancellationRoute) -> Result<CancelKey, Self::Error> {
         let upstream = route.upstream_key();
-        let secret = upstream
+        let mut secret = upstream
             .secret_key
             .get(..4)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short cancellation key"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short cancellation key"))?
+            .to_owned();
+        secret[0] ^= 0x80;
         let client = CancelKey {
-            process_id: upstream.process_id,
-            secret_key: bytes::Bytes::copy_from_slice(secret),
+            process_id: upstream.process_id ^ 0x8000_0000,
+            secret_key: bytes::Bytes::from(secret),
         };
+        let rewritten = &client != upstream;
         let mut routes = self
             .routes
             .lock()
@@ -845,6 +914,10 @@ impl IntermediaryCancellationRegistry for FourByteCancellationRegistry {
                 io::ErrorKind::AlreadyExists,
                 "duplicate cancellation key",
             ));
+        }
+        self.registrations.fetch_add(1, Ordering::Relaxed);
+        if rewritten {
+            self.rewrites.fetch_add(1, Ordering::Relaxed);
         }
         Ok(client)
     }
@@ -996,12 +1069,13 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         .authentication(TrustClientAuthentication)
         .build()
         .map_err(debug_error)?;
+    let cancellation_registry = FourByteCancellationRegistry::default();
     let intermediary = Arc::new(
         Intermediary::builder()
             .server(server)
             .client(client)
             .startup_resolver(Route(upstream))
-            .cancellation_registry(FourByteCancellationRegistry::default())
+            .cancellation_registry(cancellation_registry.clone())
             .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
             .middleware(
                 |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
@@ -1022,16 +1096,17 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         let (transport, peer) = listener.accept().await?;
         let intermediary = Arc::clone(&intermediary);
         sessions.spawn(async move {
-            let mut session =
-                Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
-                    .await
-                    .map_err(debug_error)?
-                    .into_session();
+            let accepted = Box::pin(intermediary.accept(transport, peer, CoverageState::default()))
+                .await
+                .map_err(debug_error)?;
+            let IntermediaryAccept::Session(mut session) = accepted else {
+                return Ok::<_, io::Error>(None);
+            };
             loop {
                 match session.forward_next().await {
                     Ok(ForwardedMessage::Frontend(FrontendMessage::Terminate)) => {
                         let (_, _, state, ..) = session.teardown();
-                        return Ok::<_, io::Error>(state);
+                        return Ok::<_, io::Error>(Some(state));
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -1045,7 +1120,9 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
     }
     let mut accumulated = CoverageState::default();
     while let Some(result) = sessions.join_next().await {
-        let state = result??;
+        let Some(state) = result?? else {
+            continue;
+        };
         accumulated.transitions.extend(state.transitions);
         accumulated
             .causally_unattributed
@@ -1069,6 +1146,8 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             causally_unattributed: accumulated.causally_unattributed.into_iter().collect(),
             ..AsyncTrafficResult::default()
         })),
+        cancellation: None,
+        cancellation_registry: Some(cancellation_registry.evidence()),
     })
     .await
 }
@@ -1146,6 +1225,8 @@ async fn run_tls_credential_intermediary(
         error_scenarios: Vec::new(),
         copy_scenarios: Vec::new(),
         async_traffic: None,
+        cancellation: None,
+        cancellation_registry: None,
     })
     .await
 }
@@ -1215,6 +1296,8 @@ async fn run_credential_intermediary(
         error_scenarios: Vec::new(),
         copy_scenarios: Vec::new(),
         async_traffic: None,
+        cancellation: None,
+        cancellation_registry: None,
     })
     .await
 }
@@ -1309,6 +1392,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let data_scenarios = run_data_scenarios(&client).await?;
     let mut query_lifecycle = run_query_lifecycles(&mut client).await?;
     let error_scenarios = run_sql_error_scenarios(&mut client, proxy).await?;
+    let cancellation = run_cancellation_scenario(proxy).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
     let copy_scenarios = run_copy_connection(proxy, option(arguments, "--password").ok()).await?;
@@ -1326,6 +1410,8 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         error_scenarios,
         copy_scenarios,
         async_traffic: Some(Box::new(async_traffic)),
+        cancellation: Some(Box::new(cancellation)),
+        cancellation_registry: None,
     })
     .await
 }
@@ -1349,6 +1435,88 @@ async fn run_copy_connection(
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
     Ok(scenarios)
+}
+
+async fn run_cancellation_scenario(
+    proxy: SocketAddr,
+) -> Result<CancellationResult, Box<dyn Error>> {
+    let (selected, selected_connection) = connect_driver(proxy).await?;
+    let selected_connection = tokio::spawn(selected_connection);
+    selected
+        .batch_execute("SET application_name = 'pg-proto-burn-in-cancel-selected'")
+        .await?;
+    let cancel = selected.cancel_token();
+    let selected_query = tokio::spawn(async move {
+        let outcome = selected.query_one("SELECT pg_sleep(10)", &[]).await;
+        (selected, outcome)
+    });
+
+    let (unaffected, unaffected_connection) = connect_driver(proxy).await?;
+    let unaffected_connection = tokio::spawn(unaffected_connection);
+    timeout(CHILD_TIMEOUT, async {
+        loop {
+            let active: bool = unaffected
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE application_name = 'pg-proto-burn-in-cancel-selected' \
+                     AND state = 'active' AND query = 'SELECT pg_sleep(10)')",
+                    &[],
+                )
+                .await?
+                .get(0);
+            if active {
+                return Ok::<_, tokio_postgres::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    let unaffected_query = tokio::spawn(async move {
+        let outcome = unaffected
+            .query_one("SELECT 7::int4 FROM pg_sleep(0.5)", &[])
+            .await;
+        (unaffected, outcome)
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cancel.cancel_query(tokio_postgres::NoTls).await?;
+
+    let (selected, selected_outcome) = timeout(CHILD_TIMEOUT, selected_query).await??;
+    let selected_error = selected_outcome.expect_err("selected operation was not cancelled");
+    let selected_sqlstate = selected_error
+        .as_db_error()
+        .ok_or("selected cancellation did not return a PostgreSQL error")?
+        .code()
+        .code()
+        .to_owned();
+    let selected_session_survived = selected
+        .query_one("SELECT 1::int4", &[])
+        .await?
+        .get::<_, i32>(0)
+        == 1;
+
+    let (unaffected, unaffected_outcome) = timeout(CHILD_TIMEOUT, unaffected_query).await??;
+    let unaffected_value = unaffected_outcome?.get::<_, i32>(0);
+    let unaffected_session_survived = unaffected
+        .query_one("SELECT 1::int4", &[])
+        .await?
+        .get::<_, i32>(0)
+        == 1;
+
+    drop(selected);
+    drop(unaffected);
+    timeout(CHILD_TIMEOUT, selected_connection).await???;
+    timeout(CHILD_TIMEOUT, unaffected_connection).await???;
+
+    Ok(CancellationResult {
+        selected_sqlstate,
+        selected_session_survived,
+        unaffected_value,
+        unaffected_session_survived,
+        // The intermediary contributes registry-owned evidence after teardown.
+        all_keys_rewritten: false,
+        mappings_after_teardown: usize::MAX,
+    })
 }
 
 async fn run_sql_error_scenarios(

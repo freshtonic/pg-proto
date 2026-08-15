@@ -17,3 +17,21 @@ The release-mode acceptance budgets are:
 These intentionally broad regression limits are portable across CI runners.
 Optimisation work should record distributions separately rather than weakening
 correctness tests or coupling the library to a particular Proxy deployment.
+
+## Controlled burn-in measurements
+
+The `pg-proto-burn-in performance` command turns measurements captured through
+the public intermediary harness into versioned `performance.json`, Markdown,
+and an unpromoted candidate baseline. Input keeps warm-up, closed-loop, and
+fixed-rate open-loop samples separate. Reports include queue, execution, raw
+end-to-end, and coordinated-omission-corrected latency histograms, achieved
+rate, repeated-window drift, build identity, resource-checkpoint evidence, and
+COPY evidence.
+
+Use `--build-mode optimized` with Cargo profile `burn-in`, or
+`--build-mode allocator-diagnostic` with `burn-in-diagnostic`; their results are
+not comparable. Thresholds remain advisory by default. `--enforce` additionally
+requires `--stable-runner`, Linux, a named non-hosted runner, and a reviewed
+promoted baseline. Candidate baselines are always written with
+`promoted: false`; promotion is a separate reviewed operation. In particular,
+ordinary hosted CI never acts as a performance gate.

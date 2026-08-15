@@ -45,6 +45,7 @@ use tokio::{
     time::timeout,
 };
 
+mod performance;
 mod scripted;
 mod soak;
 
@@ -56,12 +57,13 @@ pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("conformance") => run_conformance(&arguments).await,
         Some("soak") => soak::run_soak(&arguments).await,
         Some("replay") => soak::run_replay(&arguments).await,
+        Some("performance") => performance::run(&arguments).await,
         Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("resource-driver-child") => soak::run_resource_driver_child(&arguments).await,
         Some("resource-hold-child") => soak::run_resource_hold_child(&arguments).await,
         Some("intermediary-child") => run_intermediary_child(&arguments).await,
         Some("driver-child") => run_driver_child(&arguments).await,
-        _ => Err("usage: pg-proto-burn-in <conformance|soak|replay> [options]".into()),
+        _ => Err("usage: pg-proto-burn-in <conformance|soak|replay|performance> [options]".into()),
     }
 }
 

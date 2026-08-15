@@ -18,6 +18,20 @@ members = ["pg-proto-burn-in", "pg-proto-fsm"]
 exclude = ["fuzz"]
 resolver = "3"
 
+[profile.burn-in]
+inherits = "release"
+debug = 2
+lto = "fat"
+codegen-units = 1
+incremental = false
+
+[profile.burn-in-diagnostic]
+inherits = "release"
+debug = 2
+lto = "off"
+codegen-units = 1
+incremental = false
+
 [lib]
 path = "src/lib.rs"
 

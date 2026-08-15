@@ -166,20 +166,17 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         large["digest"],
         "191b550a26addc17754b296d2f0e554dcfb7e666030f2c9ecc35d7d1b41b80d3"
     );
-    assert_eq!(
-        result["coverage"]["observed_ids"]
-            .as_array()
-            .expect("coverage IDs")
-            .len(),
-        37
+    let observed_ids = result["coverage"]["observed_ids"]
+        .as_array()
+        .expect("coverage IDs");
+    assert!(
+        (37..=38).contains(&observed_ids.len()),
+        "expected required coverage with at most one optional transition"
     );
     assert_eq!(result["coverage"]["stages"].as_array().unwrap().len(), 7);
     assert_eq!(
-        result["coverage"]["real_postgres"]
-            .as_array()
-            .unwrap()
-            .len(),
-        37
+        result["coverage"]["real_postgres"].as_array().unwrap(),
+        observed_ids
     );
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());

@@ -91,26 +91,14 @@ jobs:
           soak --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --artifacts target/burn-in/stable/soak
-      - name: Enforce controlled performance thresholds when integrated
-        shell: bash
-        run: |
-          mkdir -p target/burn-in
-          set +e
-          cargo run --release -p pg-proto-burn-in -- \
-            performance --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED" \
-            --duration-seconds "$BURN_IN_DURATION" \
-            --artifacts target/burn-in/stable/performance \
-            2> >(tee target/burn-in-performance.stderr >&2)
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            exit 0
-          fi
-          if grep -Fq "usage: pg-proto-burn-in" target/burn-in-performance.stderr; then
-            echo "::notice::Performance command is not integrated yet; ticket #89 will activate this stable-runner gate."
-            exit 0
-          fi
-          exit "$status"
+      - name: Capture controlled stable-runner performance evidence
+        run: >-
+          cargo run --profile burn-in -p pg-proto-burn-in --
+          performance --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
+          --duration-seconds "$BURN_IN_DURATION"
+          --runner "$RUNNER_NAME" --stable-runner
+          --postgres-version 18 --build-mode optimized
+          --artifacts target/burn-in/stable/performance
       - name: Upload stable performance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -118,5 +106,4 @@ jobs:
           name: burn-in-stable-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/burn-in/stable
-            target/burn-in-performance.stderr
           if-no-files-found: warn

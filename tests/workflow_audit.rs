@@ -42,6 +42,8 @@ fn burn_in_workflows_separate_portable_evidence_from_stable_runner_enforcement()
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
     assert!(ci.contains("conformance --profile smoke --postgres-version 18"));
+    assert!(ci.contains("conformance --profile scripted"));
+    assert!(!ci.contains("when integrated"));
 
     let compatibility =
         fs::read_to_string(root.join(".github/workflows/postgres-compatibility.yml")).unwrap();
@@ -75,5 +77,4 @@ fn burn_in_workflows_separate_portable_evidence_from_stable_runner_enforcement()
     assert!(stable.contains("soak --profile \"$BURN_IN_PROFILE\""));
     assert!(stable.contains("performance --profile"));
     assert!(!stable.contains("continue-on-error: true"));
-    assert!(stable.contains("Performance command is not integrated yet"));
 }

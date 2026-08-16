@@ -23,4 +23,17 @@ jobs:
         with:
           toolchain: 1.97.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --lib internal_tests::postgres_container -- --ignored
+      - name: Run crate compatibility probe
+        run: cargo test --lib internal_tests::postgres_container -- --ignored
+      - name: Run public intermediary conformance
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          conformance --profile smoke --postgres-version ${{ matrix.version }}
+          --artifacts target/burn-in/postgres-${{ matrix.version }}
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-postgres-${{ matrix.version }}
+          path: target/burn-in/postgres-${{ matrix.version }}
+          if-no-files-found: warn

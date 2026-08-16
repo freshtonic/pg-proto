@@ -216,6 +216,39 @@ jobs:
       - name: Run all tests, including container tests
         run: cargo test --workspace -- --include-ignored --test-threads=1
 
+      - name: Run ordinary burn-in smoke
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          conformance --profile smoke --postgres-version 18
+          --artifacts target/burn-in/smoke
+
+      - name: Run malformed scripted conformance when integrated
+        shell: bash
+        run: |
+          set +e
+          cargo run -p pg-proto-burn-in -- \
+            conformance --profile malformed \
+            --artifacts target/burn-in/malformed \
+            2> >(tee target/burn-in-malformed.stderr >&2)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -Fq "unsupported conformance profile: malformed" target/burn-in-malformed.stderr; then
+            echo "::notice::Malformed conformance will become required when ticket #85 is integrated."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload ordinary burn-in evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-smoke
+          path: target/burn-in
+          if-no-files-found: warn
+
   benches:
     name: Benchmarks
     needs: reuse-pr-ci

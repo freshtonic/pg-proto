@@ -1,0 +1,122 @@
+name: PostgreSQL burn-in
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Where to run; only the stable runner enforces performance thresholds
+        required: true
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - stable
+      profile:
+        description: Recorded burn-in profile
+        required: true
+        default: diagnostic
+        type: choice
+        options:
+          - diagnostic
+          - scheduled-soak
+          - overnight
+      duration_seconds:
+        description: Soak or measurement duration
+        required: true
+        default: "60"
+        type: string
+      seed:
+        description: Deterministic schedule seed
+        required: true
+        default: "8675309"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: burn-in-${{ github.workflow }}-${{ github.ref }}-${{ inputs.runner || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  hosted-soak:
+    name: Hosted advisory soak
+    if: github.event_name == 'schedule' || inputs.runner == 'hosted'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      BURN_IN_DURATION: ${{ github.event_name == 'schedule' && '60' || inputs.duration_seconds }}
+      BURN_IN_SEED: ${{ github.event_name == 'schedule' && '8675309' || inputs.seed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run portable diagnostic soak
+        run: >-
+          cargo run --release -p pg-proto-burn-in --
+          soak --profile diagnostic --seed "$BURN_IN_SEED"
+          --duration-seconds "$BURN_IN_DURATION"
+          --artifacts target/burn-in/hosted
+      - name: Upload hosted diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/burn-in/hosted
+          if-no-files-found: warn
+
+  stable-performance:
+    name: Stable Linux performance gate
+    if: github.event_name == 'schedule' || inputs.runner == 'stable'
+    runs-on: [self-hosted, linux, pg-proto-stable]
+    timeout-minutes: 540
+    env:
+      BURN_IN_PROFILE: ${{ github.event_name == 'schedule' && 'scheduled-soak' || inputs.profile }}
+      BURN_IN_DURATION: ${{ github.event_name == 'schedule' && '3600' || inputs.duration_seconds }}
+      BURN_IN_SEED: ${{ github.event_name == 'schedule' && '8675309' || inputs.seed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run deterministic stable-runner soak
+        run: >-
+          cargo run --release -p pg-proto-burn-in --
+          soak --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
+          --duration-seconds "$BURN_IN_DURATION"
+          --artifacts target/burn-in/stable/soak
+      - name: Enforce controlled performance thresholds when integrated
+        shell: bash
+        run: |
+          mkdir -p target/burn-in
+          set +e
+          cargo run --release -p pg-proto-burn-in -- \
+            performance --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED" \
+            --duration-seconds "$BURN_IN_DURATION" \
+            --artifacts target/burn-in/stable/performance \
+            2> >(tee target/burn-in-performance.stderr >&2)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -Fq "usage: pg-proto-burn-in" target/burn-in-performance.stderr; then
+            echo "::notice::Performance command is not integrated yet; ticket #89 will activate this stable-runner gate."
+            exit 0
+          fi
+          exit "$status"
+      - name: Upload stable performance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-stable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/burn-in/stable
+            target/burn-in-performance.stderr
+          if-no-files-found: warn

@@ -297,7 +297,16 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         return Err(format!("unsupported conformance profile: {profile}").into());
     }
 
-    let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
+    let postgres_version = option(arguments, "--postgres-version").unwrap_or("18");
+    if !matches!(postgres_version, "14" | "15" | "16" | "17" | "18") {
+        return Err(format!("unsupported PostgreSQL version: {postgres_version}").into());
+    }
+
+    let outcome = supervise_smoke(
+        arguments.first().ok_or("missing executable path")?,
+        postgres_version,
+    )
+    .await;
     let result = match &outcome {
         Ok((
             value,
@@ -313,7 +322,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
-            postgres_version: "18".into(),
+            postgres_version: postgres_version.into(),
             scenario: ScenarioResult {
                 name: "extended-select-scalar".into(),
                 value: *value,
@@ -335,7 +344,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
-            postgres_version: "18".into(),
+            postgres_version: postgres_version.into(),
             scenario: ScenarioResult {
                 name: "extended-select-scalar".into(),
                 value: 0,
@@ -840,6 +849,7 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
 
 async fn supervise_smoke(
     executable: &str,
+    postgres_version: &str,
 ) -> Result<
     (
         i32,
@@ -856,7 +866,7 @@ async fn supervise_smoke(
 > {
     let container = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(format!("{postgres_version}-alpine"))
         .start()
         .await?;
     let upstream = SocketAddr::new(

@@ -1,6 +1,26 @@
 use std::{fs, process::Command};
 
 #[test]
+fn smoke_profile_rejects_versions_outside_the_compatibility_contract() {
+    let artifacts = tempfile::tempdir().expect("artifact directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args([
+            "conformance",
+            "--profile",
+            "smoke",
+            "--postgres-version",
+            "13",
+            "--artifacts",
+        ])
+        .arg(artifacts.path())
+        .output()
+        .expect("run rejected compatibility version");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported PostgreSQL version: 13"));
+}
+
+#[test]
 #[ignore = "requires Docker"]
 fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");

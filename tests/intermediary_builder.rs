@@ -7,8 +7,9 @@ use pg_proto::{
     AuthenticatedRouteContext, AuthenticatedRoutePolicy, BackendMessage, Bind, BoundedPipeline,
     CancellationPolicy, Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware,
     ClientTlsPolicy, ConnectTarget, CopyResponse, Execute, FrontendMessage, InitialServerContext,
-    Intermediary, IntermediaryBuildError, IntermediaryMiddleware, OperationId, Parse, Server,
-    ServerConnectionContext, ServerMiddleware, ServerTlsPolicy, StartupParameters,
+    Intermediary, IntermediaryAcceptError, IntermediaryBuildError, IntermediaryMiddleware,
+    OperationId, Parse, ProtocolVersion, Server, ServerConnectionContext, ServerMiddleware,
+    ServerTlsPolicy, StartupMessage, StartupParameters, StartupResolutionError,
     StartupRouteResolver, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -278,6 +279,69 @@ fn intermediary_requires_complete_roles_routing_and_cancellation_policy() {
         Intermediary::builder().build().unwrap_err(),
         IntermediaryBuildError::MissingServer
     );
+}
+
+#[tokio::test]
+async fn intermediary_rejects_non_utf8_startup_parameters_without_panicking() {
+    for (parameters, expected) in [
+        (
+            std::iter::once((Bytes::from_static(b"\xff"), Bytes::from_static(b"value"))).collect(),
+            "startup parameter name is not UTF-8",
+        ),
+        (
+            std::iter::once((Bytes::from_static(b"user"), Bytes::from_static(b"\xff"))).collect(),
+            "startup parameter value is not UTF-8",
+        ),
+    ] {
+        let (mut downstream_peer, downstream_transport) = tokio::io::duplex(256);
+        let (upstream_transport, _upstream_peer) = tokio::io::duplex(256);
+        let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
+        let server = Server::builder()
+            .tls(ServerTlsPolicy::Disabled)
+            .authentication(TrustServerAuthentication)
+            .build()
+            .unwrap();
+        let client = Client::builder()
+            .connector(move |_| {
+                let transport = upstream_transport.lock().unwrap().take().unwrap();
+                async move { Ok::<_, Infallible>(transport) }
+            })
+            .tls(ClientTlsPolicy::Disabled)
+            .authentication(TrustClientAuthentication)
+            .build()
+            .unwrap();
+        let intermediary = Intermediary::builder()
+            .server(server)
+            .client(client)
+            .startup_resolver(CandidateResolver)
+            .cancellation(CancellationPolicy::Reject)
+            .build()
+            .unwrap();
+        downstream_peer
+            .write_all(
+                &StartupMessage {
+                    version: ProtocolVersion::V3_2,
+                    parameters,
+                }
+                .encode()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let result =
+            Box::pin(intermediary.accept(downstream_transport, "downstream-peer".to_owned(), ()))
+                .await;
+        let error = match result {
+            Err(IntermediaryAcceptError::StartupRoute(StartupResolutionError::Parameters(
+                error,
+            ))) => error,
+            Err(error) => panic!("unexpected establishment error: {error:?}"),
+            Ok(_) => panic!("invalid UTF-8 startup was accepted"),
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), expected);
+    }
 }
 
 #[tokio::test]

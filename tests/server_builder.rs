@@ -771,6 +771,36 @@ async fn accept_packet(
     result
 }
 
+#[tokio::test]
+async fn server_keeps_non_utf8_startup_owned_until_explicit_teardown() {
+    for parameters in [
+        BTreeMap::from([(Bytes::from_static(b"\xff"), Bytes::from_static(b"value"))]),
+        BTreeMap::from([(Bytes::from_static(b"user"), Bytes::from_static(b"\xff"))]),
+    ] {
+        let server = Server::builder()
+            .tls(ServerTlsPolicy::Disabled)
+            .authentication(TrustServerAuthentication)
+            .build()
+            .unwrap();
+        let (mut peer, transport) = tokio::io::duplex(256);
+        peer.write_all(
+            &StartupMessage {
+                version: ProtocolVersion::V3_2,
+                parameters,
+            }
+            .encode()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let ServerAccept::Session(connection) = server.accept(transport, (), ()).await.unwrap()
+        else {
+            panic!("startup was not an ordinary session")
+        };
+        let _ = connection.teardown();
+    }
+}
+
 fn startup_with_value(value_len: usize) -> Bytes {
     StartupMessage {
         version: ProtocolVersion::V3_2,

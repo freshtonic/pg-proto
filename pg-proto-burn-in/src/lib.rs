@@ -45,6 +45,9 @@ use tokio::{
     time::timeout,
 };
 
+mod catalogue;
+mod faults;
+mod performance;
 mod scripted;
 mod soak;
 
@@ -56,12 +59,18 @@ pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("conformance") => run_conformance(&arguments).await,
         Some("soak") => soak::run_soak(&arguments).await,
         Some("replay") => soak::run_replay(&arguments).await,
+        Some("catalogue") => catalogue::run(&arguments).await,
+        Some("performance") => performance::run(&arguments).await,
+        Some("faults") => faults::run(&arguments).await,
         Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("resource-driver-child") => soak::run_resource_driver_child(&arguments).await,
         Some("resource-hold-child") => soak::run_resource_hold_child(&arguments).await,
         Some("intermediary-child") => run_intermediary_child(&arguments).await,
         Some("driver-child") => run_driver_child(&arguments).await,
-        _ => Err("usage: pg-proto-burn-in <conformance|soak|replay> [options]".into()),
+        _ => Err(
+            "usage: pg-proto-burn-in <conformance|soak|replay|catalogue|performance|faults> [options]"
+                .into(),
+        ),
     }
 }
 
@@ -82,6 +91,10 @@ struct RunResult {
     async_traffic: Option<AsyncTrafficResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cancellation: Option<CancellationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replication: Option<ReplicationResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scripted_diagnostics: Vec<scripted::DiagnosticEvidence>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -152,6 +165,16 @@ struct AsyncTrafficResult {
 struct ParameterStatusResult {
     name: String,
     value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReplicationResult {
+    wal_received: bool,
+    standby_status_sent: bool,
+    cancelled: bool,
+    sqlstate: String,
+    teardown_complete: bool,
+    scripted_half_close_orders: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -230,7 +253,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     tokio::fs::create_dir_all(&artifacts).await?;
 
     if profile == "scripted" {
-        let coverage = scripted::run().await?;
+        let evidence = scripted::run().await?;
         let result = RunResult {
             schema_version: 1,
             command: "conformance".into(),
@@ -247,9 +270,11 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             copy_scenarios: Vec::new(),
             async_traffic: None,
             cancellation: None,
+            replication: None,
+            scripted_diagnostics: evidence.diagnostics,
             coverage: CoverageReport {
-                observed_ids: coverage.clone(),
-                scripted: coverage,
+                observed_ids: evidence.coverage.clone(),
+                scripted: evidence.coverage,
                 ..CoverageReport::default()
             },
             authentication_profiles: Vec::new(),
@@ -264,11 +289,27 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         )
         .await;
     }
+    if profile == "replication" {
+        return run_replication_conformance(
+            arguments.first().ok_or("missing executable path")?,
+            &artifacts,
+        )
+        .await;
+    }
     if profile != "smoke" {
         return Err(format!("unsupported conformance profile: {profile}").into());
     }
 
-    let outcome = supervise_smoke(arguments.first().ok_or("missing executable path")?).await;
+    let postgres_version = option(arguments, "--postgres-version").unwrap_or("18");
+    if !matches!(postgres_version, "14" | "15" | "16" | "17" | "18") {
+        return Err(format!("unsupported PostgreSQL version: {postgres_version}").into());
+    }
+
+    let outcome = supervise_smoke(
+        arguments.first().ok_or("missing executable path")?,
+        postgres_version,
+    )
+    .await;
     let result = match &outcome {
         Ok((
             value,
@@ -284,7 +325,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
-            postgres_version: "18".into(),
+            postgres_version: postgres_version.into(),
             scenario: ScenarioResult {
                 name: "extended-select-scalar".into(),
                 value: *value,
@@ -296,6 +337,8 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             copy_scenarios: copy_scenarios.clone(),
             async_traffic: Some(async_traffic.clone()),
             cancellation: Some(cancellation.clone()),
+            replication: None,
+            scripted_diagnostics: Vec::new(),
             coverage: coverage_report(coverage)?,
             authentication_profiles: Vec::new(),
             success: true,
@@ -304,7 +347,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             schema_version: 1,
             command: "conformance".into(),
             profile: profile.into(),
-            postgres_version: "18".into(),
+            postgres_version: postgres_version.into(),
             scenario: ScenarioResult {
                 name: "extended-select-scalar".into(),
                 value: 0,
@@ -316,6 +359,8 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             copy_scenarios: Vec::new(),
             async_traffic: None,
             cancellation: None,
+            replication: None,
+            scripted_diagnostics: Vec::new(),
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -350,12 +395,225 @@ async fn run_authentication_conformance(
         copy_scenarios: Vec::new(),
         async_traffic: None,
         cancellation: None,
+        replication: None,
+        scripted_diagnostics: Vec::new(),
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
     };
     write_artifacts(artifacts, &result).await?;
     outcome
+}
+
+async fn run_replication_conformance(
+    executable: &str,
+    artifacts: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let outcome = supervise_replication(executable).await;
+    let result = RunResult {
+        schema_version: 1,
+        command: "conformance".into(),
+        profile: "replication".into(),
+        postgres_version: "18".into(),
+        scenario: ScenarioResult {
+            name: "physical-replication-copy-both".into(),
+            value: 0,
+        },
+        fixtures: FixtureResult::default(),
+        data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
+        copy_scenarios: Vec::new(),
+        async_traffic: None,
+        cancellation: None,
+        replication: outcome.as_ref().ok().cloned(),
+        scripted_diagnostics: Vec::new(),
+        coverage: CoverageReport {
+            real_postgres: outcome
+                .as_ref()
+                .map(|_| {
+                    vec![
+                        "replication.physical.wal".into(),
+                        "replication.physical.standby-status".into(),
+                        "replication.physical.cancellation".into(),
+                    ]
+                })
+                .unwrap_or_default(),
+            scripted: vec![
+                "scripted.copy-both.client-half-close-first".into(),
+                "scripted.copy-both.server-half-close-first".into(),
+            ],
+            ..CoverageReport::default()
+        },
+        authentication_profiles: Vec::new(),
+        success: outcome.is_ok(),
+    };
+    write_artifacts(artifacts, &result).await?;
+    outcome.map(|_| ())
+}
+
+async fn supervise_replication(executable: &str) -> Result<ReplicationResult, Box<dyn Error>> {
+    let scripted_coverage = scripted::run().await?;
+    for required in [
+        "scripted.copy-both.client-half-close-first",
+        "scripted.copy-both.server-half-close-first",
+    ] {
+        if !scripted_coverage
+            .coverage
+            .iter()
+            .any(|observed| observed == required)
+        {
+            return Err(
+                format!("missing required scripted replication coverage: {required}").into(),
+            );
+        }
+    }
+    let replication_hba = b"#!/bin/sh\nset -eu\nprintf '\\nhost replication all all trust\\n' >> \"$PGDATA/pg_hba.conf\"\n".to_vec();
+    let container = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .with_env_var("POSTGRES_INITDB_ARGS", "--auth-host=trust")
+        .with_copy_to(
+            CopyTargetOptions::new("/docker-entrypoint-initdb.d/00_replication_hba.sh")
+                .with_mode(0o755),
+            CopyDataSource::Data(replication_hba),
+        )
+        .with_cmd([
+            "postgres",
+            "-c",
+            "fsync=off",
+            "-c",
+            "wal_level=replica",
+            "-c",
+            "max_wal_senders=4",
+        ])
+        .start()
+        .await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(upstream.ip().to_string())
+        .port(upstream.port())
+        .user("postgres")
+        .dbname("postgres");
+    let (sql, connection) = config.connect(tokio_postgres::NoTls).await?;
+    let sql_task = tokio::spawn(connection);
+    sql.batch_execute(
+        "DROP TABLE IF EXISTS burnin_replication; \
+         CREATE TABLE burnin_replication (id bigint PRIMARY KEY, payload text);",
+    )
+    .await?;
+    let start_lsn: String = sql
+        .query_one("SELECT pg_current_wal_lsn()::text", &[])
+        .await?
+        .get(0);
+
+    let mut intermediary = Command::new(executable)
+        .args([
+            "intermediary-child",
+            "--address",
+            &upstream.to_string(),
+            "--connections",
+            "2",
+            "--allow-abrupt-disconnects",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected replication intermediary ready event".into());
+    };
+
+    let mut replication = TcpStream::connect(listen_addr).await?;
+    replication.write_all(&replication_startup()).await?;
+    let (process_id, secret_key) = match read_replication_startup(&mut replication).await {
+        Ok(key) => key,
+        Err(error) => {
+            intermediary.kill().await?;
+            let _ = timeout(CHILD_TIMEOUT, intermediary.wait()).await;
+            let mut stderr = String::new();
+            if let Some(mut child_stderr) = intermediary.stderr.take() {
+                child_stderr.read_to_string(&mut stderr).await?;
+            }
+            return Err(format!(
+                "replication startup exchange failed: {error}; intermediary: {stderr}"
+            )
+            .into());
+        }
+    };
+    replication
+        .write_all(&tagged_message(
+            b'Q',
+            format!("START_REPLICATION PHYSICAL {start_lsn}\0").as_bytes(),
+        ))
+        .await?;
+    let (tag, body) = read_backend_message(&mut replication)
+        .await
+        .map_err(|error| format!("START_REPLICATION response failed: {error}"))?;
+    if tag != b'W' {
+        return Err(format!(
+            "expected CopyBothResponse, got backend tag {tag:?}, SQLSTATE {:?}",
+            error_sqlstate(&body)
+        )
+        .into());
+    }
+
+    sql.execute(
+        "INSERT INTO burnin_replication \
+         SELECT value, repeat(md5(value::text), 128) FROM generate_series(1, 256) AS value",
+        &[],
+    )
+    .await?;
+    sql.simple_query("SELECT pg_switch_wal()").await?;
+
+    let wal_end = loop {
+        let (tag, body) = timeout(CHILD_TIMEOUT, read_backend_message(&mut replication)).await??;
+        if tag == b'd' && body.first() == Some(&b'w') && body.len() >= 25 {
+            break u64::from_be_bytes(body[9..17].try_into()?);
+        }
+    };
+    replication
+        .write_all(&standby_status_update(wal_end))
+        .await?;
+
+    let mut cancellation = TcpStream::connect(listen_addr).await?;
+    cancellation
+        .write_all(&cancellation_packet(process_id, secret_key))
+        .await?;
+    cancellation.shutdown().await?;
+
+    let sqlstate = loop {
+        let (tag, body) = timeout(CHILD_TIMEOUT, read_backend_message(&mut replication)).await??;
+        if tag == b'E' {
+            break error_sqlstate(&body).ok_or("cancellation error omitted SQLSTATE")?;
+        }
+    };
+    replication.write_all(&tagged_message(b'X', &[])).await?;
+    replication.shutdown().await?;
+
+    let _ = read_event(&mut intermediary).await?;
+    wait_success(&mut intermediary, "replication intermediary").await?;
+    drop(sql);
+    timeout(CHILD_TIMEOUT, sql_task).await???;
+    drop(container);
+
+    if sqlstate != "57014" {
+        return Err(
+            format!("expected replication cancellation SQLSTATE 57014, got {sqlstate}").into(),
+        );
+    }
+    Ok(ReplicationResult {
+        wal_received: true,
+        standby_status_sent: true,
+        cancelled: true,
+        sqlstate,
+        teardown_complete: true,
+        scripted_half_close_orders: vec!["client-first".into(), "server-first".into()],
+    })
 }
 
 fn authentication_profile_results(executed: bool) -> Vec<AuthenticationProfileResult> {
@@ -594,6 +852,7 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
 
 async fn supervise_smoke(
     executable: &str,
+    postgres_version: &str,
 ) -> Result<
     (
         i32,
@@ -610,7 +869,7 @@ async fn supervise_smoke(
 > {
     let container = Postgres::default()
         .with_host_auth()
-        .with_tag("18-alpine")
+        .with_tag(format!("{postgres_version}-alpine"))
         .start()
         .await?;
     let upstream = SocketAddr::new(
@@ -1168,6 +1427,101 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         cancellation_registry: Some(cancellation_registry.evidence()),
     })
     .await
+}
+
+fn replication_startup() -> Vec<u8> {
+    let body = [
+        196_608_u32.to_be_bytes().as_slice(),
+        b"user\0postgres\0replication\0true\0\0",
+    ]
+    .concat();
+    [
+        u32::try_from(body.len() + 4)
+            .expect("small startup packet")
+            .to_be_bytes()
+            .as_slice(),
+        body.as_slice(),
+    ]
+    .concat()
+}
+
+async fn read_replication_startup(stream: &mut TcpStream) -> Result<(u32, u32), Box<dyn Error>> {
+    let mut cancellation_key = None;
+    loop {
+        let (tag, body) = read_backend_message(stream).await?;
+        match tag {
+            b'K' if body.len() == 8 => {
+                cancellation_key = Some((
+                    u32::from_be_bytes(body[..4].try_into()?),
+                    u32::from_be_bytes(body[4..].try_into()?),
+                ));
+            }
+            b'Z' => return cancellation_key.ok_or_else(|| "missing BackendKeyData".into()),
+            b'E' => {
+                return Err(format!(
+                    "replication startup failed with SQLSTATE {:?}",
+                    error_sqlstate(&body)
+                )
+                .into());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn tagged_message(tag: u8, body: &[u8]) -> Vec<u8> {
+    [
+        [tag].as_slice(),
+        u32::try_from(body.len() + 4)
+            .expect("protocol message fits u32")
+            .to_be_bytes()
+            .as_slice(),
+        body,
+    ]
+    .concat()
+}
+
+async fn read_backend_message(stream: &mut TcpStream) -> Result<(u8, Vec<u8>), Box<dyn Error>> {
+    let tag = stream.read_u8().await?;
+    let length = stream.read_u32().await?;
+    if length < 4 {
+        return Err("invalid backend message length".into());
+    }
+    let mut body = vec![0; usize::try_from(length - 4)?];
+    stream.read_exact(&mut body).await?;
+    Ok((tag, body))
+}
+
+fn standby_status_update(lsn: u64) -> Vec<u8> {
+    let body = [
+        b"r",
+        lsn.to_be_bytes().as_slice(),
+        lsn.to_be_bytes().as_slice(),
+        lsn.to_be_bytes().as_slice(),
+        0_i64.to_be_bytes().as_slice(),
+        [0].as_slice(),
+    ]
+    .concat();
+    tagged_message(b'd', &body)
+}
+
+fn cancellation_packet(process_id: u32, secret_key: u32) -> Vec<u8> {
+    [
+        16_u32.to_be_bytes().as_slice(),
+        80_877_102_u32.to_be_bytes().as_slice(),
+        process_id.to_be_bytes().as_slice(),
+        secret_key.to_be_bytes().as_slice(),
+    ]
+    .concat()
+}
+
+fn error_sqlstate(body: &[u8]) -> Option<String> {
+    let mut fields = body.split(|byte| *byte == 0);
+    fields.find_map(|field| {
+        (field.first() == Some(&b'C'))
+            .then(|| String::from_utf8(field.get(1..)?.to_vec()).ok())
+            .flatten()
+    })
 }
 
 async fn run_tls_credential_intermediary(

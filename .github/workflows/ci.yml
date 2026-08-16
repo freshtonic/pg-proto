@@ -213,8 +213,56 @@ jobs:
       - name: Legacy documentation reference audit
         run: cargo test --test documentation_audit
 
-      - name: Run all tests, including container tests
-        run: cargo test --workspace -- --include-ignored --test-threads=1
+      - name: Run all portable tests
+        run: cargo test --workspace
+
+      - name: Run core container tests
+        run: timeout 10m cargo test -p pg-proto -- --ignored --test-threads=1
+
+      - name: Run burn-in fault tests
+        run: >-
+          timeout 10m cargo test -p pg-proto-burn-in --test faults --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in performance tests
+        run: >-
+          timeout 10m cargo test -p pg-proto-burn-in --test performance --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in replication tests
+        run: >-
+          timeout 10m cargo test -p pg-proto-burn-in --test replication --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in authentication and smoke tests
+        run: >-
+          timeout 10m cargo test -p pg-proto-burn-in --test smoke --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in soak tests
+        run: >-
+          timeout 10m cargo test -p pg-proto-burn-in --test soak --
+          --include-ignored --test-threads=1
+
+      - name: Run ordinary burn-in smoke
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          conformance --profile smoke --postgres-version 18
+          --artifacts target/burn-in/smoke
+
+      - name: Run malformed scripted conformance
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          conformance --profile scripted
+          --artifacts target/burn-in/scripted
+
+      - name: Upload ordinary burn-in evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-smoke
+          path: target/burn-in
+          if-no-files-found: warn
 
   benches:
     name: Benchmarks

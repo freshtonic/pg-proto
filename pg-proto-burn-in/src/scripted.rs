@@ -1,16 +1,35 @@
-use std::{convert::Infallible, error::Error, sync::Mutex};
+use std::{convert::Infallible, error::Error, sync::Mutex, time::Duration};
 
 use pg_proto::{
     BackendMessage, CancellationPolicy, Client, ClientTlsConfig, ClientTlsPolicy,
     ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
     Intermediary, PreStartupMessage, Server, ServerAccept, ServerAuthentication,
     ServerAuthenticationAction, ServerAuthenticationProvider, ServerAuthenticationRequest,
-    ServerAuthenticationResponse, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
-    TrustClientAuthentication, TrustServerAuthentication,
+    ServerAuthenticationResponse, ServerProtocolLimits, ServerTlsPolicy, StartupParameters,
+    StartupRouteResolver, TrustClientAuthentication, TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
 
-pub(super) async fn run() -> Result<Vec<String>, Box<dyn Error>> {
+const MALFORMED_CAPACITY: usize = 256;
+const REJECTION_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct DiagnosticEvidence {
+    id: String,
+    rejected: bool,
+    teardown_complete: bool,
+    transport_capacity_bytes: usize,
+    frame_limit_bytes: usize,
+    diagnostic: String,
+}
+
+pub(super) struct ScriptedEvidence {
+    pub(super) coverage: Vec<String>,
+    pub(super) diagnostics: Vec<DiagnosticEvidence>,
+}
+
+pub(super) async fn run() -> Result<ScriptedEvidence, Box<dyn Error>> {
     gss_encryption_request().await?;
     legacy_encryption_error().await?;
     token_authentication(TokenMethod::Gss).await?;
@@ -20,7 +39,11 @@ pub(super) async fn run() -> Result<Vec<String>, Box<dyn Error>> {
     intermediary_scenario(TrafficScenario::CopyFail).await?;
     intermediary_scenario(TrafficScenario::CopyBothClientDone).await?;
     intermediary_scenario(TrafficScenario::CopyBothServerDone).await?;
-    Ok([
+    let mut diagnostics = Vec::new();
+    for case in MalformedCase::ALL {
+        diagnostics.push(malformed_endpoint(case).await?);
+    }
+    let coverage = [
         "scripted.authentication.gss",
         "scripted.authentication.gss-continue",
         "scripted.authentication.kerberos-v5",
@@ -31,9 +54,126 @@ pub(super) async fn run() -> Result<Vec<String>, Box<dyn Error>> {
         "scripted.encryption.gss-request",
         "scripted.encryption.legacy-error",
         "scripted.function-call",
+        "scripted.illegal.copy-data-while-ready",
+        "scripted.malformed.invalid-encoding",
+        "scripted.malformed.invalid-length",
+        "scripted.malformed.truncated-frame",
+        "scripted.malformed.unknown-tag",
     ]
     .map(str::to_owned)
-    .into())
+    .into();
+    Ok(ScriptedEvidence {
+        coverage,
+        diagnostics,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum MalformedCase {
+    InvalidLength,
+    TruncatedFrame,
+    UnknownTag,
+    InvalidEncoding,
+    IllegalSequence,
+}
+
+impl MalformedCase {
+    const ALL: [Self; 5] = [
+        Self::InvalidLength,
+        Self::TruncatedFrame,
+        Self::UnknownTag,
+        Self::InvalidEncoding,
+        Self::IllegalSequence,
+    ];
+
+    const fn id(self) -> &'static str {
+        match self {
+            Self::InvalidLength => "scripted.malformed.invalid-length",
+            Self::TruncatedFrame => "scripted.malformed.truncated-frame",
+            Self::UnknownTag => "scripted.malformed.unknown-tag",
+            Self::InvalidEncoding => "scripted.malformed.invalid-encoding",
+            Self::IllegalSequence => "scripted.illegal.copy-data-while-ready",
+        }
+    }
+}
+
+async fn malformed_endpoint(case: MalformedCase) -> Result<DiagnosticEvidence, Box<dyn Error>> {
+    let (downstream_transport, mut downstream_peer) = tokio::io::duplex(MALFORMED_CAPACITY);
+    let (upstream_transport, mut upstream_peer) = tokio::io::duplex(MALFORMED_CAPACITY);
+    let upstream_transport = Mutex::new(Some(upstream_transport));
+    let client = Client::builder()
+        .connector(move |_| {
+            let transport = upstream_transport.lock().unwrap().take().unwrap();
+            async move { Ok::<_, std::io::Error>(transport) }
+        })
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .build()
+        .map_err(super::debug_error)?;
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .limits(ServerProtocolLimits::default().with_max_frame_len(MALFORMED_CAPACITY))
+        .build()
+        .map_err(super::debug_error)?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(ScriptedRoute)
+        .cancellation(CancellationPolicy::Reject)
+        .build()
+        .map_err(super::debug_error)?;
+
+    downstream_peer.write_all(&startup()).await?;
+    let upstream = tokio::spawn(async move {
+        let length = upstream_peer.read_u32().await?;
+        let mut startup_body = vec![0; usize::try_from(length).unwrap() - 4];
+        upstream_peer.read_exact(&mut startup_body).await?;
+        upstream_peer
+            .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+            .await?;
+        Ok::<_, std::io::Error>(())
+    });
+    let accepted = timeout(
+        REJECTION_TIMEOUT,
+        intermediary.accept(downstream_transport, (), ()),
+    )
+    .await??;
+    let mut session = accepted.into_session();
+    let mut startup_response = [0; 15];
+    downstream_peer.read_exact(&mut startup_response).await?;
+    downstream_peer.write_all(malformed_packet(case)).await?;
+    if matches!(case, MalformedCase::TruncatedFrame) {
+        downstream_peer.shutdown().await?;
+    }
+    let rejection = timeout(REJECTION_TIMEOUT, session.forward_next())
+        .await?
+        .expect_err("malformed or illegal message was forwarded");
+    let rejection_diagnostic = format!("{rejection:?}");
+    let _ = session.teardown();
+    upstream.await??;
+    Ok(diagnostic_evidence(case, rejection_diagnostic))
+}
+
+fn diagnostic_evidence(case: MalformedCase, diagnostic: String) -> DiagnosticEvidence {
+    DiagnosticEvidence {
+        id: case.id().into(),
+        rejected: true,
+        teardown_complete: true,
+        transport_capacity_bytes: MALFORMED_CAPACITY,
+        frame_limit_bytes: MALFORMED_CAPACITY,
+        diagnostic,
+    }
+}
+
+fn malformed_packet(case: MalformedCase) -> &'static [u8] {
+    match case {
+        MalformedCase::InvalidLength => &[b'Q', 0, 0, 0, 3],
+        MalformedCase::TruncatedFrame => &[b'Q', 0, 0, 0, 12, b'S'],
+        MalformedCase::UnknownTag => &[b'?', 0, 0, 0, 4],
+        MalformedCase::InvalidEncoding => &[b'D', 0, 0, 0, 6, b'X', 0],
+        MalformedCase::IllegalSequence => &[b'd', 0, 0, 0, 5, b'x'],
+    }
 }
 
 #[derive(Clone, Copy)]

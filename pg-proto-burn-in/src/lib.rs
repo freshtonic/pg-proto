@@ -90,6 +90,8 @@ struct RunResult {
     cancellation: Option<CancellationResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replication: Option<ReplicationResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scripted_diagnostics: Vec<scripted::DiagnosticEvidence>,
     coverage: CoverageReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
@@ -248,7 +250,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     tokio::fs::create_dir_all(&artifacts).await?;
 
     if profile == "scripted" {
-        let coverage = scripted::run().await?;
+        let evidence = scripted::run().await?;
         let result = RunResult {
             schema_version: 1,
             command: "conformance".into(),
@@ -266,9 +268,10 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             async_traffic: None,
             cancellation: None,
             replication: None,
+            scripted_diagnostics: evidence.diagnostics,
             coverage: CoverageReport {
-                observed_ids: coverage.clone(),
-                scripted: coverage,
+                observed_ids: evidence.coverage.clone(),
+                scripted: evidence.coverage,
                 ..CoverageReport::default()
             },
             authentication_profiles: Vec::new(),
@@ -323,6 +326,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             async_traffic: Some(async_traffic.clone()),
             cancellation: Some(cancellation.clone()),
             replication: None,
+            scripted_diagnostics: Vec::new(),
             coverage: coverage_report(coverage)?,
             authentication_profiles: Vec::new(),
             success: true,
@@ -344,6 +348,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             async_traffic: None,
             cancellation: None,
             replication: None,
+            scripted_diagnostics: Vec::new(),
             coverage: CoverageReport::default(),
             authentication_profiles: Vec::new(),
             success: false,
@@ -379,6 +384,7 @@ async fn run_authentication_conformance(
         async_traffic: None,
         cancellation: None,
         replication: None,
+        scripted_diagnostics: Vec::new(),
         coverage: CoverageReport::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
@@ -409,6 +415,7 @@ async fn run_replication_conformance(
         async_traffic: None,
         cancellation: None,
         replication: outcome.as_ref().ok().cloned(),
+        scripted_diagnostics: Vec::new(),
         coverage: CoverageReport {
             real_postgres: outcome
                 .as_ref()
@@ -440,6 +447,7 @@ async fn supervise_replication(executable: &str) -> Result<ReplicationResult, Bo
         "scripted.copy-both.server-half-close-first",
     ] {
         if !scripted_coverage
+            .coverage
             .iter()
             .any(|observed| observed == required)
         {

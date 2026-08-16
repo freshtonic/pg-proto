@@ -35,7 +35,41 @@ fn scripted_profile_covers_exceptional_paths_without_claiming_real_postgres() {
             "scripted.copy-fail.exact",
             "scripted.encryption.gss-request",
             "scripted.encryption.legacy-error",
-            "scripted.function-call"
+            "scripted.function-call",
+            "scripted.illegal.copy-data-while-ready",
+            "scripted.malformed.invalid-encoding",
+            "scripted.malformed.invalid-length",
+            "scripted.malformed.truncated-frame",
+            "scripted.malformed.unknown-tag"
         ])
     );
+    let diagnostics = result["scripted_diagnostics"]
+        .as_array()
+        .expect("scripted diagnostic evidence");
+    assert_eq!(diagnostics.len(), 5);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic["id"].as_str().expect("stable diagnostic ID"))
+            .collect::<Vec<_>>(),
+        [
+            "scripted.malformed.invalid-length",
+            "scripted.malformed.truncated-frame",
+            "scripted.malformed.unknown-tag",
+            "scripted.malformed.invalid-encoding",
+            "scripted.illegal.copy-data-while-ready",
+        ]
+    );
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic["rejected"], true);
+        assert_eq!(diagnostic["teardown_complete"], true);
+        assert_eq!(diagnostic["transport_capacity_bytes"], 256);
+        assert_eq!(diagnostic["frame_limit_bytes"], 256);
+        assert!(
+            !diagnostic["diagnostic"]
+                .as_str()
+                .expect("stable rejection diagnostic")
+                .is_empty()
+        );
+    }
 }

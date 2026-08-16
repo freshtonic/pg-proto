@@ -497,6 +497,7 @@ protocol! {
         SimpleCopyInDone internal {
             associate { inbound: none; outbound: crate::server_session::ServerCopyInDone<crate::server_session::CopySimple>; }
             CommandComplete(command_complete: bytes::Bytes) => SimpleCopyReady <= crate::codec::BackendMessage::CommandComplete(_),
+            Error(error: crate::codec::DiagnosticResponse) => SimpleCopyReady <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         SimpleCopyInFailed internal {
             associate { inbound: none; outbound: crate::server_session::ServerCopyInFailed<crate::server_session::CopySimple>; }
@@ -528,6 +529,7 @@ protocol! {
         ExtendedCopyInDone internal {
             associate { inbound: none; outbound: crate::server_session::ServerCopyInDone<crate::server_session::CopyExtended>; }
             CommandComplete(command_complete: bytes::Bytes) => Building <= crate::codec::BackendMessage::CommandComplete(_),
+            Error(error: crate::codec::DiagnosticResponse) => ExtendedError <= crate::codec::BackendMessage::ErrorResponse(_),
         }
         ExtendedCopyInFailed internal {
             associate { inbound: none; outbound: crate::server_session::ServerCopyInFailed<crate::server_session::CopyExtended>; }

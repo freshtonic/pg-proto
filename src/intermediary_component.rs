@@ -470,6 +470,26 @@ pub struct AttributedBackendMessages<'a> {
     operation_ids: Vec<Option<OperationId>>,
 }
 
+/// Direction of an authoritative generated protocol transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtocolTransitionDirection {
+    /// A client-originated transition accepted for upstream forwarding.
+    Frontend,
+    /// A PostgreSQL-originated transition accepted for downstream forwarding.
+    Backend,
+}
+
+/// Read-only observation emitted after the intermediary commits a legal transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtocolTransitionObservation {
+    /// Stable ID from the generated protocol catalogue.
+    pub id: &'static str,
+    /// Direction in which the wire message travelled.
+    pub direction: ProtocolTransitionDirection,
+    /// Operation identity when the transition belongs to an operation.
+    pub operation: Option<OperationId>,
+}
+
 impl<'a> AttributedBackendMessages<'a> {
     /// Returns the existing un-attributed held-message view.
     #[must_use]
@@ -495,6 +515,17 @@ impl<'a> AttributedBackendMessages<'a> {
 pub trait IntermediaryMiddleware<State, ServerContext, ClientContext> {
     /// Application-defined interception failure.
     type Error;
+
+    /// Observes a legal transition after the pipeline has committed it.
+    fn observe_transition(
+        &mut self,
+        _server: &ServerContext,
+        _client: &ClientContext,
+        _state: &mut State,
+        _observation: ProtocolTransitionObservation,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// Intercepts a client-originated message after server-role middleware and
     /// before client-role middleware.
@@ -1405,6 +1436,7 @@ where
                 return Ok(FrontendForwarding::LocallyHandled(request));
             }
         };
+        let transition = self.pipeline.frontend_transition_id(&message);
         let admission = match self.pipeline.accept_frontend(message.clone(), handling) {
             Ok(admission) => admission,
             Err(error) => {
@@ -1413,7 +1445,21 @@ where
             }
         };
         match admission.into_action() {
-            FrontendAction::Forward { message, .. } => {
+            FrontendAction::Forward { id, message } => {
+                if let Some(transition) = transition {
+                    self.boundary
+                        .observe_transition(
+                            self.downstream.context(),
+                            self.upstream.context(),
+                            &mut self.state,
+                            ProtocolTransitionObservation {
+                                id: transition,
+                                direction: ProtocolTransitionDirection::Frontend,
+                                operation: Some(id),
+                            },
+                        )
+                        .await;
+                }
                 self.upstream.send_wire_raw(message.clone()).await?;
                 Ok(FrontendForwarding::Forwarded(message))
             }
@@ -1641,7 +1687,23 @@ where
         &mut self,
         message: crate::codec::BackendMessage,
     ) -> Result<crate::codec::BackendMessage, ForwardError<Boundary::Error>> {
+        let operation = self.pipeline.backend_operation_id(&message);
+        let transition = self.pipeline.backend_transition_id(&message);
         let message = self.advance_backend(message)?;
+        if let Some(transition) = transition {
+            self.boundary
+                .observe_transition(
+                    self.downstream.context(),
+                    self.upstream.context(),
+                    &mut self.state,
+                    ProtocolTransitionObservation {
+                        id: transition,
+                        direction: ProtocolTransitionDirection::Backend,
+                        operation,
+                    },
+                )
+                .await;
+        }
         self.downstream.send_wire_raw(message.clone()).await?;
         Ok(message)
     }

@@ -25,7 +25,8 @@ pub use intermediary_component::{
     Intermediary, IntermediaryAccept, IntermediaryAcceptError, IntermediaryBuildError,
     IntermediaryBuilder, IntermediaryCancellationRegistry, IntermediaryConnection,
     IntermediaryContexts, IntermediaryMiddleware, IntermediaryMiddlewareFactory,
-    RejectCancellation, StartupResolutionError, StartupRouteResolver,
+    ProtocolTransitionDirection, ProtocolTransitionObservation, RejectCancellation,
+    StartupResolutionError, StartupRouteResolver,
 };
 pub use pipeline::{
     BackendProjectionError, BoundedPipeline, FrontendProjectionError, NoPipeline, OperationId,

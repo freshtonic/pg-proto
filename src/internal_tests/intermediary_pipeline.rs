@@ -452,6 +452,94 @@ async fn copy_hooks_preserve_simple_and_extended_origins() {
     assert_eq!(middleware.state(), &["simple", "extended"]);
 }
 
+#[test]
+fn extended_copy_in_uses_the_post_copy_sync_as_its_recovery_barrier() {
+    let mut pipeline = bounded(8);
+    for message in [bind(), execute(), FrontendMessage::Sync] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .expect("extended COPY start is accepted");
+    }
+    pipeline
+        .accept_backend(BackendMessage::BindComplete)
+        .expect("Bind completes");
+    pipeline
+        .accept_backend(BackendMessage::CopyInResponse(CopyResponse {
+            overall_format: 0,
+            column_formats: vec![0],
+        }))
+        .expect("COPY IN starts");
+    for message in [
+        FrontendMessage::CopyData(Bytes::from_static(b"1\n")),
+        FrontendMessage::CopyDone,
+        FrontendMessage::Sync,
+    ] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .expect("COPY data and completion are accepted");
+    }
+    pipeline
+        .accept_backend(BackendMessage::CommandComplete(Bytes::from_static(
+            b"COPY 1",
+        )))
+        .expect("COPY completes");
+    pipeline
+        .accept_backend(BackendMessage::ReadyForQuery(TransactionStatus::Idle))
+        .expect("post-COPY Sync restores readiness");
+
+    pipeline
+        .accept_frontend(parse(b"after-copy"), FrontendHandling::Forward)
+        .expect("a new statement is accepted after COPY");
+    assert!(matches!(
+        pipeline
+            .accept_backend(BackendMessage::ParseComplete)
+            .expect("new statement response is legal"),
+        BackendAction::Emit(BackendMessage::ParseComplete)
+    ));
+}
+
+#[test]
+fn extended_copy_in_data_error_recovers_after_copy_done() {
+    let mut pipeline = bounded(7);
+    for message in [bind(), execute(), FrontendMessage::Sync] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .expect("extended COPY start is accepted");
+    }
+    pipeline
+        .accept_backend(BackendMessage::BindComplete)
+        .expect("Bind completes");
+    pipeline
+        .accept_backend(BackendMessage::CopyInResponse(CopyResponse {
+            overall_format: 0,
+            column_formats: vec![0],
+        }))
+        .expect("COPY IN starts");
+    for message in [FrontendMessage::CopyDone, FrontendMessage::Sync] {
+        pipeline
+            .accept_frontend(message, FrontendHandling::Forward)
+            .expect("COPY completion is accepted");
+    }
+    assert!(matches!(
+        pipeline
+            .accept_backend(error())
+            .expect("invalid copied data produces a legal ErrorResponse"),
+        BackendAction::Emit(BackendMessage::ErrorResponse(_))
+    ));
+    pipeline
+        .accept_backend(BackendMessage::ReadyForQuery(TransactionStatus::Idle))
+        .expect("post-COPY Sync recovers from the data error");
+    pipeline
+        .accept_frontend(parse(b"after-copy-error"), FrontendHandling::Forward)
+        .expect("new work is legal after recovery");
+    assert!(matches!(
+        pipeline
+            .accept_backend(BackendMessage::ParseComplete)
+            .expect("new statement response is emitted"),
+        BackendAction::Emit(BackendMessage::ParseComplete)
+    ));
+}
+
 #[tokio::test]
 async fn backend_copy_responses_dispatch_through_exact_generated_subphases() {
     struct CopyResponses;

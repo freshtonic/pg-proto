@@ -283,6 +283,12 @@ fn runtime_target_and_direction_share_the_generated_transition_table() {
     assert_eq!(query::TRANSITIONS.len(), 5);
 
     for (index, transition) in query::TRANSITIONS.iter().enumerate() {
+        assert!(transition.id.starts_with("query."));
+        assert!(
+            !query::TRANSITIONS[..index]
+                .iter()
+                .any(|previous| previous.id == transition.id)
+        );
         assert!(!query::TRANSITIONS[..index].iter().any(|previous| {
             previous.source == transition.source && previous.event == transition.event
         }));
@@ -291,6 +297,7 @@ fn runtime_target_and_direction_share_the_generated_transition_table() {
             Some(*transition)
         );
     }
+    assert_eq!(query::TRANSITIONS[0].id, "query.Ready.Query");
 
     let mut runtime = query::RuntimeFsm::new();
     let query_transition = query::transition(runtime.state(), query::Event::Query).unwrap();

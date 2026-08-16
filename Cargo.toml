@@ -14,7 +14,7 @@ readme = "README.md"
 repository = "https://github.com/freshtonic/pg-proto"
 
 [workspace]
-members = ["pg-proto-fsm"]
+members = ["pg-proto-burn-in", "pg-proto-fsm"]
 exclude = ["fuzz"]
 resolver = "3"
 

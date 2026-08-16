@@ -1368,10 +1368,13 @@ where
                     }
                     context.tls = Some(NegotiatedServerTls::Plaintext);
                     let message = handler.startup(&context, &mut state, message);
-                    let route = resolver
-                        .resolve(&message, &context, &mut state)
-                        .await
-                        .map_err(RoutedAcceptError::Route)?;
+                    let route = match resolver.resolve(&message, &context, &mut state).await {
+                        Ok(route) => route,
+                        Err(error) => {
+                            let _ = startup_conn.into_transport();
+                            return Err(RoutedAcceptError::Route(error));
+                        }
+                    };
                     let ready = complete_auth(
                         startup_conn,
                         &message,
@@ -1512,10 +1515,13 @@ where
                 message,
             } => {
                 let message = handler.startup(&context, &mut state, message);
-                let route = resolver
-                    .resolve(&message, &context, &mut state)
-                    .await
-                    .map_err(RoutedAcceptError::Route)?;
+                let route = match resolver.resolve(&message, &context, &mut state).await {
+                    Ok(route) => route,
+                    Err(error) => {
+                        let _ = startup_conn.into_transport();
+                        return Err(RoutedAcceptError::Route(error));
+                    }
+                };
                 let ready = complete_auth(
                     startup_conn,
                     &message,

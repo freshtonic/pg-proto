@@ -83,3 +83,47 @@ fn catalogue_rejects_unknown_and_duplicate_evidence() {
             .contains("artifact exemptions are not authoritative")
     );
 }
+
+#[test]
+fn approved_catalogue_has_exactly_one_reviewed_disposition_per_entry() {
+    let artifacts = tempfile::tempdir().expect("artifact directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args([
+            "catalogue",
+            "--approved",
+            "--as-of",
+            "2026-08-17",
+            "--artifacts",
+        ])
+        .arg(artifacts.path())
+        .output()
+        .expect("run approved catalogue audit");
+
+    assert!(
+        output.status.success(),
+        "approved catalogue failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(
+        &fs::read(artifacts.path().join("result.json")).expect("catalogue result"),
+    )
+    .expect("valid catalogue result");
+    assert_eq!(result["catalogue_entries"], 257);
+    assert_eq!(result["disposed_entries"], 257);
+    assert_eq!(result["missing_entries"], 0);
+    assert_eq!(result["success"], true);
+    assert!(
+        result["dispositions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["id"] == "frontend.Ready.Query" && entry["kind"] == "indirect" })
+    );
+    assert!(
+        result["dispositions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["id"] == "async.notice" && entry["kind"] == "real-postgres" })
+    );
+}

@@ -1,11 +1,24 @@
-use std::{cmp::Ordering, error::Error, path::PathBuf};
+use std::{
+    cmp::Ordering,
+    error::Error,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    process::Stdio,
+    time::Duration,
+};
 
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use testcontainers_modules::{
+    postgres::Postgres,
+    testcontainers::{ImageExt, runners::AsyncRunner},
+};
+use tokio::{process::Command, time::Instant};
 
-use crate::{atomic_write, option};
+use crate::{ChildEvent, atomic_write, option, read_event, wait_success};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Input {
     schema_version: u32,
     warm_up: WarmUpInput,
@@ -14,25 +27,25 @@ struct Input {
     evidence: Evidence,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct WarmUpInput {
     closed_loop_micros: Vec<u64>,
     open_loop_micros: Vec<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct MeasurementInput {
     closed_loop: ClosedLoopInput,
     open_loop: OpenLoopInput,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ClosedLoopInput {
     elapsed_micros: u64,
     latencies_micros: Vec<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenLoopInput {
     elapsed_micros: u64,
     scheduled_interval_micros: u64,
@@ -183,7 +196,11 @@ struct Thresholds {
 }
 
 pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let runner = option(arguments, "--runner")?;
+    let runner = option(arguments, "--runner")
+        .ok()
+        .map(str::to_owned)
+        .or_else(|| std::env::var("RUNNER_NAME").ok())
+        .unwrap_or_else(|| "local-or-unspecified".into());
     let enforce = arguments.iter().any(|argument| argument == "--enforce");
     let stable_runner = arguments
         .iter()
@@ -191,14 +208,37 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if enforce && (!stable_runner || runner == "github-hosted" || !cfg!(target_os = "linux")) {
         return Err("performance gates require an explicitly stable Linux runner".into());
     }
-    let input_path = PathBuf::from(option(arguments, "--input")?);
     let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
-    let postgres_version = option(arguments, "--postgres-version")?;
-    let build_mode = option(arguments, "--build-mode")?;
+    let postgres_version = option(arguments, "--postgres-version").unwrap_or("18");
+    let build_mode = option(arguments, "--build-mode").unwrap_or("optimized");
     if !matches!(build_mode, "optimized" | "allocator-diagnostic") {
         return Err("--build-mode must be optimized or allocator-diagnostic".into());
     }
-    let input: Input = serde_json::from_slice(&tokio::fs::read(input_path).await?)?;
+    let input = if let Ok(input_path) = option(arguments, "--input") {
+        serde_json::from_slice(&tokio::fs::read(input_path).await?)?
+    } else {
+        let profile = option(arguments, "--profile")?;
+        if !matches!(
+            profile,
+            "controlled" | "scheduled-soak" | "overnight" | "diagnostic"
+        ) {
+            return Err(
+                "performance --profile must be controlled, scheduled-soak, overnight or diagnostic"
+                    .into(),
+            );
+        }
+        let seed = option(arguments, "--seed")?.parse()?;
+        let duration = option(arguments, "--duration-seconds")?.parse()?;
+        let executable = arguments.first().ok_or("missing executable path")?;
+        let captured = capture(executable, seed, duration, postgres_version).await?;
+        tokio::fs::create_dir_all(&artifacts).await?;
+        atomic_write(
+            &artifacts.join("measurements.json"),
+            &serde_json::to_vec_pretty(&captured)?,
+        )
+        .await?;
+        captured
+    };
     validate_input(&input)?;
     let baseline = match option(arguments, "--baseline") {
         Ok(path) => Some(serde_json::from_slice::<Baseline>(
@@ -207,7 +247,7 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Err(_) => None,
     };
     let key = BaselineKey {
-        runner: runner.into(),
+        runner: runner.clone(),
         postgres_version: postgres_version.into(),
         profile: "controlled".into(),
         build_mode: build_mode.into(),
@@ -228,7 +268,7 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         baseline.as_ref(),
         build_mode,
         enforce,
-        runner,
+        &runner,
         postgres_version,
     )?;
     tokio::fs::create_dir_all(&artifacts).await?;
@@ -268,6 +308,238 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         return Err("promoted performance threshold exceeded".into());
     }
     Ok(())
+}
+
+async fn capture(
+    executable: &str,
+    seed: u64,
+    duration_seconds: u64,
+    postgres_version: &str,
+) -> Result<Input, Box<dyn Error>> {
+    if duration_seconds == 0 {
+        return Err("performance capture requires a positive --duration-seconds".into());
+    }
+    if postgres_version != "18" {
+        return Err("performance capture currently requires PostgreSQL 18".into());
+    }
+    let container = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+    let mut intermediary = Command::new(executable)
+        .args(["intermediary-child", "--address", &upstream.to_string()])
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected performance intermediary ready event".into());
+    };
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(listen_addr.ip().to_string())
+        .port(listen_addr.port())
+        .user("postgres")
+        .dbname("postgres");
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+    let connection_task = tokio::spawn(connection);
+
+    resource_checkpoint(&client).await?;
+    let copy_bytes = client
+        .copy_out("COPY (SELECT generate_series(1, 16)) TO STDOUT")
+        .await?
+        .try_fold(
+            0_usize,
+            |total, bytes| async move { Ok(total + bytes.len()) },
+        )
+        .await?;
+    if copy_bytes == 0 {
+        return Err("performance COPY evidence was empty".into());
+    }
+
+    let warm_up_duration = Duration::from_millis((duration_seconds * 100).clamp(100, 5_000));
+    let warm_closed = run_closed_loop(&client, warm_up_duration, seed).await?;
+    let warm_open_interval = Duration::from_micros(1_000);
+    let warm_open = run_open_loop(&client, warm_up_duration, warm_open_interval, seed).await?;
+
+    let measurement_duration = Duration::from_secs(duration_seconds);
+    let closed_started = Instant::now();
+    let closed = run_closed_loop(&client, measurement_duration, seed ^ 0xa5a5).await?;
+    let closed_elapsed = elapsed_micros(closed_started.elapsed());
+    let saturation = rate(closed.len(), closed_elapsed);
+    let target_rate = (saturation * 0.8).clamp(1.0, 1_000.0);
+    let scheduled_interval = Duration::from_secs_f64(1.0 / target_rate);
+    let open_started = Instant::now();
+    let open = run_open_loop(
+        &client,
+        measurement_duration,
+        scheduled_interval,
+        seed ^ 0x5a5a,
+    )
+    .await?;
+    let open_elapsed = elapsed_micros(open_started.elapsed());
+    resource_checkpoint(&client).await?;
+
+    let windows = measurement_windows(&closed, closed_elapsed, &open, open_elapsed);
+    let input = Input {
+        schema_version: 1,
+        warm_up: WarmUpInput {
+            closed_loop_micros: warm_closed,
+            open_loop_micros: warm_open
+                .iter()
+                .map(|sample| sample.end_to_end_micros)
+                .collect(),
+        },
+        measurement: MeasurementInput {
+            closed_loop: ClosedLoopInput {
+                elapsed_micros: closed_elapsed,
+                latencies_micros: closed,
+            },
+            open_loop: OpenLoopInput {
+                elapsed_micros: open_elapsed,
+                scheduled_interval_micros: elapsed_micros(scheduled_interval),
+                queue_micros: open.iter().map(|sample| sample.queue_micros).collect(),
+                execution_micros: open.iter().map(|sample| sample.execution_micros).collect(),
+                end_to_end_micros: open.iter().map(|sample| sample.end_to_end_micros).collect(),
+            },
+        },
+        windows,
+        evidence: Evidence {
+            soak_result: "measurements.json#controlled-public-intermediary".into(),
+            resource_checkpoints: 2,
+            copy_scenarios: 1,
+        },
+    };
+    drop(client);
+    connection_task.await??;
+    let ChildEvent::Completed { .. } = read_event(&mut intermediary).await? else {
+        return Err("expected performance intermediary completion event".into());
+    };
+    wait_success(&mut intermediary, "performance intermediary").await?;
+    drop(container);
+    Ok(input)
+}
+
+#[derive(Clone, Copy)]
+struct OpenSample {
+    queue_micros: u64,
+    execution_micros: u64,
+    end_to_end_micros: u64,
+}
+
+async fn run_closed_loop(
+    client: &tokio_postgres::Client,
+    duration: Duration,
+    seed: u64,
+) -> Result<Vec<u64>, Box<dyn Error>> {
+    let deadline = Instant::now() + duration;
+    let mut samples = Vec::new();
+    let mut ordinal = seed;
+    while samples.is_empty() || Instant::now() < deadline {
+        let started = Instant::now();
+        let expected = i64::try_from(ordinal % 31 + 1)?;
+        let actual: i64 = client
+            .query_one("SELECT $1::int8", &[&expected])
+            .await?
+            .get(0);
+        if actual != expected {
+            return Err("controlled closed-loop result mismatch".into());
+        }
+        samples.push(elapsed_micros(started.elapsed()));
+        ordinal = ordinal.wrapping_add(1);
+    }
+    Ok(samples)
+}
+
+async fn run_open_loop(
+    client: &tokio_postgres::Client,
+    duration: Duration,
+    interval: Duration,
+    seed: u64,
+) -> Result<Vec<OpenSample>, Box<dyn Error>> {
+    let phase_started = Instant::now();
+    let deadline = phase_started + duration;
+    let mut scheduled = phase_started;
+    let mut ordinal = seed;
+    let mut samples = Vec::new();
+    while samples.is_empty() || scheduled < deadline {
+        tokio::time::sleep_until(scheduled).await;
+        let execution_started = Instant::now();
+        let queue = execution_started.saturating_duration_since(scheduled);
+        let expected = i64::try_from(ordinal % 31 + 1)?;
+        let actual: i64 = client
+            .query_one("SELECT $1::int8", &[&expected])
+            .await?
+            .get(0);
+        if actual != expected {
+            return Err("controlled open-loop result mismatch".into());
+        }
+        let completed = Instant::now();
+        samples.push(OpenSample {
+            queue_micros: elapsed_micros(queue),
+            execution_micros: elapsed_micros(completed.duration_since(execution_started)),
+            end_to_end_micros: elapsed_micros(completed.duration_since(scheduled)),
+        });
+        scheduled += interval;
+        ordinal = ordinal.wrapping_add(1);
+    }
+    Ok(samples)
+}
+
+async fn resource_checkpoint(client: &tokio_postgres::Client) -> Result<(), Box<dyn Error>> {
+    let row = client
+        .query_one(
+            "SELECT count(*)::bigint FROM pg_stat_activity WHERE backend_type = 'client backend'",
+            &[],
+        )
+        .await?;
+    let connections: i64 = row.get(0);
+    if connections < 1 {
+        return Err("performance resource checkpoint lost its PostgreSQL session".into());
+    }
+    Ok(())
+}
+
+fn measurement_windows(
+    closed: &[u64],
+    closed_elapsed: u64,
+    open: &[OpenSample],
+    open_elapsed: u64,
+) -> Vec<Window> {
+    let window_count = 2_usize.min(closed.len()).min(open.len()).max(1);
+    (0..window_count)
+        .map(|index| {
+            let closed_start = index * closed.len() / window_count;
+            let closed_end = (index + 1) * closed.len() / window_count;
+            let open_start = index * open.len() / window_count;
+            let open_end = (index + 1) * open.len() / window_count;
+            let mut latencies = closed[closed_start..closed_end].to_vec();
+            latencies.extend(
+                open[open_start..open_end]
+                    .iter()
+                    .map(|sample| sample.end_to_end_micros),
+            );
+            latencies.sort_unstable();
+            let elapsed = closed_elapsed / u64::try_from(window_count).unwrap()
+                + open_elapsed / u64::try_from(window_count).unwrap();
+            Window {
+                throughput_per_second: rate(latencies.len(), elapsed),
+                p95_micros: percentile(&latencies, 95),
+                p99_micros: percentile(&latencies, 99),
+            }
+        })
+        .collect()
+}
+
+fn elapsed_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 fn validate_input(input: &Input) -> Result<(), Box<dyn Error>> {

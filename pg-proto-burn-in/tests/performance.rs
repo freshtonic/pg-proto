@@ -149,3 +149,58 @@ fn hosted_runners_cannot_enable_performance_gates() {
             .contains("performance gates require an explicitly stable Linux runner")
     );
 }
+
+#[test]
+#[ignore = "requires a Docker-compatible container runtime"]
+fn controlled_profile_captures_real_intermediary_measurements_before_evaluation() {
+    let artifacts = tempfile::tempdir().expect("artifact directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args([
+            "performance",
+            "--profile",
+            "controlled",
+            "--seed",
+            "42",
+            "--duration-seconds",
+            "1",
+            "--artifacts",
+            artifacts.path().to_str().unwrap(),
+        ])
+        .output()
+        .expect("capture controlled performance");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let measurements: serde_json::Value = serde_json::from_slice(
+        &fs::read(artifacts.path().join("measurements.json")).expect("capture artifact"),
+    )
+    .unwrap();
+    assert!(
+        !measurements["warm_up"]["closed_loop_micros"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !measurements["measurement"]["closed_loop"]["latencies_micros"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let open = &measurements["measurement"]["open_loop"];
+    assert_eq!(
+        open["queue_micros"].as_array().unwrap().len(),
+        open["execution_micros"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        open["queue_micros"].as_array().unwrap().len(),
+        open["end_to_end_micros"].as_array().unwrap().len()
+    );
+    assert!(measurements["windows"].as_array().unwrap().len() >= 2);
+    assert_eq!(measurements["evidence"]["resource_checkpoints"], 2);
+    assert_eq!(measurements["evidence"]["copy_scenarios"], 1);
+    assert!(artifacts.path().join("performance.json").exists());
+}

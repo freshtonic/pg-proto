@@ -124,6 +124,23 @@ async fn malformed_endpoint(case: MalformedCase) -> Result<DiagnosticEvidence, B
         .build()
         .map_err(super::debug_error)?;
 
+    if matches!(case, MalformedCase::InvalidEncoding) {
+        downstream_peer
+            .write_all(&invalid_encoding_startup())
+            .await?;
+        downstream_peer.shutdown().await?;
+        let result = timeout(
+            REJECTION_TIMEOUT,
+            intermediary.accept(downstream_transport, (), ()),
+        )
+        .await?;
+        let rejection = match result {
+            Err(rejection) => rejection,
+            Ok(_) => return Err("invalid startup encoding was accepted".into()),
+        };
+        return Ok(diagnostic_evidence(case, format!("{rejection:?}")));
+    }
+
     downstream_peer.write_all(&startup()).await?;
     let upstream = tokio::spawn(async move {
         let length = upstream_peer.read_u32().await?;
@@ -171,9 +188,20 @@ fn malformed_packet(case: MalformedCase) -> &'static [u8] {
         MalformedCase::InvalidLength => &[b'Q', 0, 0, 0, 3],
         MalformedCase::TruncatedFrame => &[b'Q', 0, 0, 0, 12, b'S'],
         MalformedCase::UnknownTag => &[b'?', 0, 0, 0, 4],
-        MalformedCase::InvalidEncoding => &[b'D', 0, 0, 0, 6, b'X', 0],
         MalformedCase::IllegalSequence => &[b'd', 0, 0, 0, 5, b'x'],
+        MalformedCase::InvalidEncoding => unreachable!("invalid encoding is a startup packet"),
     }
+}
+
+fn invalid_encoding_startup() -> Vec<u8> {
+    [
+        16_u32.to_be_bytes().as_slice(),
+        196_608_u32.to_be_bytes().as_slice(),
+        b"user\0".as_slice(),
+        [0xff, 0].as_slice(),
+        [0].as_slice(),
+    ]
+    .concat()
 }
 
 #[derive(Clone, Copy)]

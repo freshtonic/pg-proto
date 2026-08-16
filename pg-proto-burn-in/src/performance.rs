@@ -650,7 +650,7 @@ fn build_report(
             compiler,
             target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
             features: "default",
-            lockfile_sha256: sha256(include_bytes!("../../Cargo.lock")),
+            lockfile_sha256: workspace_lockfile_sha256(),
             binary_sha256,
             reproducible_settings: "locked dependencies; debug symbols; lto=fat; codegen-units=1",
         },
@@ -705,6 +705,19 @@ fn build_report(
         },
         evidence: input.evidence,
     })
+}
+
+fn workspace_lockfile_sha256() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|directory| {
+            directory
+                .ancestors()
+                .map(|ancestor| ancestor.join("Cargo.lock"))
+                .find(|candidate| candidate.is_file())
+        })
+        .and_then(|path| std::fs::read(path).ok())
+        .map_or_else(|| "unavailable".into(), |bytes| sha256(&bytes))
 }
 
 fn rate(operations: usize, elapsed_micros: u64) -> f64 {

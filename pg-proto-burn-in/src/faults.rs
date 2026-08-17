@@ -110,6 +110,7 @@ async fn environment(executable: &str, connections: usize) -> Result<Environment
             &connections.to_string(),
             "--allow-abrupt-disconnects",
         ])
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;

@@ -85,6 +85,8 @@ struct RunResult {
     data_scenarios: Vec<DataScenarioResult>,
     query_lifecycle: Vec<QueryLifecycleResult>,
     error_scenarios: Vec<SqlErrorScenarioResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_cleanliness: Option<SessionCleanlinessResult>,
     #[serde(default)]
     copy_scenarios: Vec<CopyScenarioResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +151,13 @@ struct SqlErrorScenarioResult {
     actual_sqlstate: String,
     protocol_ready: bool,
     connection_clean: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SessionCleanlinessResult {
+    dirty_state_detected: bool,
+    reset_state_clean: bool,
+    exercised: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -237,6 +246,8 @@ enum ChildEvent {
         #[serde(default)]
         error_scenarios: Vec<SqlErrorScenarioResult>,
         #[serde(default)]
+        session_cleanliness: Option<Box<SessionCleanlinessResult>>,
+        #[serde(default)]
         copy_scenarios: Vec<CopyScenarioResult>,
         #[serde(default)]
         async_traffic: Option<Box<AsyncTrafficResult>>,
@@ -267,6 +278,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            session_cleanliness: None,
             copy_scenarios: Vec::new(),
             async_traffic: None,
             cancellation: None,
@@ -318,6 +330,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            session_cleanliness,
             copy_scenarios,
             async_traffic,
             cancellation,
@@ -334,6 +347,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: data_scenarios.clone(),
             query_lifecycle: query_lifecycle.clone(),
             error_scenarios: error_scenarios.clone(),
+            session_cleanliness: Some(session_cleanliness.clone()),
             copy_scenarios: copy_scenarios.clone(),
             async_traffic: Some(async_traffic.clone()),
             cancellation: Some(cancellation.clone()),
@@ -356,6 +370,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            session_cleanliness: None,
             copy_scenarios: Vec::new(),
             async_traffic: None,
             cancellation: None,
@@ -392,6 +407,7 @@ async fn run_authentication_conformance(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        session_cleanliness: None,
         copy_scenarios: Vec::new(),
         async_traffic: None,
         cancellation: None,
@@ -423,6 +439,7 @@ async fn run_replication_conformance(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        session_cleanliness: None,
         copy_scenarios: Vec::new(),
         async_traffic: None,
         cancellation: None,
@@ -782,7 +799,11 @@ async fn run_password_profile(
     else {
         return Err(format!("{host_auth} driver did not validate SELECT").into());
     };
-    wait_success(&mut driver, "driver").await?;
+    if let Err(error) = wait_success(&mut driver, "driver").await {
+        let _ = intermediary.kill().await;
+        let _ = timeout(CHILD_TIMEOUT, intermediary.wait()).await;
+        return Err(error);
+    }
     let ChildEvent::Completed { .. } = read_event(&mut intermediary).await? else {
         return Err(format!("{host_auth} intermediary did not complete").into());
     };
@@ -861,6 +882,7 @@ async fn supervise_smoke(
         Vec<DataScenarioResult>,
         Vec<QueryLifecycleResult>,
         Vec<SqlErrorScenarioResult>,
+        SessionCleanlinessResult,
         Vec<CopyScenarioResult>,
         AsyncTrafficResult,
         CancellationResult,
@@ -883,7 +905,7 @@ async fn supervise_smoke(
             "--address",
             &upstream.to_string(),
             "--connections",
-            "7",
+            "8",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -905,7 +927,14 @@ async fn supervise_smoke(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let completed = read_event(&mut driver).await?;
+    let completed = match read_event(&mut driver).await {
+        Ok(event) => event,
+        Err(error) => {
+            let _ = intermediary.kill().await;
+            let _ = timeout(CHILD_TIMEOUT, intermediary.wait()).await;
+            return Err(format!("smoke driver ended before completion: {error}").into());
+        }
+    };
     let (
         value,
         mut coverage,
@@ -913,6 +942,7 @@ async fn supervise_smoke(
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        session_cleanliness,
         copy_scenarios,
         mut async_traffic,
         mut cancellation,
@@ -924,6 +954,7 @@ async fn supervise_smoke(
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            session_cleanliness: Some(session_cleanliness),
             copy_scenarios,
             async_traffic: Some(async_traffic),
             cancellation: Some(cancellation),
@@ -936,13 +967,18 @@ async fn supervise_smoke(
             data_scenarios,
             query_lifecycle,
             error_scenarios,
+            *session_cleanliness,
             copy_scenarios,
             *async_traffic,
             *cancellation,
         ),
         event => return Err(format!("expected driver completion event, got {event:?}").into()),
     };
-    wait_success(&mut driver, "driver").await?;
+    if let Err(error) = wait_success(&mut driver, "driver").await {
+        let _ = intermediary.kill().await;
+        let _ = timeout(CHILD_TIMEOUT, intermediary.wait()).await;
+        return Err(error);
+    }
     let intermediary_completed = read_event(&mut intermediary).await?;
     let ChildEvent::Completed {
         coverage: intermediary_coverage,
@@ -970,6 +1006,7 @@ async fn supervise_smoke(
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        session_cleanliness,
         copy_scenarios,
         async_traffic,
         cancellation,
@@ -1416,6 +1453,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        session_cleanliness: None,
         copy_scenarios: Vec::new(),
         async_traffic: Some(Box::new(AsyncTrafficResult {
             parameter_status: accumulated.parameter_status.unwrap_or_default(),
@@ -1595,6 +1633,7 @@ async fn run_tls_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        session_cleanliness: None,
         copy_scenarios: Vec::new(),
         async_traffic: None,
         cancellation: None,
@@ -1666,6 +1705,7 @@ async fn run_credential_intermediary(
         data_scenarios: Vec::new(),
         query_lifecycle: Vec::new(),
         error_scenarios: Vec::new(),
+        session_cleanliness: None,
         copy_scenarios: Vec::new(),
         async_traffic: None,
         cancellation: None,
@@ -1720,6 +1760,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             data_scenarios: Vec::new(),
             query_lifecycle: Vec::new(),
             error_scenarios: Vec::new(),
+            session_cleanliness: None,
             copy_scenarios: Vec::new(),
             async_traffic: None,
             cancellation: None,
@@ -1782,6 +1823,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let data_scenarios = run_data_scenarios(&client).await?;
     let mut query_lifecycle = run_query_lifecycles(&mut client).await?;
     let error_scenarios = run_sql_error_scenarios(&mut client, proxy).await?;
+    let session_cleanliness = run_session_cleanliness_connection(proxy).await?;
     let cancellation = run_cancellation_scenario(proxy).await?;
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
@@ -1798,6 +1840,7 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         data_scenarios,
         query_lifecycle,
         error_scenarios,
+        session_cleanliness: Some(Box::new(session_cleanliness)),
         copy_scenarios,
         async_traffic: Some(Box::new(async_traffic)),
         cancellation: Some(Box::new(cancellation)),
@@ -1921,6 +1964,16 @@ async fn run_sql_error_scenarios(
             "missing-table",
             "SELECT * FROM burnin_table_that_does_not_exist",
             "42P01",
+        ),
+        (
+            "missing-column",
+            "SELECT burnin_column_that_does_not_exist FROM pg_catalog.pg_class",
+            "42703",
+        ),
+        (
+            "missing-function",
+            "SELECT burnin_function_that_does_not_exist()",
+            "42883",
         ),
         ("type", "SELECT TRUE + 1", "42883"),
         ("arithmetic", "SELECT 1 / 0", "22012"),
@@ -2095,6 +2148,83 @@ async fn run_sql_error_scenarios(
     drop(other);
     timeout(CHILD_TIMEOUT, other_task).await???;
     Ok(outcomes)
+}
+
+async fn run_session_cleanliness_scenario(
+    client: &tokio_postgres::Client,
+) -> Result<SessionCleanlinessResult, Box<dyn Error>> {
+    client
+        .batch_execute(
+            "CREATE TEMP TABLE burnin_session_temp (value integer); \
+             PREPARE burnin_session_plan AS SELECT 1; \
+             SELECT pg_advisory_lock(910247); \
+             LISTEN burnin_session_events; \
+             SET application_name = 'pg-proto-burn-in-dirty'",
+        )
+        .await?;
+    let dirty_state_detected: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT FROM pg_class WHERE relnamespace = pg_my_temp_schema() AND relname = 'burnin_session_temp') \
+                    AND EXISTS (SELECT FROM pg_prepared_statements WHERE name = 'burnin_session_plan') \
+                    AND EXISTS (SELECT FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory') \
+                    AND EXISTS (SELECT FROM pg_listening_channels() AS channel WHERE channel = 'burnin_session_events') \
+                    AND current_setting('application_name') = 'pg-proto-burn-in-dirty'",
+            &[],
+        )
+        .await?
+        .get(0);
+    if !dirty_state_detected {
+        return Err("session-local dirty state was not fully observable".into());
+    }
+
+    // Reset only the state this scenario owns. `DISCARD ALL` would also invalidate
+    // protocol-level prepared statements owned by the independent driver.
+    client
+        .batch_execute(
+            "UNLISTEN burnin_session_events; \
+             SELECT pg_advisory_unlock(910247); \
+             DEALLOCATE burnin_session_plan; \
+             DROP TABLE burnin_session_temp; \
+             RESET application_name",
+        )
+        .await?;
+    let reset_state_clean: bool = client
+        .query_one(
+            "SELECT NOT EXISTS (SELECT FROM pg_class WHERE relnamespace = pg_my_temp_schema() AND relname = 'burnin_session_temp') \
+                    AND NOT EXISTS (SELECT FROM pg_prepared_statements WHERE name = 'burnin_session_plan') \
+                    AND NOT EXISTS (SELECT FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory') \
+                    AND NOT EXISTS (SELECT FROM pg_listening_channels() AS channel WHERE channel = 'burnin_session_events') \
+                    AND current_setting('application_name') = ''",
+            &[],
+        )
+        .await?
+        .get(0);
+    if !reset_state_clean {
+        return Err("targeted reset did not restore reusable session state".into());
+    }
+
+    Ok(SessionCleanlinessResult {
+        dirty_state_detected,
+        reset_state_clean,
+        exercised: vec![
+            "temporary-object".into(),
+            "prepared-statement".into(),
+            "advisory-lock".into(),
+            "listener".into(),
+            "guc".into(),
+        ],
+    })
+}
+
+async fn run_session_cleanliness_connection(
+    proxy: SocketAddr,
+) -> Result<SessionCleanlinessResult, Box<dyn Error>> {
+    let (client, connection) = connect_driver(proxy).await?;
+    let connection_task = tokio::spawn(connection);
+    let result = run_session_cleanliness_scenario(&client).await?;
+    drop(client);
+    timeout(CHILD_TIMEOUT, connection_task).await???;
+    Ok(result)
 }
 
 async fn connect_driver(

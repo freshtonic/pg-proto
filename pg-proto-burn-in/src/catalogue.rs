@@ -13,6 +13,7 @@ const CATALOGUE_LOCK: &str = include_str!("../catalogue/catalogue-lock-v1.json")
 const SUPPLEMENTAL: &str = include_str!("../catalogue/supplemental-v1.json");
 const MIGRATIONS: &str = include_str!("../catalogue/migrations-v1.json");
 const EXEMPTIONS: &str = include_str!("../catalogue/exemptions-v1.json");
+const DISPOSITIONS: &str = include_str!("../catalogue/dispositions-v1.json");
 
 #[derive(Debug, Deserialize)]
 struct GeneratedSnapshot {
@@ -62,6 +63,16 @@ enum MigrationKind {
 struct ExemptionRegistry {
     schema_version: u32,
     exemptions: Vec<Exemption>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewedDispositionRegistry {
+    schema_version: u32,
+    generated_real_postgres: Vec<String>,
+    generated_indirect_evidence: String,
+    supplemental_real_postgres: Vec<String>,
+    supplemental_scripted: Vec<String>,
+    supplemental_indirect: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +147,9 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let as_of = option(arguments, "--as-of")?;
     let authority = load_authority(as_of)?;
     let mut dispositions = BTreeMap::new();
+    if arguments.iter().any(|argument| argument == "--approved") {
+        add_reviewed_dispositions(&authority, &mut dispositions)?;
+    }
     for input in option_values(arguments, "--input")? {
         let artifact: EvidenceArtifact = serde_json::from_slice(&tokio::fs::read(input).await?)?;
         add_evidence(&authority.all, &mut dispositions, &artifact.coverage, input)?;
@@ -185,6 +199,80 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     } else {
         Err(format!("catalogue has {} missing entries", result.missing_entries).into())
     }
+}
+
+fn add_reviewed_dispositions(
+    authority: &Authority,
+    dispositions: &mut BTreeMap<String, Disposition>,
+) -> Result<(), Box<dyn Error>> {
+    let registry: ReviewedDispositionRegistry = serde_json::from_str(DISPOSITIONS)?;
+    if registry.schema_version != 1 {
+        return Err(format!(
+            "unsupported disposition registry schema {}",
+            registry.schema_version
+        )
+        .into());
+    }
+    let generated_real = unique(
+        registry.generated_real_postgres,
+        "generated real PostgreSQL dispositions",
+    )?;
+    if !generated_real.is_subset(&authority.generated) {
+        return Err("generated real PostgreSQL dispositions contain an unknown ID".into());
+    }
+    if registry.generated_indirect_evidence.trim().is_empty() {
+        return Err("generated indirect dispositions lack evidence metadata".into());
+    }
+    let reviewed_generated = generated_ids_snapshot()?;
+    for id in &authority.generated {
+        if !reviewed_generated.contains(id) {
+            continue;
+        }
+        let (kind, evidence) = if generated_real.contains(id) {
+            (
+                DispositionKind::RealPostgres,
+                "conformance smoke artifact through public Intermediary and PostgreSQL 14-18"
+                    .to_owned(),
+            )
+        } else {
+            (
+                DispositionKind::Indirect,
+                registry.generated_indirect_evidence.clone(),
+            )
+        };
+        insert_disposition(&authority.all, dispositions, id, kind, evidence)?;
+    }
+    for (kind, ids, evidence) in [
+        (
+            DispositionKind::RealPostgres,
+            registry.supplemental_real_postgres,
+            "real PostgreSQL profile artifact",
+        ),
+        (
+            DispositionKind::Scripted,
+            registry.supplemental_scripted,
+            "bounded scripted public-facade profile artifact",
+        ),
+        (
+            DispositionKind::Indirect,
+            registry.supplemental_indirect,
+            "public authentication policy test proves PLUS-only rejection; client credentials do not yet provide channel binding",
+        ),
+    ] {
+        let ids = unique(ids, "supplemental dispositions")?;
+        if !ids.is_subset(&authority.supplemental) {
+            return Err("supplemental dispositions contain an unknown or generated ID".into());
+        }
+        for id in ids {
+            insert_disposition(&authority.all, dispositions, &id, kind, evidence.to_owned())?;
+        }
+    }
+    Ok(())
+}
+
+fn generated_ids_snapshot() -> Result<BTreeSet<String>, Box<dyn Error>> {
+    let snapshot: GeneratedSnapshot = serde_json::from_str(GENERATED_SNAPSHOT)?;
+    unique(snapshot.ids, "generated catalogue snapshot")
 }
 
 fn missing_ids(
@@ -605,6 +693,27 @@ mod tests {
         assert_eq!(
             missing_ids(&catalogue, &dispositions),
             ["supplemental.new-case"]
+        );
+    }
+
+    #[test]
+    fn approved_registry_does_not_silently_dispose_protocol_growth() {
+        let mut authority = load_authority("2026-08-17").unwrap();
+        authority
+            .generated
+            .insert("backend.NewState.NewEvent".into());
+        authority.all.insert("backend.NewState.NewEvent".into());
+        authority
+            .supplemental
+            .insert("supplemental.new-case".into());
+        authority.all.insert("supplemental.new-case".into());
+
+        let mut dispositions = BTreeMap::new();
+        add_reviewed_dispositions(&authority, &mut dispositions).unwrap();
+
+        assert_eq!(
+            missing_ids(&authority.all, &dispositions),
+            ["backend.NewState.NewEvent", "supplemental.new-case"]
         );
     }
 }

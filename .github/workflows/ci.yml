@@ -256,6 +256,12 @@ jobs:
           conformance --profile scripted
           --artifacts target/burn-in/scripted
 
+      - name: Audit complete protocol catalogue
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          catalogue --approved --as-of $(date -u +%F)
+          --artifacts target/burn-in/catalogue
+
       - name: Upload ordinary burn-in evidence
         if: always()
         uses: actions/upload-artifact@v4

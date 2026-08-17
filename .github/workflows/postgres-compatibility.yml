@@ -32,7 +32,7 @@ jobs:
           --artifacts target/burn-in/postgres-${{ matrix.version }}
       - name: Upload compatibility evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burn-in-postgres-${{ matrix.version }}
           path: target/burn-in/postgres-${{ matrix.version }}

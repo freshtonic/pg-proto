@@ -64,7 +64,7 @@ jobs:
           --artifacts target/burn-in/hosted
       - name: Upload hosted diagnostic evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burn-in-hosted-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/burn-in/hosted
@@ -101,7 +101,7 @@ jobs:
           --artifacts target/burn-in/stable/performance
       - name: Upload stable performance evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burn-in-stable-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

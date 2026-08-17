@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 publish = false
+default-run = "pg-proto-burn-in"
 
 [dependencies]
 bytes = "1.12"

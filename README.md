@@ -453,6 +453,10 @@ two such roots containing `performance-controlled/performance.json`, then writes
 improved summary. A change within ±5% from the oldest to newest report is
 classified as holding.
 
+Performance artifacts include the runner's hardware manufacturer, model, CPU,
+and physical memory, with the same human-readable fingerprint in `summary.md`.
+Unique device identifiers and serial numbers are not collected.
+
 See the [burn-in design](docs/design/burn-in-verification.md) and
 [ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the
 coverage model, stopping conditions, and workflow policy.

@@ -86,6 +86,23 @@ fn performance_evidence_emits_corrected_histograms_and_advisory_candidate_drift(
         serde_json::from_slice(&fs::read(artifacts.join("performance.json")).unwrap()).unwrap();
     assert_eq!(result["schema_version"], 1);
     assert_eq!(result["build"]["mode"], "optimized");
+    for field in ["manufacturer", "model", "cpu", "summary"] {
+        assert!(
+            !result["environment"]["hardware"][field]
+                .as_str()
+                .expect("hardware field")
+                .is_empty(),
+            "missing hardware {field}"
+        );
+    }
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert!(
+            result["environment"]["hardware"]["memory_bytes"]
+                .as_u64()
+                .expect("physical memory")
+                > 0
+        );
+    }
     assert_eq!(
         result["phases"]["warm_up"]["included_in_measurement"],
         false
@@ -114,10 +131,15 @@ fn performance_evidence_emits_corrected_histograms_and_advisory_candidate_drift(
     assert_eq!(result["evidence"]["resource_checkpoints"], 6);
     assert_eq!(result["evidence"]["copy_scenarios"], 6);
     assert!(artifacts.join("candidate-baseline.json").exists());
+    let summary = fs::read_to_string(artifacts.join("summary.md")).unwrap();
+    assert!(summary.contains("ADVISORY"));
+    assert!(summary.contains("Hardware:"));
     assert!(
-        fs::read_to_string(artifacts.join("summary.md"))
-            .unwrap()
-            .contains("ADVISORY")
+        summary.contains(
+            result["environment"]["hardware"]["summary"]
+                .as_str()
+                .unwrap()
+        )
     );
 }
 

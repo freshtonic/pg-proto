@@ -104,6 +104,17 @@ struct Environment {
     postgres_version: String,
     operating_system: &'static str,
     architecture: &'static str,
+    hardware: Hardware,
+}
+
+#[derive(Debug, Serialize)]
+struct Hardware {
+    manufacturer: String,
+    model: String,
+    cpu: String,
+    memory_bytes: Option<u64>,
+    summary: String,
+    gaps: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -298,10 +309,11 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         "ADVISORY"
     };
     let summary = format!(
-        "# Controlled performance\n\n{status}: {:.2} operations/s; p95 {} us; p99 {} us.\n\nWarm-up samples are excluded. Candidate baseline requires review and was not promoted.\n",
+        "# Controlled performance\n\n{status}: {:.2} operations/s; p95 {} us; p99 {} us.\n\nHardware: {}.\n\nWarm-up samples are excluded. Candidate baseline requires review and was not promoted.\n",
         report.drift.median_throughput_per_second,
         report.drift.median_p95_micros,
         report.drift.median_p99_micros,
+        report.environment.hardware.summary,
     );
     atomic_write(&artifacts.join("summary.md"), summary.as_bytes()).await?;
     if enforce && report.comparison.threshold_exceeded {
@@ -632,6 +644,7 @@ fn build_report(
             postgres_version: postgres_version.into(),
             operating_system: std::env::consts::OS,
             architecture: std::env::consts::ARCH,
+            hardware: capture_hardware(),
         },
         build: Build {
             mode: build_mode.into(),
@@ -705,6 +718,137 @@ fn build_report(
         },
         evidence: input.evidence,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn capture_hardware() -> Hardware {
+    let profiler = std::process::Command::new("system_profiler")
+        .arg("SPHardwareDataType")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+    let field = |name: &str| {
+        profiler.as_deref().and_then(|output| {
+            output.lines().find_map(|line| {
+                let (key, value) = line.trim().split_once(':')?;
+                (key == name).then(|| value.trim().to_owned())
+            })
+        })
+    };
+    let model = field("Model Name")
+        .or_else(|| command_value("sysctl", &["-n", "hw.model"]))
+        .unwrap_or_else(|| "unavailable".into());
+    let cpu = field("Chip")
+        .or_else(|| field("Processor Name"))
+        .or_else(|| command_value("sysctl", &["-n", "machdep.cpu.brand_string"]))
+        .unwrap_or_else(|| std::env::consts::ARCH.into());
+    let memory_bytes = field("Memory")
+        .as_deref()
+        .and_then(parse_human_memory)
+        .or_else(|| {
+            command_value("sysctl", &["-n", "hw.memsize"]).and_then(|value| value.parse().ok())
+        });
+    hardware("Apple", &model, &cpu, memory_bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn capture_hardware() -> Hardware {
+    let manufacturer = read_trimmed("/sys/devices/virtual/dmi/id/sys_vendor")
+        .unwrap_or_else(|| "unavailable".into());
+    let model = read_trimmed("/sys/devices/virtual/dmi/id/product_name")
+        .unwrap_or_else(|| "unavailable".into());
+    let cpu = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                (key.trim() == "model name").then(|| value.trim().to_owned())
+            })
+        })
+        .unwrap_or_else(|| std::env::consts::ARCH.into());
+    let memory_bytes = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                let value = line.strip_prefix("MemTotal:")?;
+                value
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|kib| kib.checked_mul(1024))
+            })
+        });
+    hardware(&manufacturer, &model, &cpu, memory_bytes)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn capture_hardware() -> Hardware {
+    hardware("unavailable", "unavailable", std::env::consts::ARCH, None)
+}
+
+fn hardware(manufacturer: &str, model: &str, cpu: &str, memory_bytes: Option<u64>) -> Hardware {
+    let memory = memory_bytes.map_or_else(|| "memory unavailable".into(), format_memory);
+    let mut gaps = Vec::new();
+    if manufacturer == "unavailable" {
+        gaps.push("manufacturer unavailable".into());
+    }
+    if model == "unavailable" {
+        gaps.push("model unavailable".into());
+    }
+    if memory_bytes.is_none() {
+        gaps.push("physical memory unavailable".into());
+    }
+    Hardware {
+        manufacturer: manufacturer.into(),
+        model: model.into(),
+        cpu: cpu.into(),
+        memory_bytes,
+        summary: format!("{manufacturer} {model} / {cpu} / {memory}"),
+        gaps,
+    }
+}
+
+fn format_memory(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024_u64.pow(3) as f64);
+    if (gib - gib.round()).abs() < 0.05 {
+        format!("{:.0} GB", gib.round())
+    } else {
+        format!("{gib:.1} GB")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn command_value(command: &str, arguments: &[&str]) -> Option<String> {
+    std::process::Command::new(command)
+        .args(arguments)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn parse_human_memory(value: &str) -> Option<u64> {
+    let mut fields = value.split_whitespace();
+    let amount = fields.next()?.parse::<u64>().ok()?;
+    let multiplier = match fields.next()? {
+        "TB" => 1024_u64.pow(4),
+        "GB" => 1024_u64.pow(3),
+        "MB" => 1024_u64.pow(2),
+        _ => return None,
+    };
+    amount.checked_mul(multiplier)
+}
+
+#[cfg(target_os = "linux")]
+fn read_trimmed(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn workspace_lockfile_sha256() -> String {

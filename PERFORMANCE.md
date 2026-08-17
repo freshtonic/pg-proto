@@ -30,7 +30,11 @@ without rerunning the load. Captures keep warm-up, closed-loop, and fixed-rate
 open-loop samples separate. Reports include queue, execution, raw end-to-end,
 and coordinated-omission-corrected latency histograms, achieved rate,
 repeated-window drift, build identity, real resource-checkpoint evidence, and a
-COPY flow through the same intermediary.
+COPY flow through the same intermediary. Each `performance.json` also records a
+structured hardware fingerprint (manufacturer, model, CPU, and physical memory)
+and the Markdown summary renders the same information for comparisons across
+machines. Hardware serial numbers and unique device identifiers are never
+captured.
 
 Use `--build-mode optimized` with Cargo profile `burn-in`, or
 `--build-mode allocator-diagnostic` with `burn-in-diagnostic`; their results are

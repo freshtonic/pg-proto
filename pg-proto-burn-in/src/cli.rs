@@ -9,9 +9,18 @@ use clap::{Args, Parser, Subcommand};
     version
 )]
 pub(crate) struct Cli {
+    /// Run every conventional burn-in permutation and generate REPORT.md.
+    #[arg(long)]
+    run_all: bool,
+    /// Wall-clock duration of the soak phase performed by --run-all.
+    #[arg(long, requires = "run_all")]
+    soak_duration_seconds: Option<u64>,
+    /// Root directory for all artifacts produced by --run-all.
+    #[arg(long = "output-dir", requires = "run_all")]
+    run_all_output_dir: Option<PathBuf>,
     /// Burn-in operation to perform.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -246,7 +255,31 @@ impl Cli {
                 return Ok(None);
             }
         };
-        Ok(Some(cli.command.into_arguments(executable)))
+        match (cli.run_all, cli.command) {
+            (true, None) => {
+                let Some(duration) = cli.soak_duration_seconds else {
+                    return Err(
+                        "--run-all requires --soak-duration-seconds and --output-dir".into(),
+                    );
+                };
+                let Some(output_dir) = cli.run_all_output_dir else {
+                    return Err(
+                        "--run-all requires --soak-duration-seconds and --output-dir".into(),
+                    );
+                };
+                Ok(Some(vec![
+                    executable,
+                    "run-all".into(),
+                    "--soak-duration-seconds".into(),
+                    duration.to_string(),
+                    "--output-dir".into(),
+                    output_dir.to_string_lossy().into_owned(),
+                ]))
+            }
+            (false, Some(command)) => Ok(Some(command.into_arguments(executable))),
+            (true, Some(_)) => Err("--run-all cannot be combined with a subcommand".into()),
+            (false, None) => Err("a subcommand or --run-all is required; use --help".into()),
+        }
     }
 }
 

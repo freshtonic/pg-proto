@@ -51,6 +51,7 @@ mod cli;
 mod faults;
 mod performance;
 mod report;
+mod run_all;
 mod scripted;
 mod soak;
 
@@ -69,6 +70,7 @@ pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("performance") => performance::run(&arguments).await,
         Some("faults") => faults::run(&arguments).await,
         Some("make-report") => report::run(&arguments).await,
+        Some("run-all") => run_all::run(&arguments).await,
         Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("resource-driver-child") => soak::run_resource_driver_child(&arguments).await,
         Some("resource-hold-child") => soak::run_resource_hold_child(&arguments).await,

@@ -23,6 +23,8 @@ fn help_describes_every_public_command_and_output_directory() {
             "missing command {command} from help"
         );
     }
+    assert!(help.contains("--run-all"));
+    assert!(help.contains("--soak-duration-seconds"));
 
     for command in ["conformance", "soak", "catalogue", "faults"] {
         let help = Command::new(binary)
@@ -38,6 +40,58 @@ fn help_describes_every_public_command_and_output_directory() {
         );
         assert!(!help.contains("--artifacts"));
     }
+}
+
+#[test]
+fn run_all_requires_a_soak_duration_and_output_directory() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .arg("--run-all")
+        .output()
+        .expect("validate run-all arguments");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--soak-duration-seconds"));
+    assert!(stderr.contains("--output-dir"));
+}
+
+#[test]
+#[ignore = "requires a Docker-compatible container runtime"]
+fn run_all_executes_every_conventional_run_and_writes_the_report() {
+    let output_dir = tempfile::tempdir().expect("output directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args(["--run-all", "--soak-duration-seconds", "1", "--output-dir"])
+        .arg(output_dir.path())
+        .output()
+        .expect("run every burn-in permutation");
+    assert!(
+        output.status.success(),
+        "run-all failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for directory in [
+        "smoke-pg14",
+        "smoke-pg15",
+        "smoke-pg16",
+        "smoke-pg17",
+        "smoke-pg18",
+        "authentication",
+        "replication",
+        "rewrites",
+        "scripted",
+        "faults",
+        "soak",
+        "catalogue",
+    ] {
+        assert!(
+            output_dir
+                .path()
+                .join(directory)
+                .join("result.json")
+                .is_file(),
+            "missing {directory} result"
+        );
+    }
+    assert!(output_dir.path().join("REPORT.md").is_file());
 }
 
 #[test]

@@ -412,6 +412,10 @@ With a Docker-compatible runtime, useful local entry points are:
 
 ```bash
 cargo run -p pg-proto-burn-in -- \
+  --run-all --soak-duration-seconds 3600 \
+  --output-dir target/burn-in/manual
+
+cargo run -p pg-proto-burn-in -- \
   conformance --profile smoke --postgres-version 18 \
   --output-dir target/burn-in/smoke
 

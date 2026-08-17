@@ -34,6 +34,12 @@ One dedicated `pg-proto-burn-in` workspace binary provides these public commands
 - `make-report`: link the artifacts from conventional run directories into one
   `REPORT.md`.
 
+The top-level `--run-all` option executes the complete conventional PostgreSQL
+matrix and specialized profiles, using `--soak-duration-seconds` as the
+wall-clock soak budget and `--output-dir` as the shared artifact root. It runs
+the catalogue audit last and generates `REPORT.md` only after every preceding
+run succeeds.
+
 A thin ignored integration test invokes the short profile. Initial duration tiers
 are:
 

@@ -54,6 +54,8 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     for (name, sqlstate) in [
         ("syntax", "42601"),
         ("missing-table", "42P01"),
+        ("missing-column", "42703"),
+        ("missing-function", "42883"),
         ("type", "42883"),
         ("arithmetic", "22012"),
         ("constraint", "23505"),
@@ -73,6 +75,18 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         assert_eq!(outcome["protocol_ready"], true);
         assert_eq!(outcome["connection_clean"], true);
     }
+    assert_eq!(result["session_cleanliness"]["dirty_state_detected"], true);
+    assert_eq!(result["session_cleanliness"]["reset_state_clean"], true);
+    assert_eq!(
+        result["session_cleanliness"]["exercised"],
+        serde_json::json!([
+            "temporary-object",
+            "prepared-statement",
+            "advisory-lock",
+            "listener",
+            "guc"
+        ])
+    );
     let lifecycle = result["query_lifecycle"]
         .as_array()
         .expect("query lifecycle results");

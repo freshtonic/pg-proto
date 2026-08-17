@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
@@ -11,20 +12,18 @@ use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{
-        ContainerAsync, ImageExt,
-        core::{CmdWaitFor, ExecCommand},
-        runners::AsyncRunner,
-    },
+    testcontainers::{ContainerAsync, ImageExt, core::ExecCommand, runners::AsyncRunner},
 };
 use tokio::{
     process::{Child, Command},
-    time::{sleep, timeout},
+    time::{Instant, sleep, timeout},
 };
 
 use crate::{ChildEvent, atomic_write, option, read_event, wait_success};
 
 const FAULT_TIMEOUT: Duration = Duration::from_secs(45);
+const POSTGRES_READY_TIMEOUT: Duration = Duration::from_secs(15);
+const POSTGRES_READY_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FaultRunResult {
@@ -110,6 +109,7 @@ async fn environment(executable: &str, connections: usize) -> Result<Environment
             &connections.to_string(),
             "--allow-abrupt-disconnects",
         ])
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
@@ -336,13 +336,23 @@ async fn postgres_restart(executable: &str) -> Result<FaultScenarioResult, Box<d
     environment._container.stop_with_timeout(Some(5)).await?;
     let stopped = !environment._container.is_running().await?;
     environment._container.start().await?;
-    environment
-        ._container
-        .exec(
-            ExecCommand::new(["pg_isready", "-U", "postgres"])
-                .with_cmd_ready_condition(CmdWaitFor::exit_code(0)),
-        )
-        .await?;
+    wait_until_ready(
+        POSTGRES_READY_TIMEOUT,
+        POSTGRES_READY_RETRY_DELAY,
+        || async {
+            let result = environment
+                ._container
+                .exec(ExecCommand::new(["pg_isready", "-U", "postgres"]))
+                .await?;
+            loop {
+                if let Some(exit_code) = result.exit_code().await? {
+                    return Ok(exit_code == 0);
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await?;
     environment.intermediary.kill().await?;
     let topology_terminated = !environment.intermediary.wait().await?.success();
     Ok(result(
@@ -352,6 +362,30 @@ async fn postgres_restart(executable: &str) -> Result<FaultScenarioResult, Box<d
         initial && topology_terminated,
         "the disposable container stopped, restarted to pg_isready, and the old topology terminated by contract",
     ))
+}
+
+async fn wait_until_ready<F, Fut>(
+    ready_timeout: Duration,
+    retry_delay: Duration,
+    mut probe: F,
+) -> Result<usize, Box<dyn Error>>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, Box<dyn Error>>>,
+{
+    let deadline = Instant::now() + ready_timeout;
+    let mut attempts = 0;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("PostgreSQL did not become ready before the deadline".into());
+        }
+        attempts += 1;
+        if timeout(remaining, probe()).await?? {
+            return Ok(attempts);
+        }
+        sleep(retry_delay.min(deadline.saturating_duration_since(Instant::now()))).await;
+    }
 }
 
 async fn write_artifacts(path: &Path, result: &FaultRunResult) -> Result<(), Box<dyn Error>> {
@@ -376,4 +410,35 @@ async fn write_artifacts(path: &Path, result: &FaultRunResult) -> Result<(), Box
         ));
     }
     atomic_write(&path.join("summary.md"), summary.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, time::Duration};
+
+    use super::wait_until_ready;
+
+    #[tokio::test]
+    async fn readiness_probe_retries_transient_rejections() {
+        let attempts = Cell::new(0);
+        let observed = wait_until_ready(Duration::from_secs(1), Duration::ZERO, || async {
+            attempts.set(attempts.get() + 1);
+            Ok(attempts.get() == 3)
+        })
+        .await
+        .expect("third readiness probe should succeed");
+
+        assert_eq!(observed, 3);
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn readiness_probe_has_a_bounded_deadline() {
+        let outcome = wait_until_ready(Duration::from_millis(10), Duration::ZERO, || async {
+            Ok(false)
+        })
+        .await;
+
+        assert!(outcome.is_err());
+    }
 }

@@ -42,6 +42,17 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
         result["replay_command"],
         "pg-proto-burn-in replay --input result.json --artifacts replay"
     );
+    assert_eq!(result["trace_policy"]["mode"], "redacted");
+    assert_eq!(result["trace_policy"]["capacity"], 64);
+    assert_eq!(result["trace_policy"]["payloads"], false);
+    assert!(result["recent_trace"].as_array().unwrap().len() <= 64);
+    assert!(
+        result["recent_trace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["parameters"].as_object().unwrap().is_empty())
+    );
 
     let checkpoints = result["resource_checkpoints"]
         .as_array()
@@ -96,6 +107,8 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
         assert_eq!(gates["authoritative"], false);
         assert!(!gates["gaps"].as_array().unwrap().is_empty());
     }
+    let summary = fs::read_to_string(artifacts.path().join("summary.md")).expect("summary");
+    assert!(summary.contains("Trace policy: redacted"));
 }
 
 #[test]
@@ -123,7 +136,12 @@ fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
             "phase": "long-lived",
             "scenario": "scalar",
             "canonical": false,
-            "parameters": {"expected": 41}
+            "parameters": {
+                "expected": 41,
+                "password": 123456,
+                "tls_secret": 234567,
+                "cancellation_key": 345678
+            }
         }]))
         .expect("encode schedule"),
     )
@@ -132,6 +150,7 @@ fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
     let captured = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["soak", "--seed", "91", "--iterations", "0", "--schedule"])
         .arg(&schedule)
+        .arg("--capture-payloads")
         .arg("--artifacts")
         .arg(capture.path())
         .output()
@@ -143,6 +162,35 @@ fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
         serde_json::from_slice(&captured_bytes).expect("valid captured result");
     assert_eq!(captured_result["success"], false);
     assert_eq!(captured_result["failure"]["kind"], "assertion-mismatch");
+    assert_eq!(captured_result["trace_policy"]["mode"], "diagnostic");
+    assert_eq!(captured_result["trace_policy"]["payloads"], true);
+    let persisted = String::from_utf8(captured_bytes.clone()).expect("UTF-8 result");
+    for secret in ["123456", "234567", "345678"] {
+        assert!(
+            !persisted.contains(secret),
+            "artifact leaked secret {secret}"
+        );
+    }
+    for field in ["password", "tls_secret", "cancellation_key"] {
+        assert_eq!(
+            captured_result["recent_trace"][0]["parameters"][field],
+            "<redacted>"
+        );
+    }
+    assert_eq!(captured_result["failure_bundle"]["seed"], 91);
+    assert_eq!(
+        captured_result["failure_bundle"]["replay_command"],
+        captured_result["replay_command"]
+    );
+    assert!(captured_result["failure_bundle"]["recent_trace"].is_array());
+    assert!(captured_result["failure_bundle"]["resource_stages"].is_array());
+    assert_eq!(
+        captured_result["failure_bundle"]["child_logs"],
+        serde_json::json!(["child diagnostics redacted; correlate with failure fingerprint"])
+    );
+    let summary = fs::read_to_string(capture.path().join("summary.md")).expect("summary");
+    assert!(summary.contains("Failure bundle: recorded"));
+    assert!(summary.contains("Trace policy: diagnostic"));
 
     let replayed = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["replay", "--input"])

@@ -70,6 +70,47 @@ struct SoakResult {
     reproduced_failure: Option<bool>,
     #[serde(default)]
     resource_gates: ResourceGates,
+    #[serde(default)]
+    trace_policy: TracePolicy,
+    #[serde(default)]
+    recent_trace: Vec<TraceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_bundle: Option<FailureBundle>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct TracePolicy {
+    mode: String,
+    capacity: usize,
+    payloads: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TraceEntry {
+    ordinal: usize,
+    phase: Phase,
+    scenario: String,
+    parameter_names: Vec<String>,
+    parameters: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FailureBundle {
+    seed: u64,
+    scenario_prefix: Vec<TraceEntry>,
+    configuration: FailureConfiguration,
+    coverage: Vec<String>,
+    resource_stages: Vec<String>,
+    recent_trace: Vec<TraceEntry>,
+    child_logs: Vec<String>,
+    replay_command: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FailureConfiguration {
+    budget: Budget,
+    max_concurrency: usize,
+    payload_capture: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +194,7 @@ struct RecordRequest<'a> {
     command: &'a str,
     reduced_from: Option<usize>,
     expected_failure: Option<FailureEvidence>,
+    payload_capture: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -167,6 +209,9 @@ pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>>
     let seed = option(arguments, "--seed")?.parse()?;
     let budget = parse_budget(arguments)?;
     let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let payload_capture = arguments
+        .iter()
+        .any(|argument| argument == "--capture-payloads");
     let sequence = if let Some(path) = optional_option(arguments, "--schedule") {
         serde_json::from_slice(&tokio::fs::read(path).await?)?
     } else {
@@ -182,6 +227,7 @@ pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>>
             command: "soak",
             reduced_from: None,
             expected_failure: None,
+            payload_capture,
         },
     )
     .await
@@ -219,6 +265,7 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
             command: "replay",
             reduced_from: None,
             expected_failure: original_failure,
+            payload_capture: original.trace_policy.payloads,
         },
     )
     .await;
@@ -247,6 +294,9 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         failure: None,
         reproduced_failure: None,
         resource_gates: ResourceGates::default(),
+        trace_policy: TracePolicy::default(),
+        recent_trace: Vec::new(),
+        failure_bundle: None,
     };
     atomic_write(
         &artifacts.join("reduction.json"),
@@ -387,22 +437,68 @@ async fn execute_and_record(
         .expected_failure
         .as_ref()
         .map(|expected| failure.as_ref() == Some(expected));
+    let trace_policy = TracePolicy {
+        mode: if request.payload_capture {
+            "diagnostic".into()
+        } else {
+            "redacted".into()
+        },
+        capacity: 64,
+        payloads: request.payload_capture,
+    };
+    let full_trace = trace_entries(&sequence, request.payload_capture);
+    let recent_trace = full_trace
+        .iter()
+        .rev()
+        .take(trace_policy.capacity)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+    let replay_command =
+        "pg-proto-burn-in replay --input result.json --artifacts replay".to_owned();
+    let failure_bundle = failure.as_ref().map(|_| FailureBundle {
+        seed: request.seed,
+        scenario_prefix: full_trace
+            .iter()
+            .take(completed.saturating_add(1).min(full_trace.len()))
+            .cloned()
+            .collect(),
+        configuration: FailureConfiguration {
+            budget: request.budget.clone(),
+            max_concurrency: CONCURRENCY,
+            payload_capture: request.payload_capture,
+        },
+        // Transition coverage remains owned by conformance artifacts; do not invent soak IDs.
+        coverage: Vec::new(),
+        resource_stages: resource_checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.stage.clone())
+            .collect(),
+        recent_trace: recent_trace.clone(),
+        child_logs: vec!["child diagnostics redacted; correlate with failure fingerprint".into()],
+        replay_command: replay_command.clone(),
+    });
     let result = SoakResult {
         schema_version: 1,
         command: request.command.into(),
         seed: request.seed,
         budget: request.budget,
         max_concurrency: CONCURRENCY,
-        sequence,
+        sequence: redact_sensitive_sequence(sequence),
         completed,
         success: outcome.is_ok() && !gate_failure,
-        replay_command: "pg-proto-burn-in replay --input result.json --artifacts replay".into(),
+        replay_command,
         reduced_from: request.reduced_from,
         resource_checkpoints,
         lifecycle_evidence,
         failure,
         reproduced_failure,
         resource_gates,
+        trace_policy,
+        recent_trace,
+        failure_bundle,
     };
     write_result(request.artifacts, &result).await?;
     if gate_failure {
@@ -410,6 +506,61 @@ async fn execute_and_record(
     } else {
         outcome.map(|_| ())
     }
+}
+
+fn trace_entries(sequence: &[SequenceEntry], payload_capture: bool) -> Vec<TraceEntry> {
+    sequence
+        .iter()
+        .map(|entry| TraceEntry {
+            ordinal: entry.ordinal,
+            phase: entry.phase.clone(),
+            scenario: entry.scenario.clone(),
+            parameter_names: entry.parameters.keys().cloned().collect(),
+            parameters: if payload_capture {
+                entry
+                    .parameters
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            if sensitive_name(name) {
+                                "<redacted>".into()
+                            } else {
+                                value.to_string()
+                            },
+                        )
+                    })
+                    .collect()
+            } else {
+                BTreeMap::new()
+            },
+        })
+        .collect()
+}
+
+fn redact_sensitive_sequence(mut sequence: Vec<SequenceEntry>) -> Vec<SequenceEntry> {
+    for entry in &mut sequence {
+        for (name, value) in &mut entry.parameters {
+            if sensitive_name(name) {
+                *value = 0;
+            }
+        }
+    }
+    sequence
+}
+
+fn sensitive_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "password",
+        "secret",
+        "credential",
+        "tls",
+        "cancellation",
+        "token",
+    ]
+    .iter()
+    .any(|sensitive| name.contains(sensitive))
 }
 
 fn evaluate_resource_gates(checkpoints: &[ResourceCheckpoint]) -> ResourceGates {
@@ -973,7 +1124,7 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
     .await?;
     let status = if result.success { "PASS" } else { "FAIL" };
     let summary = format!(
-        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nFailure: {}. Reproduced captured failure: {}.\n\nResource gates: {} (authoritative: {}, task growth: {}, descriptor growth: {}, PostgreSQL connections: {}, locks: {}).\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
+        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nFailure: {}. Reproduced captured failure: {}. Failure bundle: {}.\n\nTrace policy: {} (payloads: {}, retained: {}/{}).\n\nResource gates: {} (authoritative: {}, task growth: {}, descriptor growth: {}, PostgreSQL connections: {}, locks: {}).\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
         result.command,
         result.completed,
         result.sequence.len(),
@@ -989,6 +1140,15 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
             } else {
                 "no"
             }),
+        if result.failure_bundle.is_some() {
+            "recorded"
+        } else {
+            "not applicable"
+        },
+        result.trace_policy.mode,
+        result.trace_policy.payloads,
+        result.recent_trace.len(),
+        result.trace_policy.capacity,
         if result.resource_gates.passed {
             "PASS"
         } else {

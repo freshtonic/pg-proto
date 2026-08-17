@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.11.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.7...pg-proto-v0.11.0) - 2026-08-17
+
+### Added
+
+- generate stable protocol transition ids
+- add burn-in smoke harness
+- report generated protocol coverage
+- add deterministic burn-in fixtures
+- cover query lifecycles in burn-in harness
+- cover real COPY flows in burn-in harness
+- add controlled performance evidence
+- capture controlled intermediary load
+- audit reviewed protocol dispositions
+
+### Changed
+
+- integrate burn-in verification workflows
+- require scripted malformed conformance
+- run controlled performance capture
+- isolate bounded container test profiles
+
+### Documentation
+
+- design protocol burn-in verification
+- review transition observation facade
+- describe burn-in verification suite
+
+### Fixed
+
+- terminate rejected startup routes
+
+### Testing
+
+- exercise TLS authentication profiles
+
 ## [0.10.7](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.6...pg-proto-v0.10.7) - 2026-08-14
 
 ### Fixed

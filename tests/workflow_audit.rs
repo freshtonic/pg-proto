@@ -66,7 +66,7 @@ fn burn_in_workflows_separate_portable_evidence_from_stable_runner_enforcement()
         .0;
     assert!(hosted.contains("runs-on: ubuntu-latest"));
     assert!(hosted.contains("continue-on-error: true"));
-    assert!(hosted.contains("soak --profile diagnostic"));
+    assert!(hosted.contains("soak --seed \"$BURN_IN_SEED\""));
     assert!(!hosted.contains("performance --profile"));
 
     let stable = burn_in
@@ -74,7 +74,7 @@ fn burn_in_workflows_separate_portable_evidence_from_stable_runner_enforcement()
         .expect("stable performance job")
         .1;
     assert!(stable.contains("runs-on: [self-hosted, linux, pg-proto-stable]"));
-    assert!(stable.contains("soak --profile \"$BURN_IN_PROFILE\""));
+    assert!(stable.contains("soak --seed \"$BURN_IN_SEED\""));
     assert!(stable.contains("performance --profile"));
     assert!(stable.contains("cargo run --profile burn-in"));
     assert!(stable.contains("--stable-runner"));

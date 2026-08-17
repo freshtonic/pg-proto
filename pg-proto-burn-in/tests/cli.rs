@@ -55,6 +55,34 @@ fn run_all_requires_a_soak_duration_and_output_directory() {
 }
 
 #[test]
+fn soak_does_not_accept_a_profile_option() {
+    let binary = env!("CARGO_BIN_EXE_pg-proto-burn-in");
+    let help = Command::new(binary)
+        .args(["soak", "--help"])
+        .output()
+        .expect("show soak help");
+    assert!(help.status.success());
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("--profile"));
+
+    let output = Command::new(binary)
+        .args([
+            "soak",
+            "--profile",
+            "overnight",
+            "--seed",
+            "1",
+            "--iterations",
+            "0",
+            "--output-dir",
+            "unused",
+        ])
+        .output()
+        .expect("reject removed soak profile");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--profile'"));
+}
+
+#[test]
 #[ignore = "requires a Docker-compatible container runtime"]
 fn run_all_executes_every_conventional_run_and_writes_the_report() {
     let output_dir = tempfile::tempdir().expect("output directory");
@@ -91,13 +119,30 @@ fn run_all_executes_every_conventional_run_and_writes_the_report() {
             "missing {directory} result"
         );
     }
+    for profile in ["controlled", "scheduled-soak", "overnight", "diagnostic"] {
+        let directory = format!("performance-{profile}");
+        assert!(
+            output_dir
+                .path()
+                .join(&directory)
+                .join("performance.json")
+                .is_file(),
+            "missing {directory} result"
+        );
+    }
     assert!(output_dir.path().join("REPORT.md").is_file());
 }
 
 #[test]
 fn make_report_links_artifacts_from_recognized_run_directories() {
     let root = tempfile::tempdir().expect("report directory");
-    for directory in ["smoke-pg14", "authentication", "soak", "catalogue"] {
+    for directory in [
+        "smoke-pg14",
+        "authentication",
+        "performance-controlled",
+        "soak",
+        "catalogue",
+    ] {
         let run = root.path().join(directory);
         fs::create_dir(&run).expect("create run directory");
         fs::write(run.join("result.json"), b"{}").expect("write JSON artifact");
@@ -122,6 +167,7 @@ fn make_report_links_artifacts_from_recognized_run_directories() {
     for link in [
         "[result.json](smoke-pg14/result.json)",
         "[summary.md](authentication/summary.md)",
+        "[result.json](performance-controlled/result.json)",
         "[result.json](soak/result.json)",
         "[summary.md](catalogue/summary.md)",
     ] {

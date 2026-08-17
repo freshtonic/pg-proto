@@ -45,12 +45,27 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         &["faults", "--output-dir", &path(&output_dir, "faults")],
     )
     .await?;
+    for profile in ["controlled", "scheduled-soak", "overnight", "diagnostic"] {
+        run_command(
+            executable,
+            &[
+                "performance",
+                "--profile",
+                profile,
+                "--seed",
+                "8675309",
+                "--duration-seconds",
+                soak_duration,
+                "--output-dir",
+                &path(&output_dir, &format!("performance-{profile}")),
+            ],
+        )
+        .await?;
+    }
     run_command(
         executable,
         &[
             "soak",
-            "--profile",
-            "overnight",
             "--seed",
             "8675309",
             "--duration-seconds",

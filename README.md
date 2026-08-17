@@ -437,8 +437,10 @@ cargo run -p pg-proto-burn-in -- \
 
 `make-report` writes `REPORT.md` alongside the conventional run directories:
 `smoke-pg14` through `smoke-pg18`, `authentication`, `replication`, `rewrites`,
-`scripted`, `faults`, `soak`, and `catalogue`. The report links every artifact
-file found in each run directory and marks conventional runs that are absent.
+`scripted`, `faults`, `performance-controlled`, `performance-scheduled-soak`,
+`performance-overnight`, `performance-diagnostic`, `soak`, and `catalogue`.
+The report links every artifact file found in each run directory and marks
+conventional runs that are absent.
 
 See the [burn-in design](docs/design/burn-in-verification.md) and
 [ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the

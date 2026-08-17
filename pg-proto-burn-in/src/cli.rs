@@ -77,9 +77,6 @@ struct ConformanceArgs {
         .args(["iterations", "duration_seconds"])
 ))]
 struct SoakArgs {
-    /// Workload profile label recorded with the run.
-    #[arg(long, default_value = "diagnostic")]
-    profile: String,
     /// Seed used to generate the deterministic workload schedule.
     #[arg(long)]
     seed: u64,
@@ -295,7 +292,6 @@ impl Command {
             }
             Self::Soak(args) => {
                 push(&mut output, "soak");
-                pair(&mut output, "--profile", args.profile);
                 pair(&mut output, "--seed", args.seed.to_string());
                 optional_pair(
                     &mut output,

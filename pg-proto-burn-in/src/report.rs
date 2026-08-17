@@ -13,6 +13,10 @@ const RUN_DIRECTORIES: &[&str] = &[
     "rewrites",
     "scripted",
     "faults",
+    "performance-controlled",
+    "performance-scheduled-soak",
+    "performance-overnight",
+    "performance-diagnostic",
     "soak",
     "catalogue",
 ];

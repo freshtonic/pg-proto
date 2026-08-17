@@ -59,7 +59,7 @@ jobs:
       - name: Run portable diagnostic soak
         run: >-
           cargo run --release -p pg-proto-burn-in --
-          soak --profile diagnostic --seed "$BURN_IN_SEED"
+          soak --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --output-dir target/burn-in/hosted
       - name: Upload hosted diagnostic evidence
@@ -88,7 +88,7 @@ jobs:
       - name: Run deterministic stable-runner soak
         run: >-
           cargo run --release -p pg-proto-burn-in --
-          soak --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
+          soak --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --output-dir target/burn-in/stable/soak
       - name: Capture controlled stable-runner performance evidence

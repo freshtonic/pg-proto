@@ -21,7 +21,96 @@ use tokio::{process::Command, time::timeout};
 use crate::{CHILD_TIMEOUT, ChildEvent, atomic_write, option, read_event, wait_success};
 
 const CONCURRENCY: usize = 4;
-const CANONICAL: [&str; 3] = ["scalar", "rows", "syntax-error"];
+const EXPECTED_FAILURE_BUDGET: usize = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ScenarioId {
+    Scalar,
+    Rows,
+    SyntaxError,
+}
+
+struct ScenarioDefinition {
+    id: ScenarioId,
+    weight: u64,
+    prerequisites: &'static [&'static str],
+    expected_coverage: &'static [&'static str],
+    assertions: &'static [&'static str],
+    postgres_versions: &'static str,
+    replay_parameters: &'static [&'static str],
+}
+
+const SCENARIOS: [ScenarioDefinition; 3] = [
+    ScenarioDefinition {
+        id: ScenarioId::Scalar,
+        weight: 3,
+        prerequisites: &["authenticated-ready-session"],
+        expected_coverage: &[
+            "backend.Ready.Parse",
+            "backend.ParseResponse.Complete",
+            "backend.Building.Describe",
+            "backend.DescribeResponse.ParameterDescription",
+            "backend.DescribeResponse.RowDescription",
+            "backend.Building.Bind",
+            "backend.BindResponse.Complete",
+            "backend.Building.Execute",
+            "backend.ExecuteResponse.Continue",
+            "backend.ExecuteResponse.CommandComplete",
+            "backend.Building.Sync",
+            "backend.SyncResponse.Ready",
+        ],
+        assertions: &["value-equals-42"],
+        postgres_versions: "14-18",
+        replay_parameters: &["expected"],
+    },
+    ScenarioDefinition {
+        id: ScenarioId::Rows,
+        weight: 2,
+        prerequisites: &["authenticated-ready-session"],
+        expected_coverage: &[
+            "backend.Ready.Parse",
+            "backend.ParseResponse.Complete",
+            "backend.Building.Describe",
+            "backend.DescribeResponse.ParameterDescription",
+            "backend.DescribeResponse.RowDescription",
+            "backend.Building.Bind",
+            "backend.BindResponse.Complete",
+            "backend.Building.Execute",
+            "backend.ExecuteResponse.Continue",
+            "backend.ExecuteResponse.CommandComplete",
+            "backend.Building.Sync",
+            "backend.SyncResponse.Ready",
+        ],
+        assertions: &["row-count-equals-rows-parameter"],
+        postgres_versions: "14-18",
+        replay_parameters: &["rows"],
+    },
+    ScenarioDefinition {
+        id: ScenarioId::SyntaxError,
+        weight: 1,
+        prerequisites: &["authenticated-ready-session"],
+        expected_coverage: &[
+            "backend.Ready.Query",
+            "backend.Simple.Error",
+            "backend.SimpleError.Ready",
+        ],
+        assertions: &["sqlstate-42601", "connection-recovers"],
+        postgres_versions: "14-18",
+        replay_parameters: &[],
+    },
+];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ScenarioMetadata {
+    id: ScenarioId,
+    weight: u64,
+    prerequisites: Vec<String>,
+    expected_coverage: Vec<String>,
+    assertions: Vec<String>,
+    postgres_versions: String,
+    replay_parameters: Vec<String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -35,7 +124,7 @@ enum Phase {
 struct SequenceEntry {
     ordinal: usize,
     phase: Phase,
-    scenario: String,
+    scenario: ScenarioId,
     canonical: bool,
     parameters: BTreeMap<String, i64>,
 }
@@ -54,6 +143,8 @@ struct SoakResult {
     seed: u64,
     budget: Budget,
     max_concurrency: usize,
+    scenario_catalogue: Vec<ScenarioMetadata>,
+    admission_policy: AdmissionPolicy,
     sequence: Vec<SequenceEntry>,
     completed: usize,
     success: bool,
@@ -76,6 +167,23 @@ struct SoakResult {
     recent_trace: Vec<TraceEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failure_bundle: Option<FailureBundle>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AdmissionPolicy {
+    expected_failure_budget: usize,
+    expected_failure_action: String,
+    invariant_failure_action: String,
+}
+
+impl Default for AdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            expected_failure_budget: EXPECTED_FAILURE_BUDGET,
+            expected_failure_action: "continue-until-budget-exhausted".into(),
+            invariant_failure_action: "stop-admission-immediately".into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -202,7 +310,31 @@ struct DriverResult {
     version: u32,
     success: bool,
     completed: usize,
+    expected_failures: Vec<String>,
+    admission_stopped: bool,
     error: Option<String>,
+}
+
+struct DriverExecution {
+    completed: usize,
+    admission: FailureAdmission,
+}
+
+#[derive(Default)]
+struct FailureAdmission {
+    expected_failures: Vec<String>,
+    stopped: bool,
+}
+
+impl FailureAdmission {
+    fn record_expected(&mut self, failure: String) {
+        self.expected_failures.push(failure);
+        self.stopped = self.expected_failures.len() > EXPECTED_FAILURE_BUDGET;
+    }
+
+    fn stop_for_invariant(&mut self) {
+        self.stopped = true;
+    }
 }
 
 pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>> {
@@ -284,6 +416,8 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         seed: original.seed,
         budget: original.budget,
         max_concurrency: CONCURRENCY,
+        scenario_catalogue: scenario_catalogue(),
+        admission_policy: AdmissionPolicy::default(),
         sequence: reduced.clone(),
         completed: 0,
         success: false,
@@ -330,15 +464,11 @@ fn schedule(seed: u64, budget: Budget) -> Result<Vec<SequenceEntry>, Box<dyn Err
         Phase::ConnectionChurn,
         Phase::BoundedConcurrency,
     ] {
-        for scenario in CANONICAL {
-            push_entry(&mut entries, phase.clone(), scenario, true, &mut rng);
+        for scenario in &SCENARIOS {
+            push_entry(&mut entries, phase.clone(), scenario.id, true, &mut rng);
         }
         for _ in 0..weighted_per_phase {
-            let scenario = match rng.next() % 6 {
-                0..=2 => "scalar",
-                3..=4 => "rows",
-                _ => "syntax-error",
-            };
+            let scenario = weighted_scenario(rng.next());
             push_entry(&mut entries, phase.clone(), scenario, false, &mut rng);
         }
     }
@@ -348,12 +478,12 @@ fn schedule(seed: u64, budget: Budget) -> Result<Vec<SequenceEntry>, Box<dyn Err
 fn push_entry(
     entries: &mut Vec<SequenceEntry>,
     phase: Phase,
-    scenario: &str,
+    scenario: ScenarioId,
     canonical: bool,
     rng: &mut StableRng,
 ) {
     let mut parameters = BTreeMap::new();
-    if scenario == "rows" {
+    if scenario == ScenarioId::Rows {
         parameters.insert(
             "rows".into(),
             if canonical {
@@ -366,10 +496,64 @@ fn push_entry(
     entries.push(SequenceEntry {
         ordinal: entries.len(),
         phase,
-        scenario: scenario.into(),
+        scenario,
         canonical,
         parameters,
     });
+}
+
+fn weighted_scenario(random: u64) -> ScenarioId {
+    let total = SCENARIOS
+        .iter()
+        .map(|scenario| scenario.weight)
+        .sum::<u64>();
+    let mut selected = random % total;
+    for scenario in &SCENARIOS {
+        if selected < scenario.weight {
+            return scenario.id;
+        }
+        selected -= scenario.weight;
+    }
+    unreachable!("scenario weights are non-empty and positive")
+}
+
+fn scenario_name(scenario: ScenarioId) -> &'static str {
+    match scenario {
+        ScenarioId::Scalar => "scalar",
+        ScenarioId::Rows => "rows",
+        ScenarioId::SyntaxError => "syntax-error",
+    }
+}
+
+fn scenario_catalogue() -> Vec<ScenarioMetadata> {
+    SCENARIOS
+        .iter()
+        .map(|definition| ScenarioMetadata {
+            id: definition.id,
+            weight: definition.weight,
+            prerequisites: definition
+                .prerequisites
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            expected_coverage: definition
+                .expected_coverage
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            assertions: definition
+                .assertions
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            postgres_versions: definition.postgres_versions.into(),
+            replay_parameters: definition
+                .replay_parameters
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+        })
+        .collect()
 }
 
 struct StableRng(u64);
@@ -486,6 +670,8 @@ async fn execute_and_record(
         seed: request.seed,
         budget: request.budget,
         max_concurrency: CONCURRENCY,
+        scenario_catalogue: scenario_catalogue(),
+        admission_policy: AdmissionPolicy::default(),
         sequence: redact_sensitive_sequence(sequence),
         completed,
         success: outcome.is_ok() && !gate_failure,
@@ -514,7 +700,7 @@ fn trace_entries(sequence: &[SequenceEntry], payload_capture: bool) -> Vec<Trace
         .map(|entry| TraceEntry {
             ordinal: entry.ordinal,
             phase: entry.phase.clone(),
-            scenario: entry.scenario.clone(),
+            scenario: scenario_name(entry.scenario).into(),
             parameter_names: entry.parameters.keys().cloned().collect(),
             parameters: if payload_capture {
                 entry
@@ -1046,20 +1232,42 @@ pub(crate) async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn
     let proxy: SocketAddr = option(arguments, "--address")?.parse()?;
     let entries: Vec<SequenceEntry> = serde_json::from_str(option(arguments, "--sequence")?)?;
     let outcome = execute_entries(proxy, &entries).await;
+    let expected_failures = outcome
+        .as_ref()
+        .map(|execution| execution.admission.expected_failures.clone())
+        .unwrap_or_default();
+    let admission_stopped = outcome
+        .as_ref()
+        .map(|execution| execution.admission.stopped)
+        .unwrap_or(true);
+    let recoverable_failure = expected_failures.first().cloned();
     let result = DriverResult {
         version: 1,
-        success: outcome.is_ok(),
-        completed: outcome.as_ref().copied().unwrap_or(0),
-        error: outcome.as_ref().err().map(ToString::to_string),
+        success: outcome.is_ok() && recoverable_failure.is_none(),
+        completed: outcome
+            .as_ref()
+            .map(|execution| execution.completed)
+            .unwrap_or(0),
+        expected_failures,
+        admission_stopped,
+        error: outcome
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .or(recoverable_failure),
     };
     println!("{}", serde_json::to_string(&result)?);
-    outcome.map(|_| ())
+    match outcome {
+        Ok(execution) if execution.admission.expected_failures.is_empty() => Ok(()),
+        Ok(execution) => Err(execution.admission.expected_failures[0].clone().into()),
+        Err(error) => Err(error),
+    }
 }
 
 async fn execute_entries(
     proxy: SocketAddr,
     entries: &[SequenceEntry],
-) -> Result<usize, Box<dyn Error>> {
+) -> Result<DriverExecution, Box<dyn Error>> {
     let mut config = tokio_postgres::Config::new();
     config
         .host(proxy.ip().to_string())
@@ -1068,19 +1276,24 @@ async fn execute_entries(
         .dbname("postgres");
     let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
     let connection_task = tokio::spawn(connection);
+    let mut completed = 0;
+    let mut admission = FailureAdmission::default();
     for entry in entries {
-        match entry.scenario.as_str() {
-            "scalar" => {
+        match entry.scenario {
+            ScenarioId::Scalar => {
                 let value: i32 = client.query_one("SELECT 42::int4", &[]).await?.get(0);
                 let expected = entry.parameters.get("expected").copied().unwrap_or(42);
                 if i64::from(value) != expected {
-                    return Err(format!(
+                    admission.record_expected(format!(
                         "assertion-mismatch: scalar expected {expected}, got {value}"
-                    )
-                    .into());
+                    ));
+                    if admission.stopped {
+                        break;
+                    }
+                    continue;
                 }
             }
-            "rows" => {
+            ScenarioId::Rows => {
                 let expected = *entry
                     .parameters
                     .get("rows")
@@ -1092,28 +1305,37 @@ async fn execute_entries(
                     )
                     .await?;
                 if rows.len() != usize::try_from(expected)? {
-                    return Err("row count mismatch".into());
+                    admission.record_expected("assertion-mismatch: row count mismatch".into());
+                    if admission.stopped {
+                        break;
+                    }
+                    continue;
                 }
             }
-            "syntax-error" => {
+            ScenarioId::SyntaxError => {
                 let error = client
                     .simple_query("SELEC invalid")
                     .await
                     .expect_err("invalid SQL succeeded");
                 if error.as_db_error().map(|error| error.code().code()) != Some("42601") {
+                    admission.stop_for_invariant();
                     return Err("syntax error SQLSTATE mismatch".into());
                 }
                 let ready: i32 = client.query_one("SELECT 1::int4", &[]).await?.get(0);
                 if ready != 1 {
+                    admission.stop_for_invariant();
                     return Err("connection did not recover".into());
                 }
             }
-            unknown => return Err(format!("unknown soak scenario {unknown}").into()),
         }
+        completed += 1;
     }
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
-    Ok(entries.len())
+    Ok(DriverExecution {
+        completed,
+        admission,
+    })
 }
 
 async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Error>> {
@@ -1181,9 +1403,9 @@ mod tests {
             assert_eq!(
                 first[offset..offset + 3]
                     .iter()
-                    .map(|entry| entry.scenario.as_str())
+                    .map(|entry| scenario_name(entry.scenario))
                     .collect::<Vec<_>>(),
-                CANONICAL
+                ["scalar", "rows", "syntax-error"]
             );
             assert!(
                 first[offset..offset + 3]
@@ -1199,6 +1421,55 @@ mod tests {
         let encoded = serde_json::to_vec(&sequence).unwrap();
         let replayed: Vec<SequenceEntry> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(replayed, sequence);
+    }
+
+    #[test]
+    fn scenario_registry_is_unique_complete_and_weighted() {
+        let catalogue = scenario_catalogue();
+        let generated: serde_json::Value =
+            serde_json::from_str(include_str!("../catalogue/generated-v1.json")).unwrap();
+        let generated = generated["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(catalogue.len(), SCENARIOS.len());
+        assert_eq!(SCENARIOS.iter().map(|entry| entry.weight).sum::<u64>(), 6);
+        for (index, scenario) in SCENARIOS.iter().enumerate() {
+            assert!(scenario.weight > 0);
+            assert!(!scenario.prerequisites.is_empty());
+            assert!(!scenario.expected_coverage.is_empty());
+            assert!(
+                scenario
+                    .expected_coverage
+                    .iter()
+                    .all(|id| generated.contains(id)),
+                "scenario {} references unknown coverage",
+                scenario_name(scenario.id)
+            );
+            assert!(!scenario.assertions.is_empty());
+            assert!(
+                SCENARIOS[..index]
+                    .iter()
+                    .all(|earlier| earlier.id != scenario.id)
+            );
+        }
+    }
+
+    #[test]
+    fn expected_failures_are_bounded_but_invariants_stop_immediately() {
+        let mut expected = FailureAdmission::default();
+        expected.record_expected("first".into());
+        expected.record_expected("second".into());
+        assert!(!expected.stopped);
+        expected.record_expected("third".into());
+        assert!(expected.stopped);
+
+        let mut invariant = FailureAdmission::default();
+        invariant.stop_for_invariant();
+        assert!(invariant.stopped);
+        assert!(invariant.expected_failures.is_empty());
     }
 
     #[test]

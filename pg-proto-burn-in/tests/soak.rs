@@ -31,6 +31,29 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
     assert_eq!(result["command"], "soak");
     assert_eq!(result["seed"], 8_675_309);
     assert_eq!(result["budget"], serde_json::json!({"iterations": 0}));
+    assert_eq!(result["scenario_catalogue"].as_array().unwrap().len(), 3);
+    assert_eq!(result["scenario_catalogue"][0]["id"], "scalar");
+    assert_eq!(result["scenario_catalogue"][0]["weight"], 3);
+    assert_eq!(
+        result["scenario_catalogue"][0]["postgres_versions"],
+        "14-18"
+    );
+    assert!(
+        result["scenario_catalogue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(
+                |scenario| !scenario["prerequisites"].as_array().unwrap().is_empty()
+                    && !scenario["expected_coverage"].as_array().unwrap().is_empty()
+                    && !scenario["assertions"].as_array().unwrap().is_empty()
+            )
+    );
+    assert_eq!(result["admission_policy"]["expected_failure_budget"], 2);
+    assert_eq!(
+        result["admission_policy"]["invariant_failure_action"],
+        "stop-admission-immediately"
+    );
 
     let sequence = result["sequence"].as_array().expect("recorded sequence");
     assert_eq!(sequence.len(), 9, "three canonical scenarios per phase");

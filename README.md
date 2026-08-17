@@ -354,6 +354,84 @@ Build the same documentation locally with:
 cargo doc --workspace --no-deps --open
 ```
 
+## Protocol conformance and burn-in
+
+The `pg-proto-burn-in` workspace binary verifies the complete public topology:
+an independent Rust SQL driver connects to a separately supervised process that
+builds a public `Server` + `Intermediary` + `Client`, which then connects to a
+real PostgreSQL instance launched by Testcontainers. The supervisor owns the
+container, child lifecycles, timeouts, resource sampling, and artifacts. The
+harness does not inspect private connection or grammar state.
+
+The finite profiles cover distinct protocol and deployment concerns:
+
+- `conformance --profile smoke` exercises deterministic fixtures and result
+  sizes, simple and extended queries, statement/portal lifecycles, binary data,
+  portal suspension, pipelining, SQLSTATE recovery, session dirty/reset cycles,
+  asynchronous traffic, cancellation, and COPY IN/OUT. This profile runs
+  against PostgreSQL 14 through 18 in compatibility CI.
+- `conformance --profile authentication` covers trust, cleartext password, MD5,
+  SCRAM-SHA-256, TLS negotiation, and TLS rejection. SCRAM-SHA-256-PLUS is
+  reported separately where the independent driver cannot supply channel
+  binding.
+- `conformance --profile replication` drives physical-replication COPY-BOTH,
+  WAL receipt, standby status, cancellation, and both scripted half-close
+  orderings against PostgreSQL 18.
+- `conformance --profile scripted` finitely covers exchanges that ordinary
+  PostgreSQL or `tokio-postgres` cannot reliably produce: legacy function calls,
+  GSS/Kerberos/SSPI branches, exact CopyFail, COPY-BOTH ordering, malformed
+  frames and encodings, and illegal sequences.
+- `conformance --profile rewrites` proves non-identity middleware reconstruction
+  for Parse SQL, Bind parameters, row descriptions, data rows, diagnostics, and
+  COPY payloads at the opposite endpoint.
+- `faults` isolates backend termination, resource exhaustion, interrupted COPY,
+  deadlock, and PostgreSQL restart from steady-state measurements.
+
+`soak` starts every phase with a canonical typed scenario cycle, then uses a
+seeded weighted schedule across a long-lived session, connection churn, and
+bounded concurrency. It records exact replay parameters, quiescent resource
+checkpoints, restart/abrupt/graceful teardown evidence, and a bounded redacted
+trace. `replay` preserves the original failure artifact and reruns its exact
+recorded prefix; optional bounded reduction happens only after that evidence is
+safe. `performance` keeps warm-up, closed-loop saturation, and open-loop
+fixed-rate measurements separate and emits queue, execution, end-to-end, and
+coordinated-omission-corrected histograms. Performance thresholds are enforced
+only on the labelled stable Linux runner; hosted results are advisory.
+
+The authoritative protocol catalogue combines all six generated grammar
+families with explicit asynchronous, authentication, cancellation, replication,
+fault, codec, and malformed-traffic entries. Each ID has a separately reported
+real-PostgreSQL, scripted, indirect, or reviewed exemption disposition; unknown
+IDs, missing dispositions, invalid migrations, and expired exemptions fail the
+catalogue audit. JSON is authoritative and Markdown is generated for humans.
+Ordinary traces omit payloads; diagnostic payload capture is opt-in, bounded,
+and redacts credentials, TLS secrets, cancellation keys, and configured
+sensitive fields before persistence.
+
+With a Docker-compatible runtime, useful local entry points are:
+
+```bash
+cargo run -p pg-proto-burn-in -- \
+  conformance --profile smoke --postgres-version 18 \
+  --artifacts target/burn-in/smoke
+
+cargo run -p pg-proto-burn-in -- \
+  soak --seed 8675309 --iterations 100 \
+  --artifacts target/burn-in/soak
+
+cargo run -p pg-proto-burn-in -- \
+  replay --input target/burn-in/soak/result.json \
+  --artifacts target/burn-in/replay
+
+cargo run -p pg-proto-burn-in -- \
+  catalogue --approved --as-of "$(date -u +%F)" \
+  --artifacts target/burn-in/catalogue
+```
+
+See the [burn-in design](docs/design/burn-in-verification.md) and
+[ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the
+coverage model, stopping conditions, and workflow policy.
+
 ## Supported PostgreSQL versions
 
 PostgreSQL **14, 15, 16, 17, and 18** are supported. Each version runs the same

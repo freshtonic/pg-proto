@@ -39,6 +39,8 @@ enum Command {
     Faults(OutputArgs),
     /// Build REPORT.md from conventional burn-in run directories.
     MakeReport(MakeReportArgs),
+    /// Chart controlled throughput across historical report roots.
+    Trends(TrendsArgs),
     /// Internal soak workload driver.
     #[command(hide = true)]
     SoakDriverChild(SoakDriverArgs),
@@ -173,6 +175,13 @@ struct OutputArgs {
 #[derive(Debug, Args)]
 struct MakeReportArgs {
     /// Directory containing the conventional burn-in run subdirectories.
+    #[arg(long)]
+    dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct TrendsArgs {
+    /// Directory containing at least two conventionally named report roots.
     #[arg(long)]
     dir: PathBuf,
 }
@@ -346,6 +355,10 @@ impl Command {
             }
             Self::MakeReport(args) => {
                 push(&mut output, "make-report");
+                path_pair(&mut output, "--dir", args.dir);
+            }
+            Self::Trends(args) => {
+                push(&mut output, "trends");
                 path_pair(&mut output, "--dir", args.dir);
             }
             Self::SoakDriverChild(args) => {

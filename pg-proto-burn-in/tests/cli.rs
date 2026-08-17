@@ -17,6 +17,7 @@ fn help_describes_every_public_command_and_output_directory() {
         "performance",
         "faults",
         "make-report",
+        "trends",
     ] {
         assert!(
             help.contains(command),

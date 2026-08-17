@@ -54,6 +54,7 @@ mod report;
 mod run_all;
 mod scripted;
 mod soak;
+mod trends;
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -71,6 +72,7 @@ pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("faults") => faults::run(&arguments).await,
         Some("make-report") => report::run(&arguments).await,
         Some("run-all") => run_all::run(&arguments).await,
+        Some("trends") => trends::run(&arguments).await,
         Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("resource-driver-child") => soak::run_resource_driver_child(&arguments).await,
         Some("resource-hold-child") => soak::run_resource_hold_child(&arguments).await,

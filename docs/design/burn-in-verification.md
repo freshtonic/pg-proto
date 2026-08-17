@@ -32,7 +32,9 @@ One dedicated `pg-proto-burn-in` workspace binary provides these public commands
 - `performance`: capture or evaluate controlled performance evidence;
 - `faults`: run isolated PostgreSQL fault-injection and recovery scenarios;
 - `make-report`: link the artifacts from conventional run directories into one
-  `REPORT.md`.
+  `REPORT.md`;
+- `trends`: render controlled throughput across conventionally named historical
+  report roots into an SVG chart embedded by `TRENDS.md`.
 
 The top-level `--run-all` option executes every valid conformance profile (with
 smoke against PostgreSQL 14–18), every performance profile, and the soak and
@@ -40,6 +42,12 @@ fault suites. `--soak-duration-seconds` supplies the wall-clock budget to each
 performance capture and to soak; `--output-dir` is their shared artifact root.
 It runs the catalogue audit last and generates `REPORT.md` only after every
 preceding run succeeds.
+
+Historical roots are named `<git-sha>-<YYYYMMDDTHHMMSSZ>` using a 7–40
+character lowercase hexadecimal SHA and a valid ISO 8601 basic UTC timestamp.
+Trend points come from each root's controlled-performance median. Oldest-to-
+newest throughput changes beyond ±5% are reported as improved or regressed;
+smaller changes are reported as holding.
 
 A thin ignored integration test invokes the short profile. Initial duration tiers
 are:

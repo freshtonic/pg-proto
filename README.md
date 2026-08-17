@@ -433,6 +433,9 @@ cargo run -p pg-proto-burn-in -- \
 
 cargo run -p pg-proto-burn-in -- \
   make-report --dir target/burn-in
+
+cargo run -p pg-proto-burn-in -- \
+  trends --dir target/burn-in/history
 ```
 
 `make-report` writes `REPORT.md` alongside the conventional run directories:
@@ -441,6 +444,14 @@ cargo run -p pg-proto-burn-in -- \
 `performance-overnight`, `performance-diagnostic`, `soak`, and `catalogue`.
 The report links every artifact file found in each run directory and marks
 conventional runs that are absent.
+
+Historical report roots use `<git-sha>-<YYYYMMDDTHHMMSSZ>`, where the SHA is
+7–40 lowercase hexadecimal characters and the timestamp is ISO 8601 basic UTC.
+For example, `04776f4-20260817T143000Z`. The `trends` command requires at least
+two such roots containing `performance-controlled/performance.json`, then writes
+`throughput.svg` and an embedding `TRENDS.md` with a holding, regressed, or
+improved summary. A change within ±5% from the oldest to newest report is
+classified as holding.
 
 See the [burn-in design](docs/design/burn-in-verification.md) and
 [ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the

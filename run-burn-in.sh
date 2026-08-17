@@ -6,7 +6,9 @@ set -euo pipefail
 
 SOAK_SECONDS="${SOAK_SECONDS:-3600}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUTPUT_DIR="${OUTPUT_DIR:-${ARTIFACTS:-target/burn-in/manual-${STAMP}}}"
+GIT_SHA="${GIT_SHA:-$(git rev-parse --short=12 HEAD)}"
+HISTORY_DIR="${HISTORY_DIR:-target/burn-in/history}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ARTIFACTS:-${HISTORY_DIR}/${GIT_SHA}-${STAMP}}}"
 BIN="target/debug/pg-proto-burn-in"
 
 mkdir -p "$OUTPUT_DIR"

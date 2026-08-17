@@ -1,5 +1,8 @@
 use std::{fs, process::Command};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[test]
 fn help_describes_every_public_command_and_output_directory() {
     let binary = env!("CARGO_BIN_EXE_pg-proto-burn-in");
@@ -53,6 +56,68 @@ fn run_all_requires_a_soak_duration_and_output_directory() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--soak-duration-seconds"));
     assert!(stderr.contains("--output-dir"));
+}
+
+#[cfg(unix)]
+#[test]
+fn performance_delegates_to_a_dedicated_burn_in_profile_binary() {
+    let workspace = tempfile::tempdir().expect("bootstrap workspace");
+    let target = workspace.path().join("target");
+    let cargo_arguments = workspace.path().join("cargo-arguments");
+    let executable_arguments = workspace.path().join("executable-arguments");
+    let fake_cargo = workspace.path().join("cargo");
+    fs::write(
+        &fake_cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_CARGO_ARGUMENTS\"\n",
+    )
+    .expect("write fake cargo");
+    fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755))
+        .expect("make fake cargo executable");
+    let optimized = target.join("burn-in/pg-proto-burn-in-performance");
+    fs::create_dir_all(optimized.parent().unwrap()).expect("create optimized directory");
+    fs::write(
+        &optimized,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_EXECUTABLE_ARGUMENTS\"\n",
+    )
+    .expect("write fake optimized executable");
+    fs::set_permissions(&optimized, fs::Permissions::from_mode(0o755))
+        .expect("make optimized executable runnable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args([
+            "performance",
+            "--input",
+            "measurements.json",
+            "--output-dir",
+            "reports",
+        ])
+        .env("CARGO", &fake_cargo)
+        .env("CARGO_TARGET_DIR", &target)
+        .env("FAKE_CARGO_ARGUMENTS", &cargo_arguments)
+        .env("FAKE_EXECUTABLE_ARGUMENTS", &executable_arguments)
+        .output()
+        .expect("bootstrap optimized executable");
+    assert!(
+        output.status.success(),
+        "bootstrap failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cargo_arguments = fs::read_to_string(cargo_arguments).expect("cargo invocation");
+    for expected in [
+        "build",
+        "--profile",
+        "burn-in",
+        "-p",
+        "pg-proto-burn-in",
+        "--bin",
+        "pg-proto-burn-in-performance",
+    ] {
+        assert!(cargo_arguments.lines().any(|line| line == expected));
+    }
+    assert_eq!(
+        fs::read_to_string(executable_arguments).expect("optimized invocation"),
+        "performance\n--input\nmeasurements.json\n--output-dir\nreports\n"
+    );
 }
 
 #[test]

@@ -93,7 +93,7 @@ jobs:
           --output-dir target/burn-in/stable/soak
       - name: Capture controlled stable-runner performance evidence
         run: >-
-          cargo run --profile burn-in -p pg-proto-burn-in --
+          cargo run -p pg-proto-burn-in --
           performance --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --runner "$RUNNER_NAME" --stable-runner

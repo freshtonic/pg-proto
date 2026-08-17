@@ -36,9 +36,13 @@ and the Markdown summary renders the same information for comparisons across
 machines. Hardware serial numbers and unique device identifiers are never
 captured.
 
-Use `--build-mode optimized` with Cargo profile `burn-in`, or
-`--build-mode allocator-diagnostic` with `burn-in-diagnostic`; their results are
-not comparable. Thresholds remain advisory by default. `--enforce` additionally
+The ordinary CLI transparently delegates `performance --build-mode optimized`
+to the dedicated `pg-proto-burn-in-performance` binary compiled with Cargo
+profile `burn-in`. `--build-mode allocator-diagnostic` instead delegates to the
+same dedicated binary compiled with `burn-in-diagnostic`; their results are not
+comparable. The report records the requested profile, inherited Cargo base
+profile, and compiler optimization level. Thresholds remain advisory by
+default. `--enforce` additionally
 requires `--stable-runner`, Linux, a named non-hosted runner, and a reviewed
 promoted baseline. Candidate baselines are always written with
 `promoted: false`; promotion is a separate reviewed operation. In particular,

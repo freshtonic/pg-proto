@@ -121,6 +121,9 @@ struct Hardware {
 struct Build {
     mode: String,
     cargo_profile: String,
+    base_profile: String,
+    optimization_level: String,
+    performance_optimized: bool,
     allocator: String,
     compiler: String,
     target: String,
@@ -648,12 +651,13 @@ fn build_report(
         },
         build: Build {
             mode: build_mode.into(),
-            cargo_profile: if build_mode == "optimized" {
-                "burn-in"
-            } else {
-                "burn-in-diagnostic"
-            }
-            .into(),
+            cargo_profile: env!("PG_PROTO_CARGO_PROFILE").into(),
+            base_profile: env!("PG_PROTO_BASE_PROFILE").into(),
+            optimization_level: env!("PG_PROTO_OPT_LEVEL").into(),
+            performance_optimized: matches!(
+                env!("PG_PROTO_CARGO_PROFILE"),
+                "burn-in" | "burn-in-diagnostic"
+            ) && env!("PG_PROTO_OPT_LEVEL") != "0",
             allocator: if build_mode == "optimized" {
                 "production-system"
             } else {

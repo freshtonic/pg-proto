@@ -86,6 +86,10 @@ fn performance_evidence_emits_corrected_histograms_and_advisory_candidate_drift(
         serde_json::from_slice(&fs::read(artifacts.join("performance.json")).unwrap()).unwrap();
     assert_eq!(result["schema_version"], 1);
     assert_eq!(result["build"]["mode"], "optimized");
+    assert_eq!(result["build"]["cargo_profile"], "burn-in");
+    assert_eq!(result["build"]["base_profile"], "release");
+    assert_eq!(result["build"]["performance_optimized"], true);
+    assert_ne!(result["build"]["optimization_level"], "0");
     for field in ["manufacturer", "model", "cpu", "summary"] {
         assert!(
             !result["environment"]["hardware"][field]

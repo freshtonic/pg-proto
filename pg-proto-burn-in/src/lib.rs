@@ -50,6 +50,7 @@ mod catalogue;
 mod cli;
 mod faults;
 mod performance;
+mod performance_delegate;
 mod report;
 mod run_all;
 mod scripted;
@@ -60,6 +61,9 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs the requested harness command.
 pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
+    if performance_delegate::run_if_needed(&arguments).await? {
+        return Ok(());
+    }
     let Some(arguments) = cli::Cli::parse(arguments)? else {
         return Ok(());
     };

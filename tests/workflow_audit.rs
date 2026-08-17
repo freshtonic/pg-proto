@@ -76,7 +76,8 @@ fn burn_in_workflows_separate_portable_evidence_from_stable_runner_enforcement()
     assert!(stable.contains("runs-on: [self-hosted, linux, pg-proto-stable]"));
     assert!(stable.contains("soak --seed \"$BURN_IN_SEED\""));
     assert!(stable.contains("performance --profile"));
-    assert!(stable.contains("cargo run --profile burn-in"));
+    assert!(stable.contains("cargo run -p pg-proto-burn-in --"));
+    assert!(!stable.contains("cargo run --profile burn-in"));
     assert!(stable.contains("--stable-runner"));
     assert!(!stable.contains("continue-on-error: true"));
     assert!(!stable.contains("Performance command is not integrated yet"));

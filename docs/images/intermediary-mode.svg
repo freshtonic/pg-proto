@@ -1,13 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 250" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 500" role="img" aria-labelledby="title description">
   <title id="title">External client connected through pg-proto to an external server</title>
-  <desc id="description">Five labelled circles show an external Client, pg-proto Server, pg-proto Intermediary, pg-proto Client, and external Server connected by bidirectional arrows.</desc>
+  <desc id="description">An Intermediary circle surrounds the pg-proto Server and Client components between an external Client and external Server. Bidirectional arrows connect the four protocol roles.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
     </marker>
     <style>
       .node { fill: #f6f8fa; stroke: #24292f; stroke-width: 3; }
-      .boundary { fill: #ddf4ff; stroke: #0969da; }
+      .boundary { fill: #ddf4ff; stroke: #0969da; stroke-width: 4; }
       .link { stroke: #57606a; stroke-width: 4; marker-start: url(#arrow); marker-end: url(#arrow); }
       .role { fill: #24292f; font: 600 19px system-ui, sans-serif; text-anchor: middle; }
       .owner { fill: #57606a; font: 15px system-ui, sans-serif; text-anchor: middle; }
@@ -20,23 +20,22 @@
       }
     </style>
   </defs>
-  <line class="link" x1="230" y1="125" x2="350" y2="125"/>
-  <line class="link" x1="510" y1="125" x2="620" y2="125"/>
-  <line class="link" x1="780" y1="125" x2="890" y2="125"/>
-  <line class="link" x1="1050" y1="125" x2="1170" y2="125"/>
-  <circle class="node" cx="145" cy="125" r="82"/>
-  <circle class="node boundary" cx="430" cy="125" r="82"/>
-  <circle class="node boundary" cx="700" cy="125" r="82"/>
-  <circle class="node boundary" cx="970" cy="125" r="82"/>
-  <circle class="node" cx="1255" cy="125" r="82"/>
-  <text class="role" x="145" y="119">Client</text>
-  <text class="owner" x="145" y="145">external</text>
-  <text class="role" x="430" y="119">Server</text>
-  <text class="owner" x="430" y="145">pg-proto</text>
-  <text class="role" x="700" y="119">Intermediary</text>
-  <text class="owner" x="700" y="145">pg-proto</text>
-  <text class="role" x="970" y="119">Client</text>
-  <text class="owner" x="970" y="145">pg-proto</text>
-  <text class="role" x="1255" y="119">Server</text>
-  <text class="owner" x="1255" y="145">external</text>
+  <circle class="boundary" cx="700" cy="250" r="225"/>
+  <line class="link" x1="222" y1="270" x2="510" y2="270"/>
+  <line class="link" x1="670" y1="270" x2="730" y2="270"/>
+  <line class="link" x1="890" y1="270" x2="1178" y2="270"/>
+  <circle class="node" cx="140" cy="270" r="82"/>
+  <circle class="node" cx="590" cy="270" r="80"/>
+  <circle class="node" cx="810" cy="270" r="80"/>
+  <circle class="node" cx="1260" cy="270" r="82"/>
+  <text class="role" x="700" y="78">Intermediary</text>
+  <text class="owner" x="700" y="103">pg-proto</text>
+  <text class="role" x="140" y="264">Client</text>
+  <text class="owner" x="140" y="290">external</text>
+  <text class="role" x="590" y="264">Server</text>
+  <text class="owner" x="590" y="290">pg-proto</text>
+  <text class="role" x="810" y="264">Client</text>
+  <text class="owner" x="810" y="290">pg-proto</text>
+  <text class="role" x="1260" y="264">Server</text>
+  <text class="owner" x="1260" y="290">external</text>
 </svg>

@@ -19,6 +19,15 @@ fn mode_diagrams_use_rustdoc_safe_urls_and_ship_with_the_crate() {
             "README must use a rustdoc-safe URL for {image}"
         );
     }
+
+    let intermediary = fs::read_to_string(root.join("docs/images/intermediary-mode.svg")).unwrap();
+    assert!(intermediary.contains("<circle class=\"boundary\" cx=\"700\" cy=\"250\" r=\"225\"/>"));
+    assert!(intermediary.contains("<circle class=\"node\" cx=\"590\" cy=\"270\" r=\"80\"/>"));
+    assert!(intermediary.contains("<circle class=\"node\" cx=\"810\" cy=\"270\" r=\"80\"/>"));
+    assert!(
+        !intermediary.contains("class=\"node boundary\""),
+        "Intermediary must enclose the Server and Client rather than be a peer node"
+    );
 }
 
 #[test]

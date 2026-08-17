@@ -68,6 +68,8 @@ struct SoakResult {
     failure: Option<FailureEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reproduced_failure: Option<bool>,
+    #[serde(default)]
+    resource_gates: ResourceGates,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +125,19 @@ struct ResourceCheckpoint {
     postgres: PostgresResources,
     #[serde(skip_serializing_if = "Option::is_none")]
     termination: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ResourceGates {
+    authoritative: bool,
+    passed: bool,
+    baseline_stage: String,
+    checked_stages: usize,
+    intermediary_task_growth: u64,
+    intermediary_descriptor_growth: u64,
+    postgres_connections_after_drain: i64,
+    postgres_locks_after_drain: i64,
+    gaps: Vec<String>,
 }
 
 struct ExecutionOutcome {
@@ -231,6 +246,7 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         lifecycle_evidence: LifecycleEvidence::default(),
         failure: None,
         reproduced_failure: None,
+        resource_gates: ResourceGates::default(),
     };
     atomic_write(
         &artifacts.join("reduction.json"),
@@ -360,10 +376,13 @@ async fn execute_and_record(
             )
         })
         .unwrap_or_default();
+    let resource_gates = evaluate_resource_gates(&resource_checkpoints);
+    let gate_failure = outcome.is_ok() && !resource_gates.passed;
     let failure = outcome
         .as_ref()
         .err()
-        .map(|error| classify_failure(error.as_ref()));
+        .map(|error| classify_failure(error.as_ref()))
+        .or_else(|| gate_failure.then(|| resource_gate_failure(&resource_gates)));
     let reproduced_failure = request
         .expected_failure
         .as_ref()
@@ -376,27 +395,111 @@ async fn execute_and_record(
         max_concurrency: CONCURRENCY,
         sequence,
         completed,
-        success: outcome.is_ok(),
+        success: outcome.is_ok() && !gate_failure,
         replay_command: "pg-proto-burn-in replay --input result.json --artifacts replay".into(),
         reduced_from: request.reduced_from,
         resource_checkpoints,
         lifecycle_evidence,
         failure,
         reproduced_failure,
+        resource_gates,
     };
     write_result(request.artifacts, &result).await?;
-    outcome.map(|_| ())
+    if gate_failure {
+        Err("resource-growth: a quiescent resource gate failed".into())
+    } else {
+        outcome.map(|_| ())
+    }
 }
 
-fn classify_failure(error: &dyn Error) -> FailureEvidence {
+fn evaluate_resource_gates(checkpoints: &[ResourceCheckpoint]) -> ResourceGates {
+    let operational: Vec<_> = checkpoints
+        .iter()
+        .filter(|checkpoint| checkpoint.stage != "teardown")
+        .collect();
+    let Some(baseline) = operational.first() else {
+        return ResourceGates {
+            gaps: vec!["no quiescent resource checkpoints were recorded".into()],
+            ..ResourceGates::default()
+        };
+    };
+    let checked = &operational[1..];
+    let mut gaps = Vec::new();
+    for checkpoint in &operational {
+        if let Some(gap) = &checkpoint.intermediary.sampling_gap {
+            gaps.push(format!("{}: {gap}", checkpoint.stage));
+        }
+    }
+    let authoritative = gaps.is_empty();
+    let intermediary_task_growth = checked
+        .iter()
+        .map(|checkpoint| {
+            checkpoint
+                .intermediary
+                .tasks
+                .saturating_sub(baseline.intermediary.tasks)
+        })
+        .max()
+        .unwrap_or(0);
+    let intermediary_descriptor_growth = checked
+        .iter()
+        .map(|checkpoint| {
+            checkpoint
+                .intermediary
+                .file_descriptors
+                .saturating_sub(baseline.intermediary.file_descriptors)
+        })
+        .max()
+        .unwrap_or(0);
+    let postgres_connections_after_drain = operational
+        .iter()
+        .map(|checkpoint| checkpoint.postgres.connections)
+        .max()
+        .unwrap_or_default();
+    let postgres_locks_after_drain = operational
+        .iter()
+        .map(|checkpoint| checkpoint.postgres.locks)
+        .max()
+        .unwrap_or_default();
+    let passed = postgres_connections_after_drain == 0
+        && postgres_locks_after_drain == 0
+        && (!authoritative
+            || (intermediary_task_growth == 0 && intermediary_descriptor_growth == 0));
+    ResourceGates {
+        authoritative,
+        passed,
+        baseline_stage: baseline.stage.clone(),
+        checked_stages: checked.len(),
+        intermediary_task_growth,
+        intermediary_descriptor_growth,
+        postgres_connections_after_drain,
+        postgres_locks_after_drain,
+        gaps,
+    }
+}
+
+fn resource_gate_failure(gates: &ResourceGates) -> FailureEvidence {
+    let message = format!(
+        "resource-growth: tasks +{}, descriptors +{}, PostgreSQL connections {}, locks {}",
+        gates.intermediary_task_growth,
+        gates.intermediary_descriptor_growth,
+        gates.postgres_connections_after_drain,
+        gates.postgres_locks_after_drain,
+    );
+    classify_failure(&message)
+}
+
+fn classify_failure(error: &dyn std::fmt::Display) -> FailureEvidence {
     let raw_message = error.to_string();
     let kind = if raw_message.starts_with("assertion-mismatch:") {
         "assertion-mismatch"
+    } else if raw_message.starts_with("resource-growth:") {
+        "resource-growth"
     } else {
         "execution-error"
     }
     .to_owned();
-    let message = if kind == "assertion-mismatch" {
+    let message = if matches!(kind.as_str(), "assertion-mismatch" | "resource-growth") {
         raw_message.clone()
     } else {
         "execution details redacted; use the fingerprint and child logs for diagnosis".into()
@@ -870,7 +973,7 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
     .await?;
     let status = if result.success { "PASS" } else { "FAIL" };
     let summary = format!(
-        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nFailure: {}. Reproduced captured failure: {}.\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
+        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nFailure: {}. Reproduced captured failure: {}.\n\nResource gates: {} (authoritative: {}, task growth: {}, descriptor growth: {}, PostgreSQL connections: {}, locks: {}).\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
         result.command,
         result.completed,
         result.sequence.len(),
@@ -886,6 +989,16 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
             } else {
                 "no"
             }),
+        if result.resource_gates.passed {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        result.resource_gates.authoritative,
+        result.resource_gates.intermediary_task_growth,
+        result.resource_gates.intermediary_descriptor_growth,
+        result.resource_gates.postgres_connections_after_drain,
+        result.resource_gates.postgres_locks_after_drain,
         result.resource_checkpoints.len(),
         result.lifecycle_evidence.graceful_restart,
         result.lifecycle_evidence.abrupt_termination,

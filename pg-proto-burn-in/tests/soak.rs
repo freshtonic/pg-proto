@@ -80,6 +80,22 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
     assert_eq!(result["lifecycle_evidence"]["graceful_restart"], true);
     assert_eq!(result["lifecycle_evidence"]["abrupt_termination"], true);
     assert_eq!(result["lifecycle_evidence"]["teardown"], true);
+
+    let gates = &result["resource_gates"];
+    assert_eq!(gates["passed"], true);
+    assert_eq!(gates["baseline_stage"], "startup-drained");
+    assert_eq!(gates["checked_stages"], 4);
+    assert_eq!(gates["postgres_connections_after_drain"], 0);
+    assert_eq!(gates["postgres_locks_after_drain"], 0);
+    if cfg!(target_os = "linux") {
+        assert_eq!(gates["authoritative"], true);
+        assert_eq!(gates["intermediary_task_growth"], 0);
+        assert_eq!(gates["intermediary_descriptor_growth"], 0);
+        assert!(gates["gaps"].as_array().unwrap().is_empty());
+    } else {
+        assert_eq!(gates["authoritative"], false);
+        assert!(!gates["gaps"].as_array().unwrap().is_empty());
+    }
 }
 
 #[test]

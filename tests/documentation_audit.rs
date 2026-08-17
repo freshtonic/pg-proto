@@ -167,6 +167,31 @@ fn readme_leads_with_all_complete_builder_workflows_and_guardrails() {
 }
 
 #[test]
+fn readme_documents_the_burn_in_topology_profiles_and_artifact_policy() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    for required in [
+        "## Protocol conformance and burn-in",
+        "Server` + `Intermediary` + `Client",
+        "conformance --profile smoke",
+        "conformance --profile authentication",
+        "conformance --profile replication",
+        "conformance --profile scripted",
+        "conformance --profile rewrites",
+        "`faults`",
+        "`soak`",
+        "`replay`",
+        "`performance`",
+        "PostgreSQL 14 through 18",
+        "real-PostgreSQL, scripted, indirect, or reviewed exemption",
+        "diagnostic payload capture is opt-in",
+        "docs/design/burn-in-verification.md",
+        "docs/adr/0006-separate-protocol-conformance-from-burn-in.md",
+    ] {
+        assert!(readme.contains(required), "README is missing `{required}`");
+    }
+}
+
+#[test]
 fn readme_message_support_matches_public_message_facade() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme = fs::read_to_string(root.join("README.md")).unwrap();

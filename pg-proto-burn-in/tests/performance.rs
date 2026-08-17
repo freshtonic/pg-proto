@@ -64,7 +64,7 @@ fn performance_evidence_emits_corrected_histograms_and_advisory_candidate_drift(
             input.to_str().unwrap(),
             "--baseline",
             baseline.to_str().unwrap(),
-            "--artifacts",
+            "--output-dir",
             artifacts.to_str().unwrap(),
             "--runner",
             "github-hosted",
@@ -131,7 +131,7 @@ fn hosted_runners_cannot_enable_performance_gates() {
             "performance",
             "--input",
             input.to_str().unwrap(),
-            "--artifacts",
+            "--output-dir",
             workspace.path().to_str().unwrap(),
             "--runner",
             "github-hosted",
@@ -163,7 +163,7 @@ fn controlled_profile_captures_real_intermediary_measurements_before_evaluation(
             "42",
             "--duration-seconds",
             "1",
-            "--artifacts",
+            "--output-dir",
             artifacts.path().to_str().unwrap(),
         ])
         .output()

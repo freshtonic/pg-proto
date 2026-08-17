@@ -20,13 +20,19 @@ steady-state performance without conflating these different claims.
 
 ## Verification modes
 
-One dedicated `pg-proto-burn-in` workspace binary provides three commands:
+One dedicated `pg-proto-burn-in` workspace binary provides these public commands:
 
 - `conformance`: finite scenarios with deterministic coverage and correctness
   assertions;
 - `soak`: canonical cycles followed by recorded, seeded weighted schedules for a
   duration or iteration budget;
-- `replay`: the exact recorded scenario prefix and parameters from a prior run.
+- `replay`: the exact recorded scenario prefix and parameters from a prior run;
+- `catalogue`: audit collected evidence against the authoritative transition
+  catalogue;
+- `performance`: capture or evaluate controlled performance evidence;
+- `faults`: run isolated PostgreSQL fault-injection and recovery scenarios;
+- `make-report`: link the artifacts from conventional run directories into one
+  `REPORT.md`.
 
 A thin ignored integration test invokes the short profile. Initial duration tiers
 are:

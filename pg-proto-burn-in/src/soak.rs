@@ -340,7 +340,7 @@ impl FailureAdmission {
 pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let seed = option(arguments, "--seed")?.parse()?;
     let budget = parse_budget(arguments)?;
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     let payload_capture = arguments
         .iter()
         .any(|argument| argument == "--capture-payloads");
@@ -367,7 +367,7 @@ pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>>
 
 pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let input = PathBuf::from(option(arguments, "--input")?);
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     let original: SoakResult = serde_json::from_slice(&tokio::fs::read(&input).await?)?;
     if original.schema_version != 1 {
         return Err(format!(
@@ -421,7 +421,7 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         sequence: reduced.clone(),
         completed: 0,
         success: false,
-        replay_command: "pg-proto-burn-in replay --input reduction.json --artifacts replay".into(),
+        replay_command: "pg-proto-burn-in replay --input reduction.json --output-dir replay".into(),
         reduced_from: Some(original_len),
         resource_checkpoints: Vec::new(),
         lifecycle_evidence: LifecycleEvidence::default(),
@@ -451,12 +451,13 @@ fn parse_budget(arguments: &[String]) -> Result<Budget, Box<dyn Error>> {
 }
 
 fn schedule(seed: u64, budget: Budget) -> Result<Vec<SequenceEntry>, Box<dyn Error>> {
-    let weighted_per_phase = match budget {
-        Budget::Iterations(value) => usize::try_from(value)?,
-        // Duration schedules remain deterministic and bounded. Each selected operation is
-        // budgeted one second; replay uses the recorded prefix, never wall-clock selection.
-        Budget::DurationSeconds(value) => usize::try_from(value)?,
+    if let Budget::DurationSeconds(value) = budget {
+        return duration_schedule(seed, usize::try_from(value)?);
+    }
+    let Budget::Iterations(value) = budget else {
+        unreachable!()
     };
+    let weighted_per_phase = usize::try_from(value)?;
     let mut rng = StableRng(seed);
     let mut entries = Vec::new();
     for phase in [
@@ -470,6 +471,31 @@ fn schedule(seed: u64, budget: Budget) -> Result<Vec<SequenceEntry>, Box<dyn Err
         for _ in 0..weighted_per_phase {
             let scenario = weighted_scenario(rng.next());
             push_entry(&mut entries, phase.clone(), scenario, false, &mut rng);
+        }
+    }
+    Ok(entries)
+}
+
+fn duration_schedule(seed: u64, slots: usize) -> Result<Vec<SequenceEntry>, Box<dyn Error>> {
+    if slots == 0 {
+        return Err("--duration-seconds must be positive".into());
+    }
+    let mut rng = StableRng(seed);
+    let mut entries = Vec::with_capacity(slots);
+    let phases = [
+        Phase::LongLived,
+        Phase::ConnectionChurn,
+        Phase::BoundedConcurrency,
+    ];
+    for (phase_index, phase) in phases.into_iter().enumerate() {
+        let phase_slots = slots / 3 + usize::from(phase_index < slots % 3);
+        for slot in 0..phase_slots {
+            let canonical_scenario = SCENARIOS.get(slot);
+            let canonical = canonical_scenario.is_some();
+            let scenario = canonical_scenario
+                .map(|definition| definition.id)
+                .unwrap_or_else(|| weighted_scenario(rng.next()));
+            push_entry(&mut entries, phase.clone(), scenario, canonical, &mut rng);
         }
     }
     Ok(entries)
@@ -584,7 +610,10 @@ async fn reduce_failing_prefix(executable: &str, sequence: &[SequenceEntry]) -> 
             break;
         }
         let candidate = passing_prefix + (failing_prefix - passing_prefix) / 2;
-        if execute(executable, &sequence[..candidate]).await.is_err() {
+        if execute(executable, &sequence[..candidate], None)
+            .await
+            .is_err()
+        {
             failing_prefix = candidate;
         } else {
             passing_prefix = candidate;
@@ -599,7 +628,13 @@ async fn execute_and_record(
     request: RecordRequest<'_>,
 ) -> Result<(), Box<dyn Error>> {
     tokio::fs::create_dir_all(request.artifacts).await?;
-    let outcome = execute(executable, &sequence).await;
+    let pace = match request.budget {
+        Budget::DurationSeconds(seconds) => Some(std::time::Duration::from_secs_f64(
+            seconds as f64 / sequence.len() as f64,
+        )),
+        Budget::Iterations(_) => None,
+    };
+    let outcome = execute(executable, &sequence, pace).await;
     let completed = outcome.as_ref().map(|value| value.completed).unwrap_or(0);
     let (resource_checkpoints, lifecycle_evidence) = outcome
         .as_ref()
@@ -641,7 +676,7 @@ async fn execute_and_record(
         .rev()
         .collect::<Vec<_>>();
     let replay_command =
-        "pg-proto-burn-in replay --input result.json --artifacts replay".to_owned();
+        "pg-proto-burn-in replay --input result.json --output-dir replay".to_owned();
     let failure_bundle = failure.as_ref().map(|_| FailureBundle {
         seed: request.seed,
         scenario_prefix: full_trace
@@ -862,6 +897,7 @@ fn optional_option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
 async fn execute(
     executable: &str,
     sequence: &[SequenceEntry],
+    pace: Option<std::time::Duration>,
 ) -> Result<ExecutionOutcome, Box<dyn Error>> {
     let container = Postgres::default()
         .with_host_auth()
@@ -914,7 +950,7 @@ async fn execute(
         .push(checkpoint(executable, listen_addr, intermediary_pid, "startup-drained").await?);
     let mut completed = 0;
     if !long.is_empty() {
-        completed += run_child(executable, listen_addr, &long).await?;
+        completed += run_child(executable, listen_addr, &long, pace).await?;
     }
     resource_checkpoints.push(
         checkpoint(
@@ -926,7 +962,7 @@ async fn execute(
         .await?,
     );
     for entry in churn {
-        completed += run_child(executable, listen_addr, &[entry]).await?;
+        completed += run_child(executable, listen_addr, &[entry], pace).await?;
     }
     resource_checkpoints.push(
         checkpoint(
@@ -938,10 +974,10 @@ async fn execute(
         .await?,
     );
     for batch in concurrent.chunks(CONCURRENCY) {
-        let futures = batch
-            .iter()
-            .cloned()
-            .map(|entry| async move { run_child(executable, listen_addr, &[entry]).await });
+        let futures = batch.iter().cloned().map(|entry| {
+            let batch_pace = pace.map(|value| value * u32::try_from(batch.len()).unwrap());
+            async move { run_child(executable, listen_addr, &[entry], batch_pace).await }
+        });
         let results = futures_util::future::join_all(futures).await;
         for result in results {
             completed += result?;
@@ -966,7 +1002,7 @@ async fn execute(
         )
         .await?,
     );
-    run_child(executable, listen_addr, &[]).await?;
+    run_child(executable, listen_addr, &[], None).await?;
     let ChildEvent::Completed { .. } = read_event(&mut intermediary).await? else {
         return Err("expected soak intermediary completion event".into());
     };
@@ -998,19 +1034,27 @@ async fn run_child(
     executable: &str,
     address: SocketAddr,
     entries: &[SequenceEntry],
+    pace: Option<std::time::Duration>,
 ) -> Result<usize, Box<dyn Error>> {
     let encoded = serde_json::to_string(entries)?;
+    let mut arguments = vec![
+        "soak-driver-child".to_owned(),
+        "--address".to_owned(),
+        address.to_string(),
+        "--sequence".to_owned(),
+        encoded,
+    ];
+    if let Some(pace) = pace {
+        arguments.push("--pace-millis".into());
+        arguments.push(pace.as_millis().to_string());
+    }
+    let child_timeout = pace
+        .and_then(|value| value.checked_mul(u32::try_from(entries.len()).ok()?))
+        .unwrap_or_default()
+        .saturating_add(CHILD_TIMEOUT);
     let output = timeout(
-        CHILD_TIMEOUT,
-        Command::new(executable)
-            .args([
-                "soak-driver-child",
-                "--address",
-                &address.to_string(),
-                "--sequence",
-                &encoded,
-            ])
-            .output(),
+        child_timeout,
+        Command::new(executable).args(arguments).output(),
     )
     .await??;
     let result: DriverResult = serde_json::from_slice(&output.stdout)?;
@@ -1231,7 +1275,12 @@ fn sample_linux_process(pid: u32) -> Result<ProcessResources, Box<dyn Error>> {
 pub(crate) async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let proxy: SocketAddr = option(arguments, "--address")?.parse()?;
     let entries: Vec<SequenceEntry> = serde_json::from_str(option(arguments, "--sequence")?)?;
-    let outcome = execute_entries(proxy, &entries).await;
+    let pace = option(arguments, "--pace-millis")
+        .ok()
+        .map(str::parse::<u64>)
+        .transpose()?
+        .map(std::time::Duration::from_millis);
+    let outcome = execute_entries(proxy, &entries, pace).await;
     let expected_failures = outcome
         .as_ref()
         .map(|execution| execution.admission.expected_failures.clone())
@@ -1267,6 +1316,7 @@ pub(crate) async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn
 async fn execute_entries(
     proxy: SocketAddr,
     entries: &[SequenceEntry],
+    pace: Option<std::time::Duration>,
 ) -> Result<DriverExecution, Box<dyn Error>> {
     let mut config = tokio_postgres::Config::new();
     config
@@ -1329,6 +1379,9 @@ async fn execute_entries(
             }
         }
         completed += 1;
+        if let Some(pace) = pace {
+            sleep(pace).await;
+        }
     }
     drop(client);
     timeout(CHILD_TIMEOUT, connection_task).await???;
@@ -1421,6 +1474,33 @@ mod tests {
         let encoded = serde_json::to_vec(&sequence).unwrap();
         let replayed: Vec<SequenceEntry> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(replayed, sequence);
+    }
+
+    #[test]
+    fn duration_schedule_allocates_one_paced_operation_per_second() {
+        let sequence = schedule(9, Budget::DurationSeconds(12)).unwrap();
+        assert_eq!(sequence.len(), 12);
+        assert_eq!(
+            sequence
+                .iter()
+                .filter(|entry| entry.phase == Phase::LongLived)
+                .count(),
+            4
+        );
+        assert_eq!(
+            sequence
+                .iter()
+                .filter(|entry| entry.phase == Phase::ConnectionChurn)
+                .count(),
+            4
+        );
+        assert_eq!(
+            sequence
+                .iter()
+                .filter(|entry| entry.phase == Phase::BoundedConcurrency)
+                .count(),
+            4
+        );
     }
 
     #[test]

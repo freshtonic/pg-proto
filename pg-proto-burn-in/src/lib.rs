@@ -47,8 +47,10 @@ use tokio::{
 };
 
 mod catalogue;
+mod cli;
 mod faults;
 mod performance;
+mod report;
 mod scripted;
 mod soak;
 
@@ -56,6 +58,9 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs the requested harness command.
 pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let Some(arguments) = cli::Cli::parse(arguments)? else {
+        return Ok(());
+    };
     match arguments.get(1).map(String::as_str) {
         Some("conformance") => run_conformance(&arguments).await,
         Some("soak") => soak::run_soak(&arguments).await,
@@ -63,15 +68,13 @@ pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         Some("catalogue") => catalogue::run(&arguments).await,
         Some("performance") => performance::run(&arguments).await,
         Some("faults") => faults::run(&arguments).await,
+        Some("make-report") => report::run(&arguments).await,
         Some("soak-driver-child") => soak::run_driver_child(&arguments).await,
         Some("resource-driver-child") => soak::run_resource_driver_child(&arguments).await,
         Some("resource-hold-child") => soak::run_resource_hold_child(&arguments).await,
         Some("intermediary-child") => run_intermediary_child(&arguments).await,
         Some("driver-child") => run_driver_child(&arguments).await,
-        _ => Err(
-            "usage: pg-proto-burn-in <conformance|soak|replay|catalogue|performance|faults> [options]"
-                .into(),
-        ),
+        _ => unreachable!("clap accepted an unknown command"),
     }
 }
 
@@ -272,7 +275,7 @@ enum ChildEvent {
 
 async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let profile = option(arguments, "--profile")?;
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     tokio::fs::create_dir_all(&artifacts).await?;
 
     if profile == "scripted" {

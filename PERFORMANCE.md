@@ -25,7 +25,7 @@ Testcontainers, drives the public intermediary, and writes both the raw
 `measurements.json` and evaluated `performance.json`, Markdown, and an
 unpromoted candidate baseline. A stable run uses
 `performance --profile scheduled-soak --seed SEED --duration-seconds SECONDS
---artifacts PATH`; `--input measurements.json` evaluates an existing capture
+--output-dir PATH`; `--input measurements.json` evaluates an existing capture
 without rerunning the load. Captures keep warm-up, closed-loop, and fixed-rate
 open-loop samples separate. Reports include queue, execution, raw end-to-end,
 and coordinated-omission-corrected latency histograms, achieved rate,

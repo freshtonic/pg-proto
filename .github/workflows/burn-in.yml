@@ -61,7 +61,7 @@ jobs:
           cargo run --release -p pg-proto-burn-in --
           soak --profile diagnostic --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
-          --artifacts target/burn-in/hosted
+          --output-dir target/burn-in/hosted
       - name: Upload hosted diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -90,7 +90,7 @@ jobs:
           cargo run --release -p pg-proto-burn-in --
           soak --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
-          --artifacts target/burn-in/stable/soak
+          --output-dir target/burn-in/stable/soak
       - name: Capture controlled stable-runner performance evidence
         run: >-
           cargo run --profile burn-in -p pg-proto-burn-in --
@@ -98,7 +98,7 @@ jobs:
           --duration-seconds "$BURN_IN_DURATION"
           --runner "$RUNNER_NAME" --stable-runner
           --postgres-version 18 --build-mode optimized
-          --artifacts target/burn-in/stable/performance
+          --output-dir target/burn-in/stable/performance
       - name: Upload stable performance evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -4,7 +4,7 @@ use std::{fs, process::Command};
 fn scripted_profile_covers_exceptional_paths_without_claiming_real_postgres() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["conformance", "--profile", "scripted", "--artifacts"])
+        .args(["conformance", "--profile", "scripted", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run scripted profile");

@@ -10,7 +10,7 @@ fn smoke_profile_rejects_versions_outside_the_compatibility_contract() {
             "smoke",
             "--postgres-version",
             "13",
-            "--artifacts",
+            "--output-dir",
         ])
         .arg(artifacts.path())
         .output()
@@ -25,7 +25,7 @@ fn smoke_profile_rejects_versions_outside_the_compatibility_contract() {
 fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["conformance", "--profile", "smoke", "--artifacts"])
+        .args(["conformance", "--profile", "smoke", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run smoke profile");
@@ -238,7 +238,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
 fn rich_rewrite_profile_changes_structured_messages_end_to_end() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["conformance", "--profile", "rewrites", "--artifacts"])
+        .args(["conformance", "--profile", "rewrites", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run rich rewrite profile");
@@ -275,7 +275,7 @@ fn rich_rewrite_profile_changes_structured_messages_end_to_end() {
 fn authentication_profile_writes_versioned_security_evidence() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["conformance", "--profile", "authentication", "--artifacts"])
+        .args(["conformance", "--profile", "authentication", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run authentication profile");

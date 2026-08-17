@@ -143,7 +143,7 @@ struct Authority {
 }
 
 pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     let as_of = option(arguments, "--as-of")?;
     let authority = load_authority(as_of)?;
     let mut dispositions = BTreeMap::new();

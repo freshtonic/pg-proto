@@ -11,7 +11,7 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
             "8675309",
             "--iterations",
             "0",
-            "--artifacts",
+            "--output-dir",
         ])
         .arg(artifacts.path())
         .output()
@@ -63,7 +63,7 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
     assert_eq!(sequence[6]["phase"], "bounded-concurrency");
     assert_eq!(
         result["replay_command"],
-        "pg-proto-burn-in replay --input result.json --artifacts replay"
+        "pg-proto-burn-in replay --input result.json --output-dir replay"
     );
     assert_eq!(result["trace_policy"]["mode"], "redacted");
     assert_eq!(result["trace_policy"]["capacity"], 64);
@@ -138,12 +138,46 @@ fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
 fn soak_rejects_an_unbounded_run() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["soak", "--seed", "1", "--artifacts"])
+        .args(["soak", "--seed", "1", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run unbounded soak");
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("exactly one budget"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--iterations"));
+    assert!(stderr.contains("--duration-seconds"));
+}
+
+#[test]
+#[ignore = "requires a Docker-compatible container runtime"]
+fn soak_duration_is_a_wall_clock_budget() {
+    let output_dir = tempfile::tempdir().expect("output directory");
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args([
+            "soak",
+            "--seed",
+            "7",
+            "--duration-seconds",
+            "3",
+            "--output-dir",
+        ])
+        .arg(output_dir.path())
+        .output()
+        .expect("run duration-bounded soak");
+    assert!(
+        output.status.success(),
+        "duration soak failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+    let result: serde_json::Value = serde_json::from_slice(
+        &fs::read(output_dir.path().join("result.json")).expect("result artifact"),
+    )
+    .expect("valid result");
+    assert_eq!(result["budget"], serde_json::json!({"duration-seconds": 3}));
+    assert_eq!(result["sequence"].as_array().unwrap().len(), 3);
+    assert_eq!(result["completed"], 3);
 }
 
 #[test]
@@ -174,7 +208,7 @@ fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
         .args(["soak", "--seed", "91", "--iterations", "0", "--schedule"])
         .arg(&schedule)
         .arg("--capture-payloads")
-        .arg("--artifacts")
+        .arg("--output-dir")
         .arg(capture.path())
         .output()
         .expect("capture deterministic failure");
@@ -218,7 +252,7 @@ fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
     let replayed = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["replay", "--input"])
         .arg(capture.path().join("result.json"))
-        .arg("--artifacts")
+        .arg("--output-dir")
         .arg(replay.path())
         .output()
         .expect("replay captured failure");

@@ -55,7 +55,7 @@ struct Environment {
 }
 
 pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     tokio::fs::create_dir_all(&artifacts).await?;
     let executable = arguments.first().ok_or("missing executable path")?;
 

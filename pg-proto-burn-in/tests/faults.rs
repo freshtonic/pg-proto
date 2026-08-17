@@ -5,7 +5,7 @@ use std::{fs, process::Command};
 fn disposable_fault_profiles_record_recovery_without_performance_evidence() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["faults", "--artifacts"])
+        .args(["faults", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run fault profiles");

@@ -413,20 +413,28 @@ With a Docker-compatible runtime, useful local entry points are:
 ```bash
 cargo run -p pg-proto-burn-in -- \
   conformance --profile smoke --postgres-version 18 \
-  --artifacts target/burn-in/smoke
+  --output-dir target/burn-in/smoke
 
 cargo run -p pg-proto-burn-in -- \
   soak --seed 8675309 --iterations 100 \
-  --artifacts target/burn-in/soak
+  --output-dir target/burn-in/soak
 
 cargo run -p pg-proto-burn-in -- \
   replay --input target/burn-in/soak/result.json \
-  --artifacts target/burn-in/replay
+  --output-dir target/burn-in/replay
 
 cargo run -p pg-proto-burn-in -- \
   catalogue --approved --as-of "$(date -u +%F)" \
-  --artifacts target/burn-in/catalogue
+  --output-dir target/burn-in/catalogue
+
+cargo run -p pg-proto-burn-in -- \
+  make-report --dir target/burn-in
 ```
+
+`make-report` writes `REPORT.md` alongside the conventional run directories:
+`smoke-pg14` through `smoke-pg18`, `authentication`, `replication`, `rewrites`,
+`scripted`, `faults`, `soak`, and `catalogue`. The report links every artifact
+file found in each run directory and marks conventional runs that are absent.
 
 See the [burn-in design](docs/design/burn-in-verification.md) and
 [ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the

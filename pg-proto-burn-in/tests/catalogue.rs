@@ -4,7 +4,7 @@ use std::{fs, process::Command};
 fn catalogue_reports_every_uncovered_generated_and_supplemental_entry() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["catalogue", "--as-of", "2026-08-16", "--artifacts"])
+        .args(["catalogue", "--as-of", "2026-08-16", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run catalogue audit");
@@ -41,7 +41,7 @@ fn catalogue_rejects_unknown_and_duplicate_evidence() {
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["catalogue", "--as-of", "2026-08-16", "--input"])
         .arg(&unknown)
-        .args(["--artifacts"])
+        .args(["--output-dir"])
         .arg(directory.path().join("unknown-artifacts"))
         .output()
         .expect("run unknown evidence audit");
@@ -57,7 +57,7 @@ fn catalogue_rejects_unknown_and_duplicate_evidence() {
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["catalogue", "--as-of", "2026-08-16", "--input"])
         .arg(&duplicate)
-        .args(["--artifacts"])
+        .args(["--output-dir"])
         .arg(directory.path().join("duplicate-artifacts"))
         .output()
         .expect("run duplicate evidence audit");
@@ -73,7 +73,7 @@ fn catalogue_rejects_unknown_and_duplicate_evidence() {
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
         .args(["catalogue", "--as-of", "2026-08-16", "--input"])
         .arg(&unreviewed)
-        .args(["--artifacts"])
+        .args(["--output-dir"])
         .arg(directory.path().join("unreviewed-artifacts"))
         .output()
         .expect("run unreviewed exemption audit");
@@ -93,7 +93,7 @@ fn approved_catalogue_has_exactly_one_reviewed_disposition_per_entry() {
             "--approved",
             "--as-of",
             "2026-08-17",
-            "--artifacts",
+            "--output-dir",
         ])
         .arg(artifacts.path())
         .output()

@@ -5,7 +5,7 @@ use std::{fs, process::Command};
 fn physical_replication_profile_records_wal_feedback_and_teardown() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
-        .args(["conformance", "--profile", "replication", "--artifacts"])
+        .args(["conformance", "--profile", "replication", "--output-dir"])
         .arg(artifacts.path())
         .output()
         .expect("run physical replication profile");

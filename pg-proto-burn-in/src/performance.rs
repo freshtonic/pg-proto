@@ -208,7 +208,7 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if enforce && (!stable_runner || runner == "github-hosted" || !cfg!(target_os = "linux")) {
         return Err("performance gates require an explicitly stable Linux runner".into());
     }
-    let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
+    let artifacts = PathBuf::from(option(arguments, "--output-dir")?);
     let postgres_version = option(arguments, "--postgres-version").unwrap_or("18");
     let build_mode = option(arguments, "--build-mode").unwrap_or("optimized");
     if !matches!(build_mode, "optimized" | "allocator-diagnostic") {

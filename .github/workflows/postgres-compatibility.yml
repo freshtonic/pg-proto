@@ -29,7 +29,7 @@ jobs:
         run: >-
           cargo run -p pg-proto-burn-in --
           conformance --profile smoke --postgres-version ${{ matrix.version }}
-          --artifacts target/burn-in/postgres-${{ matrix.version }}
+          --output-dir target/burn-in/postgres-${{ matrix.version }}
       - name: Upload compatibility evidence
         if: always()
         uses: actions/upload-artifact@v7

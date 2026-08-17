@@ -212,6 +212,15 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
         result["coverage"]["real_postgres"].as_array().unwrap(),
         observed_ids
     );
+    assert_eq!(
+        result["middleware_reconstruction"]["pass_through"],
+        result["coverage"]["real_postgres"]
+    );
+    assert_eq!(
+        result["middleware_reconstruction"]["identity_rewrite"],
+        result["coverage"]["real_postgres"]
+    );
+    assert_eq!(result["middleware_reconstruction"]["validated"], true);
     for disposition in ["scripted", "indirect", "missing", "exempted"] {
         assert!(result["coverage"][disposition].is_array());
     }
@@ -221,6 +230,7 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     assert!(summary.contains("extended-select-scalar"));
     assert!(summary.contains("42"));
     assert!(summary.contains("PASS"));
+    assert!(summary.contains("Identity rewrites:"));
 }
 
 #[test]

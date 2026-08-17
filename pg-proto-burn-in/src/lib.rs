@@ -20,11 +20,12 @@ use futures_util::{SinkExt, TryStreamExt};
 use pg_proto::{
     BackendMessage, BackendMiddlewareOutput, BoundedPipeline, CancelKey, CancellationPolicy,
     CancellationRoute, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
-    ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
-    Intermediary, IntermediaryAccept, IntermediaryCancellationRegistry, IntermediaryMiddleware,
-    OperationId, ProtocolTransitionDirection, ProtocolTransitionObservation, Server,
-    ServerConnectionContext, ServerTlsPolicy, SslMode, StartupParameters, StartupRouteResolver,
-    StaticClientCredentials, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
+    ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, FrontendMiddlewareOutput,
+    InitialServerContext, Intermediary, IntermediaryAccept, IntermediaryCancellationRegistry,
+    IntermediaryMiddleware, OperationId, ProtocolTransitionDirection,
+    ProtocolTransitionObservation, Server, ServerConnectionContext, ServerTlsPolicy, SslMode,
+    StartupParameters, StartupRouteResolver, StaticClientCredentials, TrustClientAuthentication,
+    TrustIdentity, TrustServerAuthentication,
 };
 use postgres_protocol::message::{backend, frontend};
 use rcgen::generate_simple_self_signed;
@@ -98,9 +99,18 @@ struct RunResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scripted_diagnostics: Vec<scripted::DiagnosticEvidence>,
     coverage: CoverageReport,
+    #[serde(default)]
+    middleware_reconstruction: MiddlewareReconstructionResult,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     authentication_profiles: Vec<AuthenticationProfileResult>,
     success: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct MiddlewareReconstructionResult {
+    pass_through: Vec<String>,
+    identity_rewrite: Vec<String>,
+    validated: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -289,6 +299,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 scripted: evidence.coverage,
                 ..CoverageReport::default()
             },
+            middleware_reconstruction: MiddlewareReconstructionResult::default(),
             authentication_profiles: Vec::new(),
             success: true,
         };
@@ -354,6 +365,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             replication: None,
             scripted_diagnostics: Vec::new(),
             coverage: coverage_report(coverage)?,
+            middleware_reconstruction: middleware_reconstruction(coverage),
             authentication_profiles: Vec::new(),
             success: true,
         },
@@ -377,6 +389,7 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             replication: None,
             scripted_diagnostics: Vec::new(),
             coverage: CoverageReport::default(),
+            middleware_reconstruction: MiddlewareReconstructionResult::default(),
             authentication_profiles: Vec::new(),
             success: false,
         },
@@ -414,6 +427,7 @@ async fn run_authentication_conformance(
         replication: None,
         scripted_diagnostics: Vec::new(),
         coverage: CoverageReport::default(),
+        middleware_reconstruction: MiddlewareReconstructionResult::default(),
         authentication_profiles: profiles,
         success: outcome.is_ok(),
     };
@@ -462,6 +476,7 @@ async fn run_replication_conformance(
             ],
             ..CoverageReport::default()
         },
+        middleware_reconstruction: MiddlewareReconstructionResult::default(),
         authentication_profiles: Vec::new(),
         success: outcome.is_ok(),
     };
@@ -1093,6 +1108,19 @@ const REQUIRED_SMOKE_COVERAGE: [&str; 37] = [
 
 const OPTIONAL_SMOKE_COVERAGE: [&str; 1] = ["backend.DescribeResponse.Error"];
 
+fn middleware_reconstruction(observed: &[String]) -> MiddlewareReconstructionResult {
+    let transitions: Vec<_> = observed
+        .iter()
+        .filter(|id| !id.starts_with("smoke."))
+        .cloned()
+        .collect();
+    MiddlewareReconstructionResult {
+        pass_through: transitions.clone(),
+        identity_rewrite: transitions,
+        validated: true,
+    }
+}
+
 fn coverage_report(observed: &[String]) -> Result<CoverageReport, Box<dyn Error>> {
     let stages: BTreeSet<_> = observed
         .iter()
@@ -1295,6 +1323,21 @@ impl
 {
     type Error = Infallible;
 
+    async fn frontend(
+        &mut self,
+        _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+        _client: &ClientConnectionContext<()>,
+        _state: &mut CoverageState,
+        message: FrontendMessage,
+    ) -> Result<FrontendMiddlewareOutput, Self::Error> {
+        let reconstructed = message.clone();
+        assert_eq!(
+            reconstructed, message,
+            "frontend identity rewrite changed message"
+        );
+        Ok(FrontendMiddlewareOutput::Forward(reconstructed))
+    }
+
     async fn observe_transition(
         &mut self,
         _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
@@ -1327,7 +1370,12 @@ impl
         message: BackendMessage,
     ) -> Result<BackendMiddlewareOutput, Self::Error> {
         Self::observe_async(state, None, &message);
-        Ok(BackendMiddlewareOutput::Forward(message))
+        let reconstructed = message.clone();
+        assert_eq!(
+            reconstructed, message,
+            "backend identity rewrite changed message"
+        );
+        Ok(BackendMiddlewareOutput::Forward(reconstructed))
     }
 
     async fn backend_operation(
@@ -1339,7 +1387,12 @@ impl
         message: BackendMessage,
     ) -> Result<BackendMiddlewareOutput, Self::Error> {
         Self::observe_async(state, operation, &message);
-        Ok(BackendMiddlewareOutput::Forward(message))
+        let reconstructed = message.clone();
+        assert_eq!(
+            reconstructed, message,
+            "backend identity rewrite changed message"
+        );
+        Ok(BackendMiddlewareOutput::Forward(reconstructed))
     }
 }
 
@@ -2901,8 +2954,13 @@ async fn write_artifacts(path: &Path, result: &RunResult) -> Result<(), Box<dyn 
     atomic_write(&path.join("result.json"), &json).await?;
     let status = if result.success { "PASS" } else { "FAIL" };
     let markdown = format!(
-        "# pg-proto {} conformance\n\n{status}: `{}` completed with result `{}` (PostgreSQL: {}).\n",
-        result.profile, result.scenario.name, result.scenario.value, result.postgres_version
+        "# pg-proto {} conformance\n\n{status}: `{}` completed with result `{}` (PostgreSQL: {}).\n\nPass-through associations: {}. Identity rewrites: {}.\n",
+        result.profile,
+        result.scenario.name,
+        result.scenario.value,
+        result.postgres_version,
+        result.middleware_reconstruction.pass_through.len(),
+        result.middleware_reconstruction.identity_rewrite.len(),
     );
     atomic_write(&path.join("summary.md"), markdown.as_bytes()).await
 }

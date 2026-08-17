@@ -93,3 +93,62 @@ fn soak_rejects_an_unbounded_run() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("exactly one budget"));
 }
+
+#[test]
+#[ignore = "requires a Docker-compatible container runtime"]
+fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
+    let capture = tempfile::tempdir().expect("capture artifact directory");
+    let replay = tempfile::tempdir().expect("replay artifact directory");
+    let schedule = capture.path().join("schedule.json");
+    fs::write(
+        &schedule,
+        serde_json::to_vec_pretty(&serde_json::json!([{
+            "ordinal": 0,
+            "phase": "long-lived",
+            "scenario": "scalar",
+            "canonical": false,
+            "parameters": {"expected": 41}
+        }]))
+        .expect("encode schedule"),
+    )
+    .expect("write schedule");
+
+    let captured = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args(["soak", "--seed", "91", "--iterations", "0", "--schedule"])
+        .arg(&schedule)
+        .arg("--artifacts")
+        .arg(capture.path())
+        .output()
+        .expect("capture deterministic failure");
+    assert!(!captured.status.success(), "mismatched oracle must fail");
+
+    let captured_bytes = fs::read(capture.path().join("result.json")).expect("captured result");
+    let captured_result: serde_json::Value =
+        serde_json::from_slice(&captured_bytes).expect("valid captured result");
+    assert_eq!(captured_result["success"], false);
+    assert_eq!(captured_result["failure"]["kind"], "assertion-mismatch");
+
+    let replayed = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args(["replay", "--input"])
+        .arg(capture.path().join("result.json"))
+        .arg("--artifacts")
+        .arg(replay.path())
+        .output()
+        .expect("replay captured failure");
+    assert!(
+        !replayed.status.success(),
+        "reproduced failure remains a failure"
+    );
+
+    assert_eq!(
+        fs::read(replay.path().join("original.json")).expect("preserved original"),
+        captured_bytes
+    );
+    let replay_result: serde_json::Value = serde_json::from_slice(
+        &fs::read(replay.path().join("result.json")).expect("replay result"),
+    )
+    .expect("valid replay result");
+    assert_eq!(replay_result["command"], "replay");
+    assert_eq!(replay_result["failure"], captured_result["failure"]);
+    assert_eq!(replay_result["reproduced_failure"], true);
+}

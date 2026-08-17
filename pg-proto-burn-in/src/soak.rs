@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use testcontainers_modules::{
     postgres::Postgres,
     testcontainers::{ImageExt, runners::AsyncRunner},
@@ -63,6 +64,17 @@ struct SoakResult {
     resource_checkpoints: Vec<ResourceCheckpoint>,
     #[serde(default)]
     lifecycle_evidence: LifecycleEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure: Option<FailureEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reproduced_failure: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct FailureEvidence {
+    kind: String,
+    fingerprint: String,
+    message: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -119,6 +131,15 @@ struct ExecutionOutcome {
     lifecycle_evidence: LifecycleEvidence,
 }
 
+struct RecordRequest<'a> {
+    artifacts: &'a Path,
+    seed: u64,
+    budget: Budget,
+    command: &'a str,
+    reduced_from: Option<usize>,
+    expected_failure: Option<FailureEvidence>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DriverResult {
     version: u32,
@@ -131,15 +152,22 @@ pub(crate) async fn run_soak(arguments: &[String]) -> Result<(), Box<dyn Error>>
     let seed = option(arguments, "--seed")?.parse()?;
     let budget = parse_budget(arguments)?;
     let artifacts = PathBuf::from(option(arguments, "--artifacts")?);
-    let sequence = schedule(seed, budget.clone())?;
+    let sequence = if let Some(path) = optional_option(arguments, "--schedule") {
+        serde_json::from_slice(&tokio::fs::read(path).await?)?
+    } else {
+        schedule(seed, budget.clone())?
+    };
     execute_and_record(
         arguments.first().ok_or("missing executable path")?,
-        &artifacts,
-        seed,
-        budget,
         sequence,
-        "soak",
-        None,
+        RecordRequest {
+            artifacts: &artifacts,
+            seed,
+            budget,
+            command: "soak",
+            reduced_from: None,
+            expected_failure: None,
+        },
     )
     .await
 }
@@ -164,15 +192,19 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
     .await?;
     let reduce = arguments.iter().any(|argument| argument == "--reduce");
     let original_len = original.sequence.len();
+    let original_failure = original.failure.clone();
     let sequence = original.sequence;
     let exact = execute_and_record(
         arguments.first().ok_or("missing executable path")?,
-        &artifacts,
-        original.seed,
-        original.budget.clone(),
         sequence.clone(),
-        "replay",
-        None,
+        RecordRequest {
+            artifacts: &artifacts,
+            seed: original.seed,
+            budget: original.budget.clone(),
+            command: "replay",
+            reduced_from: None,
+            expected_failure: original_failure,
+        },
     )
     .await;
     if !reduce || exact.is_ok() {
@@ -197,6 +229,8 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         reduced_from: Some(original_len),
         resource_checkpoints: Vec::new(),
         lifecycle_evidence: LifecycleEvidence::default(),
+        failure: None,
+        reproduced_failure: None,
     };
     atomic_write(
         &artifacts.join("reduction.json"),
@@ -311,14 +345,10 @@ async fn reduce_failing_prefix(executable: &str, sequence: &[SequenceEntry]) -> 
 
 async fn execute_and_record(
     executable: &str,
-    artifacts: &Path,
-    seed: u64,
-    budget: Budget,
     sequence: Vec<SequenceEntry>,
-    command: &str,
-    reduced_from: Option<usize>,
+    request: RecordRequest<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    tokio::fs::create_dir_all(artifacts).await?;
+    tokio::fs::create_dir_all(request.artifacts).await?;
     let outcome = execute(executable, &sequence).await;
     let completed = outcome.as_ref().map(|value| value.completed).unwrap_or(0);
     let (resource_checkpoints, lifecycle_evidence) = outcome
@@ -330,22 +360,63 @@ async fn execute_and_record(
             )
         })
         .unwrap_or_default();
+    let failure = outcome
+        .as_ref()
+        .err()
+        .map(|error| classify_failure(error.as_ref()));
+    let reproduced_failure = request
+        .expected_failure
+        .as_ref()
+        .map(|expected| failure.as_ref() == Some(expected));
     let result = SoakResult {
         schema_version: 1,
-        command: command.into(),
-        seed,
-        budget,
+        command: request.command.into(),
+        seed: request.seed,
+        budget: request.budget,
         max_concurrency: CONCURRENCY,
         sequence,
         completed,
         success: outcome.is_ok(),
         replay_command: "pg-proto-burn-in replay --input result.json --artifacts replay".into(),
-        reduced_from,
+        reduced_from: request.reduced_from,
         resource_checkpoints,
         lifecycle_evidence,
+        failure,
+        reproduced_failure,
     };
-    write_result(artifacts, &result).await?;
+    write_result(request.artifacts, &result).await?;
     outcome.map(|_| ())
+}
+
+fn classify_failure(error: &dyn Error) -> FailureEvidence {
+    let raw_message = error.to_string();
+    let kind = if raw_message.starts_with("assertion-mismatch:") {
+        "assertion-mismatch"
+    } else {
+        "execution-error"
+    }
+    .to_owned();
+    let message = if kind == "assertion-mismatch" {
+        raw_message.clone()
+    } else {
+        "execution details redacted; use the fingerprint and child logs for diagnosis".into()
+    };
+    FailureEvidence {
+        kind,
+        fingerprint: Sha256::digest(raw_message.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        message,
+    }
+}
+
+fn optional_option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    arguments
+        .iter()
+        .position(|argument| argument == name)
+        .and_then(|index| arguments.get(index + 1))
+        .map(String::as_str)
 }
 
 async fn execute(
@@ -747,8 +818,12 @@ async fn execute_entries(
         match entry.scenario.as_str() {
             "scalar" => {
                 let value: i32 = client.query_one("SELECT 42::int4", &[]).await?.get(0);
-                if value != 42 {
-                    return Err("scalar result mismatch".into());
+                let expected = entry.parameters.get("expected").copied().unwrap_or(42);
+                if i64::from(value) != expected {
+                    return Err(format!(
+                        "assertion-mismatch: scalar expected {expected}, got {value}"
+                    )
+                    .into());
                 }
             }
             "rows" => {
@@ -795,11 +870,22 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
     .await?;
     let status = if result.success { "PASS" } else { "FAIL" };
     let summary = format!(
-        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
+        "# pg-proto {}\n\n{status}: {}/{} scheduled operations completed (seed {}).\n\nFailure: {}. Reproduced captured failure: {}.\n\nResource checkpoints: {} (graceful restart: {}, abrupt termination: {}, teardown: {}).\n",
         result.command,
         result.completed,
         result.sequence.len(),
         result.seed,
+        result
+            .failure
+            .as_ref()
+            .map_or("none", |failure| failure.kind.as_str()),
+        result
+            .reproduced_failure
+            .map_or("not applicable", |reproduced| if reproduced {
+                "yes"
+            } else {
+                "no"
+            }),
         result.resource_checkpoints.len(),
         result.lifecycle_evidence.graceful_restart,
         result.lifecycle_evidence.abrupt_termination,

@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 bytes = "1.12"
 futures-util = "0.3"
-pg-proto = { version = "0.10.7", path = ".." }
+pg-proto = { version = "0.11.0", path = ".." }
 postgres-protocol = "0.6.12"
 rcgen = "0.14.8"
 rustls = "0.23.43"

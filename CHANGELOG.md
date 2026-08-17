@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.11.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.0...pg-proto-v0.11.1) - 2026-08-17
+
+### Added
+
+- modernize burn-in command interface
+- run every burn-in profile from the CLI
+- run exhaustive burn-in profile matrix
+- chart historical burn-in performance
+- record performance runner hardware
+- delegate performance runs to optimized binary
+
 ## [0.11.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.7...pg-proto-v0.11.0) - 2026-08-17
 
 ### Added

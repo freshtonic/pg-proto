@@ -20,12 +20,12 @@ use futures_util::{SinkExt, TryStreamExt};
 use pg_proto::{
     BackendMessage, BackendMiddlewareOutput, BoundedPipeline, CancelKey, CancellationPolicy,
     CancellationRoute, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
-    ClientTlsProvider, ConnectTarget, ForwardedMessage, FrontendMessage, FrontendMiddlewareOutput,
-    InitialServerContext, Intermediary, IntermediaryAccept, IntermediaryCancellationRegistry,
-    IntermediaryMiddleware, OperationId, ProtocolTransitionDirection,
-    ProtocolTransitionObservation, Server, ServerConnectionContext, ServerTlsPolicy, SslMode,
-    StartupParameters, StartupRouteResolver, StaticClientCredentials, TrustClientAuthentication,
-    TrustIdentity, TrustServerAuthentication,
+    ClientTlsProvider, ConnectTarget, DiagnosticField, ForwardedMessage, FrontendMessage,
+    FrontendMiddlewareOutput, InitialServerContext, Intermediary, IntermediaryAccept,
+    IntermediaryCancellationRegistry, IntermediaryMiddleware, OperationId,
+    ProtocolTransitionDirection, ProtocolTransitionObservation, Server, ServerConnectionContext,
+    ServerTlsPolicy, SslMode, StartupParameters, StartupRouteResolver, StaticClientCredentials,
+    TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
 use postgres_protocol::message::{backend, frontend};
 use rcgen::generate_simple_self_signed;
@@ -110,6 +110,8 @@ struct RunResult {
 struct MiddlewareReconstructionResult {
     pass_through: Vec<String>,
     identity_rewrite: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    non_identity_rewrite: Vec<String>,
     validated: bool,
 }
 
@@ -319,6 +321,13 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         )
         .await;
     }
+    if profile == "rewrites" {
+        return run_rewrite_conformance(
+            arguments.first().ok_or("missing executable path")?,
+            &artifacts,
+        )
+        .await;
+    }
     if profile != "smoke" {
         return Err(format!("unsupported conformance profile: {profile}").into());
     }
@@ -395,6 +404,42 @@ async fn run_conformance(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         },
     };
     write_artifacts(&artifacts, &result).await?;
+    outcome.map(|_| ())
+}
+
+async fn run_rewrite_conformance(executable: &str, artifacts: &Path) -> Result<(), Box<dyn Error>> {
+    let outcome = supervise_rewrites(executable).await;
+    let rewrites = outcome.as_ref().cloned().unwrap_or_default();
+    let result = RunResult {
+        schema_version: 1,
+        command: "conformance".into(),
+        profile: "rewrites".into(),
+        postgres_version: "18".into(),
+        scenario: ScenarioResult {
+            name: "rich-middleware-rewrites".into(),
+            value: i32::try_from(rewrites.len())?,
+        },
+        fixtures: FixtureResult::default(),
+        data_scenarios: Vec::new(),
+        query_lifecycle: Vec::new(),
+        error_scenarios: Vec::new(),
+        session_cleanliness: None,
+        copy_scenarios: Vec::new(),
+        async_traffic: None,
+        cancellation: None,
+        replication: None,
+        scripted_diagnostics: Vec::new(),
+        coverage: CoverageReport::default(),
+        middleware_reconstruction: MiddlewareReconstructionResult {
+            pass_through: Vec::new(),
+            identity_rewrite: Vec::new(),
+            non_identity_rewrite: rewrites,
+            validated: outcome.is_ok(),
+        },
+        authentication_profiles: Vec::new(),
+        success: outcome.is_ok(),
+    };
+    write_artifacts(artifacts, &result).await?;
     outcome.map(|_| ())
 }
 
@@ -1028,6 +1073,84 @@ async fn supervise_smoke(
     ))
 }
 
+async fn supervise_rewrites(executable: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    const KINDS: [&str; 7] = [
+        "bind-parameter",
+        "copy-in-payload",
+        "copy-out-payload",
+        "data-row",
+        "diagnostic-response",
+        "parse-query",
+        "row-description",
+    ];
+    let container = Postgres::default()
+        .with_host_auth()
+        .with_tag("18-alpine")
+        .start()
+        .await?;
+    let upstream = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        container.get_host_port_ipv4(5432).await?,
+    );
+    let mut intermediary = Command::new(executable)
+        .args([
+            "intermediary-child",
+            "--address",
+            &upstream.to_string(),
+            "--connections",
+            "1",
+            "--rich-rewrites",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
+        return Err("expected rewrite intermediary ready event".into());
+    };
+    let mut driver = Command::new(executable)
+        .args([
+            "driver-child",
+            "--address",
+            &listen_addr.to_string(),
+            "--rich-rewrites",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let ChildEvent::Completed {
+        coverage: driver_evidence,
+        ..
+    } = read_event(&mut driver).await?
+    else {
+        return Err("rewrite driver did not complete".into());
+    };
+    wait_success(&mut driver, "rewrite driver").await?;
+    let ChildEvent::Completed {
+        coverage: intermediary_evidence,
+        ..
+    } = read_event(&mut intermediary).await?
+    else {
+        return Err("rewrite intermediary did not complete".into());
+    };
+    wait_success(&mut intermediary, "rewrite intermediary").await?;
+    drop(container);
+
+    for kind in KINDS {
+        for suffix in ["mutated", "validated"] {
+            let expected = format!("rewrite.{kind}.{suffix}");
+            let evidence = if suffix == "mutated" {
+                &intermediary_evidence
+            } else {
+                &driver_evidence
+            };
+            if !evidence.contains(&expected) {
+                return Err(format!("missing rich rewrite evidence: {expected}").into());
+            }
+        }
+    }
+    Ok(KINDS.into_iter().map(str::to_owned).collect())
+}
+
 fn validate_cancellation(evidence: &CancellationResult) -> Result<(), Box<dyn Error>> {
     if evidence.selected_sqlstate != "57014"
         || !evidence.selected_session_survived
@@ -1117,6 +1240,7 @@ fn middleware_reconstruction(observed: &[String]) -> MiddlewareReconstructionRes
     MiddlewareReconstructionResult {
         pass_through: transitions.clone(),
         identity_rewrite: transitions,
+        non_identity_rewrite: Vec::new(),
         validated: true,
     }
 }
@@ -1283,9 +1407,13 @@ struct CoverageState {
     transitions: BTreeSet<String>,
     causally_unattributed: BTreeSet<String>,
     parameter_status: Option<ParameterStatusResult>,
+    bind_rewrite_statement: Option<Bytes>,
 }
 
-struct CoverageObserver;
+#[derive(Default)]
+struct CoverageObserver {
+    rich_rewrites: bool,
+}
 
 impl CoverageObserver {
     fn observe_async(
@@ -1312,6 +1440,61 @@ impl CoverageObserver {
             state.causally_unattributed.insert(kind.into());
         }
     }
+
+    fn reconstruct_backend(
+        &self,
+        state: &mut CoverageState,
+        message: &BackendMessage,
+    ) -> BackendMessage {
+        let mut reconstructed = message.clone();
+        if !self.rich_rewrites {
+            assert_eq!(
+                reconstructed, *message,
+                "backend identity rewrite changed message"
+            );
+            return reconstructed;
+        }
+        match &mut reconstructed {
+            BackendMessage::RowDescription(description) => {
+                for field in &mut description.fields {
+                    if field.name.as_ref() == b"pg_proto_row_description_original" {
+                        field.name = Bytes::from_static(b"pg_proto_row_description_rewritten");
+                        state
+                            .transitions
+                            .insert("rewrite.row-description.mutated".into());
+                    }
+                }
+            }
+            BackendMessage::DataRow(row)
+                if row.columns == vec![Some(Bytes::from_static(b"314159"))] =>
+            {
+                row.columns[0] = Some(Bytes::from_static(b"271828"));
+                state.transitions.insert("rewrite.data-row.mutated".into());
+            }
+            BackendMessage::ErrorResponse(diagnostic)
+                if diagnostic
+                    .fields
+                    .iter()
+                    .any(|field| field.code == b'C' && field.value.as_ref() == b"22012") =>
+            {
+                diagnostic.fields.push(DiagnosticField {
+                    code: b'D',
+                    value: Bytes::from_static(b"pg-proto rewrote this diagnostic"),
+                });
+                state
+                    .transitions
+                    .insert("rewrite.diagnostic-response.mutated".into());
+            }
+            BackendMessage::CopyData(payload) if payload.as_ref() == b"1\tcopy-upstream\n" => {
+                *payload = Bytes::from_static(b"1\tcopy-downstream\n");
+                state
+                    .transitions
+                    .insert("rewrite.copy-out-payload.mutated".into());
+            }
+            _ => {}
+        }
+        reconstructed
+    }
 }
 
 impl
@@ -1327,14 +1510,50 @@ impl
         &mut self,
         _server: &ServerConnectionContext<SocketAddr, TrustIdentity>,
         _client: &ClientConnectionContext<()>,
-        _state: &mut CoverageState,
+        state: &mut CoverageState,
         message: FrontendMessage,
     ) -> Result<FrontendMiddlewareOutput, Self::Error> {
-        let reconstructed = message.clone();
-        assert_eq!(
-            reconstructed, message,
-            "frontend identity rewrite changed message"
-        );
+        let mut reconstructed = message.clone();
+        if self.rich_rewrites {
+            match &mut reconstructed {
+                FrontendMessage::Parse(parse)
+                    if parse.query.as_ref() == b"SELECT 41::int4 /* pg_proto_parse_rewrite */" =>
+                {
+                    parse.query =
+                        Bytes::from_static(b"SELECT 42::int4 /* pg_proto_parse_rewritten */");
+                    state
+                        .transitions
+                        .insert("rewrite.parse-query.mutated".into());
+                }
+                FrontendMessage::Parse(parse)
+                    if parse.query.as_ref() == b"SELECT $1::int4 /* pg_proto_bind_rewrite */" =>
+                {
+                    state.bind_rewrite_statement = Some(parse.statement.clone());
+                }
+                FrontendMessage::Bind(bind)
+                    if state.bind_rewrite_statement.as_ref() == Some(&bind.statement) =>
+                {
+                    if let Some(Some(parameter)) = bind.parameters.first_mut() {
+                        *parameter = Bytes::copy_from_slice(&42_i32.to_be_bytes());
+                        state
+                            .transitions
+                            .insert("rewrite.bind-parameter.mutated".into());
+                    }
+                }
+                FrontendMessage::CopyData(payload) if payload.as_ref() == b"1\tcopy-original\n" => {
+                    *payload = Bytes::from_static(b"1\tcopy-rewritten\n");
+                    state
+                        .transitions
+                        .insert("rewrite.copy-in-payload.mutated".into());
+                }
+                _ => {}
+            }
+        } else {
+            assert_eq!(
+                reconstructed, message,
+                "frontend identity rewrite changed message"
+            );
+        }
         Ok(FrontendMiddlewareOutput::Forward(reconstructed))
     }
 
@@ -1370,11 +1589,7 @@ impl
         message: BackendMessage,
     ) -> Result<BackendMiddlewareOutput, Self::Error> {
         Self::observe_async(state, None, &message);
-        let reconstructed = message.clone();
-        assert_eq!(
-            reconstructed, message,
-            "backend identity rewrite changed message"
-        );
+        let reconstructed = self.reconstruct_backend(state, &message);
         Ok(BackendMiddlewareOutput::Forward(reconstructed))
     }
 
@@ -1387,11 +1602,7 @@ impl
         message: BackendMessage,
     ) -> Result<BackendMiddlewareOutput, Self::Error> {
         Self::observe_async(state, operation, &message);
-        let reconstructed = message.clone();
-        assert_eq!(
-            reconstructed, message,
-            "backend identity rewrite changed message"
-        );
+        let reconstructed = self.reconstruct_backend(state, &message);
         Ok(BackendMiddlewareOutput::Forward(reconstructed))
     }
 }
@@ -1416,6 +1627,9 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
     let allow_abrupt_disconnects = arguments
         .iter()
         .any(|argument| argument == "--allow-abrupt-disconnects");
+    let rich_rewrites = arguments
+        .iter()
+        .any(|argument| argument == "--rich-rewrites");
     if let Ok(password) = option(arguments, "--password") {
         if let Ok(root) = option(arguments, "--tls-root") {
             return run_tls_credential_intermediary(upstream, password, root).await;
@@ -1442,8 +1656,10 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             .cancellation_registry(cancellation_registry.clone())
             .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
             .middleware(
-                |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-                 _: &ClientConnectionContext<()>| CoverageObserver,
+                move |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
+                      _: &ClientConnectionContext<()>| CoverageObserver {
+                    rich_rewrites,
+                },
             )
             .build()
             .map_err(debug_error)?,
@@ -1649,7 +1865,7 @@ async fn run_tls_credential_intermediary(
         .pipeline(BoundedPipeline::new(64).expect("non-zero TLS pipeline capacity"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-             _: &ClientConnectionContext<()>| CoverageObserver,
+             _: &ClientConnectionContext<()>| CoverageObserver::default(),
         )
         .build()
         .map_err(debug_error)?;
@@ -1721,7 +1937,7 @@ async fn run_credential_intermediary(
         .pipeline(BoundedPipeline::new(64).expect("non-zero authentication pipeline capacity"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
-             _: &ClientConnectionContext<()>| CoverageObserver,
+             _: &ClientConnectionContext<()>| CoverageObserver::default(),
         )
         .build()
         .map_err(debug_error)?;
@@ -1801,6 +2017,32 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .get(0);
     if value != 42 {
         return Err(format!("expected 42, got {value}").into());
+    }
+    if arguments
+        .iter()
+        .any(|argument| argument == "--rich-rewrites")
+    {
+        let validated = run_rich_rewrite_scenarios(&client).await?;
+        drop(client);
+        timeout(CHILD_TIMEOUT, connection_task).await???;
+        return write_event(&ChildEvent::Completed {
+            version: 1,
+            value: Some(i32::try_from(validated.len())?),
+            coverage: validated
+                .into_iter()
+                .map(|kind| format!("rewrite.{kind}.validated"))
+                .collect(),
+            fixtures: None,
+            data_scenarios: Vec::new(),
+            query_lifecycle: Vec::new(),
+            error_scenarios: Vec::new(),
+            session_cleanliness: None,
+            copy_scenarios: Vec::new(),
+            async_traffic: None,
+            cancellation: None,
+            cancellation_registry: None,
+        })
+        .await;
     }
     if arguments.iter().any(|argument| argument == "--basic") {
         drop(client);
@@ -1900,6 +2142,98 @@ async fn run_driver_child(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         cancellation_registry: None,
     })
     .await
+}
+
+async fn run_rich_rewrite_scenarios(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<&'static str>, Box<dyn Error>> {
+    let parse_value: i32 = client
+        .query_one("SELECT 41::int4 /* pg_proto_parse_rewrite */", &[])
+        .await?
+        .get(0);
+    if parse_value != 42 {
+        return Err(format!("Parse rewrite returned {parse_value}, expected 42").into());
+    }
+
+    let bind_value: i32 = client
+        .query_one("SELECT $1::int4 /* pg_proto_bind_rewrite */", &[&41_i32])
+        .await?
+        .get(0);
+    if bind_value != 42 {
+        return Err(format!("Bind rewrite returned {bind_value}, expected 42").into());
+    }
+
+    let described = client
+        .query_one("SELECT 1::int4 AS pg_proto_row_description_original", &[])
+        .await?;
+    if described.columns()[0].name() != "pg_proto_row_description_rewritten" {
+        return Err("RowDescription rewrite did not reach the driver".into());
+    }
+
+    let row_value: String = client.query_one("SELECT '314159'::text", &[]).await?.get(0);
+    if row_value != "271828" {
+        return Err(format!("DataRow rewrite returned {row_value}, expected 271828").into());
+    }
+
+    let error = client
+        .query_one("SELECT 1 / 0", &[])
+        .await
+        .expect_err("diagnostic rewrite query unexpectedly succeeded");
+    let detail = error
+        .as_db_error()
+        .and_then(tokio_postgres::error::DbError::detail);
+    if detail != Some("pg-proto rewrote this diagnostic") {
+        return Err(format!("diagnostic detail was not rewritten: {detail:?}").into());
+    }
+
+    client
+        .batch_execute(
+            "CREATE TEMP TABLE pg_proto_rewrite_copy_in (id integer, payload text); \
+             CREATE TEMP TABLE pg_proto_rewrite_copy_out (id integer, payload text); \
+             INSERT INTO pg_proto_rewrite_copy_out VALUES (1, 'copy-upstream')",
+        )
+        .await?;
+    let copy_in = client
+        .copy_in("COPY pg_proto_rewrite_copy_in FROM STDIN")
+        .await?;
+    tokio::pin!(copy_in);
+    copy_in
+        .as_mut()
+        .send(Bytes::from_static(b"1\tcopy-original\n"))
+        .await?;
+    copy_in.as_mut().finish().await?;
+    let copied_in: String = client
+        .query_one(
+            "SELECT payload FROM pg_proto_rewrite_copy_in WHERE id = 1",
+            &[],
+        )
+        .await?
+        .get(0);
+    if copied_in != "copy-rewritten" {
+        return Err(format!("COPY IN rewrite stored {copied_in:?}").into());
+    }
+
+    let copy_out = client
+        .copy_out("COPY pg_proto_rewrite_copy_out TO STDOUT")
+        .await?;
+    tokio::pin!(copy_out);
+    let mut copied_out = BytesMut::new();
+    while let Some(chunk) = copy_out.try_next().await? {
+        copied_out.extend_from_slice(&chunk);
+    }
+    if copied_out.as_ref() != b"1\tcopy-downstream\n" {
+        return Err(format!("COPY OUT rewrite returned {copied_out:?}").into());
+    }
+
+    Ok(vec![
+        "bind-parameter",
+        "copy-in-payload",
+        "copy-out-payload",
+        "data-row",
+        "diagnostic-response",
+        "parse-query",
+        "row-description",
+    ])
 }
 
 async fn run_copy_connection(

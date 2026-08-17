@@ -234,6 +234,43 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
 }
 
 #[test]
+#[ignore = "requires Docker"]
+fn rich_rewrite_profile_changes_structured_messages_end_to_end() {
+    let artifacts = tempfile::tempdir().expect("create artifact directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_pg-proto-burn-in"))
+        .args(["conformance", "--profile", "rewrites", "--artifacts"])
+        .arg(artifacts.path())
+        .output()
+        .expect("run rich rewrite profile");
+
+    assert!(
+        output.status.success(),
+        "rewrite profile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(
+        &fs::read(artifacts.path().join("result.json")).expect("read JSON artifact"),
+    )
+    .expect("parse JSON artifact");
+    assert_eq!(result["profile"], "rewrites");
+    assert_eq!(result["success"], true);
+    assert_eq!(
+        result["middleware_reconstruction"]["non_identity_rewrite"],
+        serde_json::json!([
+            "bind-parameter",
+            "copy-in-payload",
+            "copy-out-payload",
+            "data-row",
+            "diagnostic-response",
+            "parse-query",
+            "row-description"
+        ])
+    );
+    assert_eq!(result["middleware_reconstruction"]["validated"], true);
+}
+
+#[test]
 #[ignore = "requires a Docker-compatible container runtime"]
 fn authentication_profile_writes_versioned_security_evidence() {
     let artifacts = tempfile::tempdir().expect("artifact directory");

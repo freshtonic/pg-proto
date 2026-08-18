@@ -1,6 +1,6 @@
 [package]
 name = "pg-proto"
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 rust-version = "1.88"
 authors = ["James Sadler <freshtonic@gmail.com>"]
@@ -55,7 +55,7 @@ bytes = "1.12.1"
 base64 = "0.23.0"
 hmac = "0.13.0"
 postgres-protocol = "0.6.12"
-pg-proto-fsm = { version = "0.11.1", path = "pg-proto-fsm" }
+pg-proto-fsm = { version = "0.11.2", path = "pg-proto-fsm" }
 rand = "0.10.2"
 rustls = "0.23.43"
 sha2 = "0.11.0"

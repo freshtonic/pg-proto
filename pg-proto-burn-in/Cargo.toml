@@ -10,7 +10,7 @@ default-run = "pg-proto-burn-in"
 bytes = "1.12"
 clap = { version = "4.5", features = ["derive"] }
 futures-util = "0.3"
-pg-proto = { version = "0.11.1", path = ".." }
+pg-proto = { version = "0.11.2", path = ".." }
 postgres-protocol = "0.6.12"
 rcgen = "0.14.8"
 rustls = "0.23.43"

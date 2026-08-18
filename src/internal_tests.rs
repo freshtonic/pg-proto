@@ -4,7 +4,7 @@
 /// Shared neutral intermediary construction for internal integration tests.
 mod intermediary_harness;
 #[path = "internal_tests/intermediary_pipeline.rs"]
-/// Integration tests for intermediary pipeline state and ordering.
+/// Integration tests for queued-request backpressure and ordering.
 mod intermediary_pipeline;
 #[path = "internal_tests/postgres_container.rs"]
 /// Compatibility tests against Testcontainers-managed PostgreSQL instances.

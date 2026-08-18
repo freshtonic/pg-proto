@@ -808,7 +808,8 @@ impl<S, C, R, A, P, B, K> IntermediaryBuilder<S, C, R, A, P, B, K> {
         }
     }
 
-    /// Selects lock-step or bounded request pipelining.
+    /// Configures backpressure for queued requests by selecting lock-step or a
+    /// fixed number of in-flight operations.
     #[must_use]
     pub fn pipeline<Next: PipelinePolicy>(
         self,

@@ -36,7 +36,7 @@ fn named_intermediary_examples_drive_the_operational_facade() {
     for name in [
         "proxy_skeleton.rs",
         "rewriting_intermediary.rs",
-        "intermediary_pipeline.rs",
+        "queued_request_backpressure.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).unwrap();
         assert!(
@@ -51,9 +51,9 @@ fn named_intermediary_examples_drive_the_operational_facade() {
     let rewriting = fs::read_to_string(root.join("rewriting_intermediary.rs")).unwrap();
     assert!(rewriting.contains("visible = true"));
     assert!(rewriting.contains("visible_amount"));
-    let pipeline = fs::read_to_string(root.join("intermediary_pipeline.rs")).unwrap();
-    assert!(pipeline.contains("BoundedPipeline::new(1)"));
-    assert!(pipeline.contains("session.forward_frontend().await?"));
+    let backpressure = fs::read_to_string(root.join("queued_request_backpressure.rs")).unwrap();
+    assert!(backpressure.contains("BoundedPipeline::new(1)"));
+    assert!(backpressure.contains("session.forward_frontend().await?"));
 }
 
 #[test]
@@ -80,6 +80,68 @@ fn logging_proxies_build_roles_directly() {
         );
     }
     assert!(!root.join("proxy_support").exists());
+}
+
+#[test]
+fn readme_links_to_substantive_examples_for_each_advertised_use_case() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    let examples = [
+        (
+            "examples/sql_logging_proxy/main.rs",
+            &[
+                "ServerTlsPolicy::Required",
+                "FrontendMessage::Query",
+                "BackendMessage::DataRow",
+            ][..],
+        ),
+        (
+            "examples/connection_pooler.rs",
+            &["ConnectionClean", "ConnectionChanged", "TransactionStatus"][..],
+        ),
+        (
+            "examples/rewriting_intermediary.rs",
+            &["FrontendMessage::Query", "BackendMessage::RowDescription"][..],
+        ),
+        (
+            "examples/sharding_router.rs",
+            &[
+                "FrontendMessage::Parse",
+                "FrontendMessage::Bind",
+                "FrontendMessage::Execute",
+            ][..],
+        ),
+        (
+            "examples/replication_relay.rs",
+            &[
+                "CopyBothResponse",
+                "FrontendMessage::CopyDone",
+                "BackendMessage::CopyDone",
+            ][..],
+        ),
+        (
+            "examples/mock_postgres_server.rs",
+            &[
+                "Server::builder()",
+                "BackendMessage::DataRow",
+                "FrontendMessage::Query",
+            ][..],
+        ),
+        (
+            "examples/administrative_client.rs",
+            &["Client::builder()", ".simple_query(", "ConnectionChanged"][..],
+        ),
+    ];
+    for (relative, required) in examples {
+        assert!(readme.contains(relative), "README must link to {relative}");
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        for marker in required {
+            assert!(
+                source.contains(marker),
+                "{relative} must demonstrate `{marker}`"
+            );
+        }
+    }
 }
 
 fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {

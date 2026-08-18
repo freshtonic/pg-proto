@@ -65,7 +65,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
         &self.pipeline
     }
 
-    /// Returns mutable access to bounded pipeline orchestration.
+    /// Returns mutable access to queued-request backpressure orchestration.
     pub(crate) const fn pipeline_mut(&mut self) -> &mut Pipeline<Policy> {
         &mut self.pipeline
     }

@@ -1,4 +1,4 @@
-//! Complete bounded-pipeline intermediary configuration.
+//! Complete example of backpressure for queued requests.
 
 use pg_proto::{
     BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget,
@@ -41,7 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .client(client)
         .startup_resolver(Route)
         .cancellation(CancellationPolicy::Reject)
-        .pipeline(BoundedPipeline::new(1).expect("non-zero bound"))
+        // Allow one request to be in flight and return ownership of the next
+        // request to the caller until response progress frees capacity.
+        .pipeline(BoundedPipeline::new(1).expect("non-zero request limit"))
         .build()
         .unwrap();
     let listen = std::env::args()

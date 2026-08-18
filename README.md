@@ -10,19 +10,14 @@
 frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
 and protocol-aware test infrastructure.
 
-Its distinguishing feature is a builder-only facade over PostgreSQL's typed
-connection state machine. `Client::builder()`, `Server::builder()`, and
-`Intermediary::builder()` require explicit transport-security, authentication,
-middleware, and routing policy before they establish operational connections.
-The internal protocol typestates prevent illegal sequencing without exposing
-the implementation graph as application API.
+A builder API configures clients, servers, and intermediaries explicitly;
+internal typestates make invalid PostgreSQL protocol sequences unrepresentable.
 
-Most PostgreSQL protocol libraries decode messages but retain the session phase
-in a runtime enum. `pg-proto` is useful when protocol correctness is part of the
-architecture rather than merely an implementation detail: the legal next
-operations are visible in function signatures, illegal compositions are rejected
-at compile time, and proxy policy can still inspect, replace, or reject complete
-typed messages.
+`pg-proto` is useful when protocol correctness is part of the architecture
+rather than merely an implementation detail: the legal next operations are
+visible in function signatures, illegal compositions are rejected at compile
+time, and proxy policy can still inspect, replace, or reject complete typed
+messages.
 
 ## Modes of operation
 
@@ -58,8 +53,9 @@ routing, or other application-owned placement decisions.
 
 ## What it provides
 
-- Direction-parameterised frontend and backend codecs. Ambiguous tags such as
-  `S` and `E` cannot be decoded in the wrong direction.
+- Message direction resolves ambiguous PostgreSQL wire tags: `S` means frontend
+  `Sync` but backend `ParameterStatus`, while `E` means frontend `Execute` but
+  backend `ErrorResponse`.
 - Typed pre-startup handling for `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
   and `StartupMessage`, including transport-changing rustls upgrades.
 - A plain/client-TLS/server-TLS network stream, configurable TCP socket options,
@@ -72,8 +68,8 @@ routing, or other application-owned placement decisions.
   `RowDescription`, and `DataRow` values for SQL and result rewriting.
 - A demultiplexer for asynchronous notices, notifications, and parameter status
   updates without polluting the causal session type.
-- Positionally tagged notices and transaction/parameter evidence for pooling
-  decisions.
+- Protocol evidence for deciding whether a connection is safe to return to a
+  pool, including notices, transaction state, and changed session parameters.
 - Connection-branded prepared statements and portals with name rewriting.
 - Exact typestate erasure and checked re-entry at storage and pool boundaries.
 - A protocol grammar macro which emits typestates, their duals, a runtime FSM for
@@ -85,35 +81,33 @@ cancellation storage, telemetry, and failure policy.
 
 ## Why use it?
 
-PostgreSQL infrastructure tends to fail at phase boundaries rather than while
-decoding an individual frame. A pooler may return a connection while it is still
-in a transaction, a proxy may forward `Query` while a COPY exchange is active,
-or an extended-query error path may forget to discard messages until `Sync`.
-Typestate makes these transitions explicit and turns many such bugs into type
-errors.
-
-The phase index is orthogonal to connection cleanliness. A connection can be
-protocol-ready but unsuitable for unconditional pool release because of an open
-transaction, changed GUC, prepared statement, portal, `LISTEN`, or advisory lock.
-Operational connections return explicit state evidence and preserve caller-owned
-state until teardown.
+pg-proto provides protocol-aware guardrails throughout its API, making many
+forms of misuse impossible to express. It also exposes accurate connection-state
+evidence, helping infrastructure such as connection pools determine whether a
+connection is safe to reuse.
 
 ## What can be built with it?
 
-The [bounded intermediary pipeline example](examples/intermediary_pipeline.rs)
-shows ordered forwarding, local interception, and backpressure without proxy-owned
-message queues.
+The [backpressure for queued requests example](examples/queued_request_backpressure.rs)
+shows ordered forwarding and local interception without proxy-owned message
+queues.
 
-- A TLS-terminating PostgreSQL proxy which authenticates each side independently
-  and inspects plaintext SQL and result rows.
-- A transaction or session pooler whose release policy consumes explicit
-  protocol and cleanliness evidence.
-- A SQL firewall, audit gateway, query rewriter, or column-encryption proxy.
-- A sharding/router layer which rewrites prepared-statement and portal names.
-- A logical or physical replication relay with typed COPY-BOTH half-closes.
-- A PostgreSQL-compatible server, mock backend, recorder, replay tool, or protocol
-  conformance harness.
-- A driver or administrative client which benefits from compile-time sequencing.
+- A [TLS-terminating SQL proxy](examples/sql_logging_proxy/main.rs) which
+  authenticates each side independently and inspects plaintext SQL and result
+  rows.
+- A [connection pool](examples/connection_pooler.rs) whose release policy
+  consumes explicit protocol and cleanliness evidence.
+- A [SQL query and result rewriter](examples/rewriting_intermediary.rs), which
+  provides the same interception points needed by firewalls, audit gateways,
+  and column-encryption proxies.
+- A [sharding router](examples/sharding_router.rs) which rewrites
+  prepared-statement and portal names into connection-specific namespaces.
+- A [replication relay](examples/replication_relay.rs) which observes typed
+  COPY-BOTH half-closes independently.
+- A [PostgreSQL-compatible mock server](examples/mock_postgres_server.rs) backed
+  by an in-memory result set.
+- An [administrative client](examples/administrative_client.rs) whose connection
+  type records when a query has changed session state.
 
 ## Security choices come first
 

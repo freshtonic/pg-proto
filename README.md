@@ -13,12 +13,11 @@ and protocol-aware test infrastructure.
 A builder API configures clients, servers, and intermediaries explicitly;
 internal typestates make invalid PostgreSQL protocol sequences unrepresentable.
 
-Most PostgreSQL protocol libraries decode messages but retain the session phase
-in a runtime enum. `pg-proto` is useful when protocol correctness is part of the
-architecture rather than merely an implementation detail: the legal next
-operations are visible in function signatures, illegal compositions are rejected
-at compile time, and proxy policy can still inspect, replace, or reject complete
-typed messages.
+`pg-proto` is useful when protocol correctness is part of the architecture
+rather than merely an implementation detail: the legal next operations are
+visible in function signatures, illegal compositions are rejected at compile
+time, and proxy policy can still inspect, replace, or reject complete typed
+messages.
 
 ## Modes of operation
 

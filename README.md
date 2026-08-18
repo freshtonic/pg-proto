@@ -68,8 +68,8 @@ routing, or other application-owned placement decisions.
   `RowDescription`, and `DataRow` values for SQL and result rewriting.
 - A demultiplexer for asynchronous notices, notifications, and parameter status
   updates without polluting the causal session type.
-- Positionally tagged notices and transaction/parameter evidence for pooling
-  decisions.
+- Protocol evidence for deciding whether a connection is safe to return to a
+  pool, including notices, transaction state, and changed session parameters.
 - Connection-branded prepared statements and portals with name rewriting.
 - Exact typestate erasure and checked re-entry at storage and pool boundaries.
 - A protocol grammar macro which emits typestates, their duals, a runtime FSM for

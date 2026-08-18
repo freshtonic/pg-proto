@@ -616,11 +616,8 @@ Its key sections are:
   proof of a complete three-party proxy.
 
 Security assumptions and downstream responsibilities are documented in
-[`SECURITY.md`](SECURITY.md). The audited proxy capability boundary is in
-[`PROXY_COMPATIBILITY.md`](PROXY_COMPATIBILITY.md), and migration from a
-runtime-enum implementation is covered by [`MIGRATION.md`](MIGRATION.md).
-Contribution instructions and community expectations are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`SECURITY.md`](SECURITY.md). Contribution instructions and community
+expectations are in [`CONTRIBUTING.md`](CONTRIBUTING.md) and
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Verification

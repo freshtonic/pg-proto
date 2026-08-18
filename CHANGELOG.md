@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.11.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.1...pg-proto-v0.11.2) - 2026-08-18
+
+### Changed
+
+- add in-memory protocol throughput suite
+- use criterion for in-memory throughput
+- remove builder performance budget
+
+### Documentation
+
+- document public and private modules
+- explain benchmark orchestration
+- simplify builder API introduction
+- tighten protocol correctness introduction
+- explain direction-dependent wire tags
+- clarify pooling evidence
+- simplify typestate benefits
+- explain queued-request backpressure
+- add runnable architecture examples
+
 ## [0.11.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.0...pg-proto-v0.11.1) - 2026-08-17
 
 ### Added

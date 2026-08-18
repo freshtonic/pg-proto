@@ -92,14 +92,23 @@ criterion_group! {
 criterion_main!(benches);
 
 async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>> {
+    // Build SELECT data before the clock starts so Criterion measures protocol
+    // transport and decoding rather than fixture generation.
     let rows = match workload {
         Workload::Select => pregenerated_rows(),
         Workload::Insert | Workload::Notify => Vec::new(),
     };
+
+    // The first duplex pair represents tokio-postgres <-> Intermediary; the
+    // second represents Intermediary <-> stub Server. No kernel sockets or real
+    // PostgreSQL instance participate in this benchmark.
     let (adapter_io, intermediary_io) = tokio::io::duplex(BUFFER_BYTES);
     let (upstream_io, stub_io) = tokio::io::duplex(BUFFER_BYTES);
     let upstream = Arc::new(Mutex::new(Some(upstream_io)));
 
+    // Assemble the same public Client, Server, and Intermediary facades an
+    // application would use. The pipeline holds BEGIN, every INSERT, and COMMIT
+    // concurrently, proving that the adapter need not wait after each INSERT.
     let client = Client::builder()
         .connector(move |_| {
             let stream = upstream.lock().expect("upstream lock poisoned").take();
@@ -126,6 +135,8 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         .authentication(TrustServerAuthentication)
         .build()?;
 
+    // Drive all three startup handshakes together: tokio-postgres authenticates
+    // to the Intermediary while its client role authenticates to the stub.
     let mut config = tokio_postgres::Config::new();
     config.user("benchmark");
     let (accepted, upstream_accepted, adapter) = tokio::join!(
@@ -138,6 +149,10 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         return Err("stub received an unexpected cancellation request".into());
     };
     let (adapter, mut connection) = adapter?;
+
+    // tokio-postgres delivers NOTIFY messages through its Connection driver,
+    // not through Client::simple_query, so keep the driver polled and forward
+    // notifications to the workload future.
     let (notifications_tx, mut notifications_rx) = mpsc::unbounded_channel();
     let connection_driver = tokio::spawn(async move {
         while let Some(message) = poll_fn(|cx| connection.poll_message(cx))
@@ -150,6 +165,9 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         }
         Ok::<_, tokio_postgres::Error>(())
     });
+
+    // Prepare INSERT text before starting the measured interval for the same
+    // reason SELECT rows are generated above.
     let insert_statements = (0..PIPELINED_INSERTS)
         .map(|index| {
             format!(
@@ -159,6 +177,9 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         .collect::<Vec<_>>();
     let started = Instant::now();
 
+    // Each workload owns its externally observable completion rule. SELECT and
+    // NOTIFY finish when tokio-postgres has received all 10,000 results. INSERT
+    // deliberately leaves completion to the stub's observation of COMMIT.
     let workload_future = async move {
         let elapsed = match workload {
             Workload::Select => {
@@ -212,6 +233,8 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         Ok::<_, io::Error>(elapsed)
     };
 
+    // Continuously forward complete protocol messages in both directions until
+    // dropping the tokio-postgres Client emits Terminate.
     let proxy_future = async move {
         loop {
             if matches!(
@@ -224,12 +247,17 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
         let _ = intermediary.teardown();
         Ok::<_, Box<dyn std::error::Error>>(())
     };
+
+    // The stub validates requests and emits legal PostgreSQL responses. For the
+    // INSERT workload it records the elapsed duration as soon as COMMIT arrives.
     let stub_future = async move {
         let elapsed = serve_stub(&mut stub, workload, &rows, started).await?;
         let _ = stub.teardown();
         Ok::<_, Box<dyn std::error::Error>>(elapsed)
     };
 
+    // Run the client, proxy, and server concurrently under one hard deadline;
+    // then await the connection driver so every iteration tears down cleanly.
     let (client_elapsed, proxy, server_elapsed) = timeout(TIMEOUT, async {
         tokio::join!(workload_future, proxy_future, stub_future)
     })
@@ -237,6 +265,9 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "benchmark timed out"))?;
     proxy?;
     connection_driver.await??;
+
+    // Exactly one side supplies the authoritative duration: the adapter for
+    // SELECT/NOTIFY, or the stub Server for transactional INSERT.
     client_elapsed?
         .or(server_elapsed?)
         .ok_or_else(|| io::Error::other("benchmark completion boundary was not observed").into())

@@ -81,18 +81,10 @@ cancellation storage, telemetry, and failure policy.
 
 ## Why use it?
 
-PostgreSQL infrastructure tends to fail at phase boundaries rather than while
-decoding an individual frame. A pooler may return a connection while it is still
-in a transaction, a proxy may forward `Query` while a COPY exchange is active,
-or an extended-query error path may forget to discard messages until `Sync`.
-Typestate makes these transitions explicit and turns many such bugs into type
-errors.
-
-The phase index is orthogonal to connection cleanliness. A connection can be
-protocol-ready but unsuitable for unconditional pool release because of an open
-transaction, changed GUC, prepared statement, portal, `LISTEN`, or advisory lock.
-Operational connections return explicit state evidence and preserve caller-owned
-state until teardown.
+pg-proto provides protocol-aware guardrails throughout its API, making many
+forms of misuse impossible to express. It also exposes accurate connection-state
+evidence, helping infrastructure such as connection pools determine whether a
+connection is safe to reuse.
 
 ## What can be built with it?
 

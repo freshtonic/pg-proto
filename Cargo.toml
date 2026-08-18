@@ -78,9 +78,5 @@ tokio-postgres-rustls = "0.14.0"
 trybuild = "1.0.120"
 
 [[bench]]
-name = "protocol_budget"
-harness = false
-
-[[bench]]
 name = "in_memory_throughput"
 harness = false

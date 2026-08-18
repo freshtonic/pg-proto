@@ -53,8 +53,9 @@ routing, or other application-owned placement decisions.
 
 ## What it provides
 
-- Direction-parameterised frontend and backend codecs. Ambiguous tags such as
-  `S` and `E` cannot be decoded in the wrong direction.
+- Message direction resolves ambiguous PostgreSQL wire tags: `S` means frontend
+  `Sync` but backend `ParameterStatus`, while `E` means frontend `Execute` but
+  backend `ErrorResponse`.
 - Typed pre-startup handling for `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
   and `StartupMessage`, including transport-changing rustls upgrades.
 - A plain/client-TLS/server-TLS network stream, configurable TCP socket options,

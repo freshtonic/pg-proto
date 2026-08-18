@@ -11,6 +11,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::future::join_all;
 use pg_proto::{
     BackendMessage, BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget,
@@ -48,30 +49,47 @@ impl StartupRouteResolver<()> for Route {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let select = Box::pin(run(Workload::Select)).await?;
-    println!(
-        "SELECT: {SELECT_ROWS} rows in {:.3}s ({:.0} rows/s)",
-        select.as_secs_f64(),
-        f64::from(SELECT_ROWS) / select.as_secs_f64()
-    );
-
-    let inserts = Box::pin(run(Workload::Insert)).await?;
-    println!(
-        "pipelined INSERT: {PIPELINED_INSERTS} statements in {:.3}s ({:.0} statements/s)",
-        inserts.as_secs_f64(),
-        f64::from(PIPELINED_INSERTS) / inserts.as_secs_f64()
-    );
-
-    let notifications = Box::pin(run(Workload::Notify)).await?;
-    println!(
-        "LISTEN/NOTIFY: {NOTIFICATIONS} notifications in {:.3}s ({:.0} notifications/s)",
-        notifications.as_secs_f64(),
-        f64::from(NOTIFICATIONS) / notifications.as_secs_f64()
-    );
-    Ok(())
+fn in_memory_throughput(criterion: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().expect("benchmark runtime should start");
+    let mut group = criterion.benchmark_group("in_memory_throughput");
+    for (name, workload, elements) in [
+        ("select_rows", Workload::Select, SELECT_ROWS),
+        ("pipelined_inserts", Workload::Insert, PIPELINED_INSERTS),
+        ("listen_notify", Workload::Notify, NOTIFICATIONS),
+    ] {
+        group.throughput(Throughput::Elements(u64::from(elements)));
+        group.bench_with_input(
+            BenchmarkId::new(name, elements),
+            &workload,
+            |bencher, input| {
+                let workload = std::hint::black_box(*input);
+                bencher
+                    .to_async(&runtime)
+                    .iter_custom(|iterations| async move {
+                        let mut measured = Duration::ZERO;
+                        for _ in 0..iterations {
+                            let elapsed = Box::pin(run(std::hint::black_box(workload)))
+                                .await
+                                .expect("in-memory protocol benchmark should complete");
+                            measured += std::hint::black_box(elapsed);
+                        }
+                        measured
+                    });
+            },
+        );
+    }
+    group.finish();
 }
+
+criterion_group! {
+    name = benches;
+    config = Criterion::default()
+        .sample_size(10)
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(5));
+    targets = in_memory_throughput
+}
+criterion_main!(benches);
 
 async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>> {
     let rows = match workload {

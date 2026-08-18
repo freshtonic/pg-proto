@@ -9,9 +9,7 @@ Use an issue for substantial protocol or public-API design changes. Security
 reports must follow [SECURITY.md](SECURITY.md) and must not be filed publicly.
 
 Protocol changes should preserve the generated grammar as the single source of
-truth. Proxy-facing changes must retain the capabilities described in
-[PROXY_COMPATIBILITY.md](PROXY_COMPATIBILITY.md). Prose and comments use British
-English.
+truth. Prose and comments use British English.
 
 ## Development environment
 

@@ -7,4 +7,6 @@ one result, which is replaced when that pull request's benchmarks run again.
 
 | Pull request | Commit | Recorded (UTC) | Benchmark | Median time (ms) | Elements/s |
 | ---: | :--- | :--- | :--- | ---: | ---: |
-| — | — | — | — | — | — |
+| [#114](https://github.com/freshtonic/pg-proto/pull/114) | `5f98fdfadb61` | 2026-08-18T06:49:03Z | `in_memory_throughput/listen_notify/10000` | 15.844 | 631,134 |
+| [#114](https://github.com/freshtonic/pg-proto/pull/114) | `5f98fdfadb61` | 2026-08-18T06:49:03Z | `in_memory_throughput/pipelined_inserts/10000` | 49.948 | 200,208 |
+| [#114](https://github.com/freshtonic/pg-proto/pull/114) | `5f98fdfadb61` | 2026-08-18T06:49:03Z | `in_memory_throughput/select_rows/10000` | 18.170 | 550,366 |

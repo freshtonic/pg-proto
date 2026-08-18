@@ -28,6 +28,7 @@ pub(crate) fn verify_cleartext(response: &[u8], expected: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+/// Tests for PostgreSQL credential verification helpers.
 mod tests {
     use super::*;
 

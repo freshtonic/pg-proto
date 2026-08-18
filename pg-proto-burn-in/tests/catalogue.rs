@@ -1,3 +1,5 @@
+//! Process-level tests for authoritative catalogue closure.
+
 use std::{fs, process::Command};
 
 #[test]

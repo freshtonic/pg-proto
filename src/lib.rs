@@ -7,55 +7,83 @@
 #![deny(private_bounds, private_interfaces, unreachable_pub)]
 
 #[allow(dead_code)]
+/// Typed client-side authentication protocol states and transitions.
 mod auth;
+/// Ordered storage for backend messages held by pipeline backpressure.
 mod backend_hold;
 #[allow(dead_code)]
+/// PostgreSQL cancellation keys, routing, and policy hooks.
 mod cancel;
 #[allow(dead_code)]
+/// Connection-cleanliness evidence and state markers.
 mod cleanliness;
+/// Public client facade, builder, and operational connection types.
 mod client_component;
 #[allow(dead_code)]
+/// Structured PostgreSQL wire messages and codecs.
 mod codec;
 #[allow(dead_code)]
+/// Credential verification helpers for PostgreSQL authentication methods.
 mod credentials;
 #[allow(dead_code)]
+/// Ordering and attribution of asynchronous backend traffic.
 mod demux;
 #[allow(dead_code)]
+/// Runtime state erasure and checked typestate re-entry.
 mod erased;
 #[allow(dead_code)]
+/// Generated protocol grammars and runtime transition catalogues.
 pub mod grammar;
 #[allow(dead_code)]
+/// Integration-neutral adapters for recursive protocol exchanges.
 mod integrations;
 #[allow(dead_code)]
+/// Independent client/server state composition used by intermediaries.
 mod intermediary;
+/// Public intermediary facade, builder, middleware, and forwarding loop.
 mod intermediary_component;
 #[allow(dead_code)]
+/// Typed and wire-level middleware abstractions.
 mod middleware;
 #[allow(dead_code)]
+/// Network connection and retry utilities.
 mod net;
 #[allow(dead_code)]
+/// Stateful intermediary admission, correlation, and response pipeline.
 mod pipeline;
 #[allow(dead_code)]
+/// Typed PostgreSQL pre-startup negotiation.
 mod pre_startup;
 #[allow(dead_code)]
+/// Physical replication message encoding and decoding.
 mod replication;
 #[allow(dead_code)]
+/// Branded prepared-statement and portal resource tracking.
 mod resources;
+/// Runtime middleware adapters used by the public facades.
 mod runtime_middleware;
 #[allow(dead_code)]
+/// SCRAM authentication client and server engines.
 mod scram;
 #[allow(dead_code)]
+/// Typed server-side authentication protocol.
 mod server_auth;
+/// Public server facade, builder, and accepted connection types.
 mod server_component;
 #[allow(dead_code)]
+/// Typed server-side operational protocol sessions.
 mod server_session;
 #[allow(dead_code)]
+/// Typed client-side operational protocol sessions.
 mod session;
 #[allow(dead_code)]
+/// Startup packet parsing and parameter representation.
 mod startup;
 #[allow(dead_code)]
+/// TLS policies, providers, upgrades, and channel binding.
 mod tls;
 #[allow(dead_code)]
+/// Buffered transports with protocol projection and middleware interception.
 mod transport;
 
 pub use client_component::{
@@ -113,6 +141,7 @@ pub use startup::{ProtocolVersion, StartupMessage};
 extern crate self as pg_proto;
 
 #[cfg(test)]
+/// Internal integration coverage that exercises non-public protocol seams.
 mod internal_tests;
 
 use std::marker::PhantomData;

@@ -124,6 +124,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
+/// Tests for startup packet and parameter handling.
 mod tests {
     use super::*;
 

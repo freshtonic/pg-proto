@@ -1,3 +1,5 @@
+//! Scripted peers for exceptional and otherwise unreachable protocol paths.
+
 use std::{convert::Infallible, error::Error, sync::Mutex, time::Duration};
 
 use pg_proto::{

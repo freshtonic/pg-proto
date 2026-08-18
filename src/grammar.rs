@@ -1,8 +1,9 @@
 //! Generated `PostgreSQL` grammars and differential-test runtime FSMs.
 //!
 //! Each generated role module embeds its railroad diagram directly in its
-//! rustdoc landing page. Open a module such as [`frontend`] or [`backend`] to
-//! review the grammar alongside its generated transition API.
+//! rustdoc landing page. Open a module such as [`crate::grammar::frontend`] or
+//! [`crate::grammar::backend`] to review the grammar alongside its generated
+//! transition API.
 
 use pg_proto_fsm::protocol;
 
@@ -717,6 +718,7 @@ protocol! {
 }
 
 #[cfg(test)]
+/// Tests for generated grammar projection and runtime behavior.
 mod tests {
     use std::collections::BTreeMap;
 

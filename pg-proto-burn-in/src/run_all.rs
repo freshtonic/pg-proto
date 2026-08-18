@@ -1,3 +1,5 @@
+//! Exhaustive orchestration of supported burn-in action/profile combinations.
+
 use std::{error::Error, path::PathBuf, time::SystemTime};
 
 use tokio::process::Command;
@@ -134,6 +136,7 @@ fn utc_date(now: SystemTime) -> Result<String, Box<dyn Error>> {
 }
 
 #[cfg(test)]
+/// Tests for exhaustive run orchestration and naming.
 mod tests {
     use super::*;
 

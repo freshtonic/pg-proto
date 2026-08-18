@@ -1,3 +1,5 @@
+//! Process-level tests for historical performance trend reports.
+
 use std::{fs, path::Path, process::Command};
 
 fn write_report(root: &Path, name: &str, throughput: f64) {

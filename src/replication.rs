@@ -260,6 +260,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
+/// Tests for physical replication message codecs.
 mod tests {
     use super::*;
 

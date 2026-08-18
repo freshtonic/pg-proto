@@ -86,6 +86,7 @@ impl CleanlinessPolicy for IgnoreCleanliness {
 }
 
 #[cfg(test)]
+/// Tests for protocol-derived connection cleanliness.
 mod tests {
     use super::*;
 

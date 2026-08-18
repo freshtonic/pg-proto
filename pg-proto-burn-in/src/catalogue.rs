@@ -1,3 +1,5 @@
+//! Authoritative protocol catalogue assembly and evidence auditing.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -569,6 +571,7 @@ fn insert_disposition(
 }
 
 #[cfg(test)]
+/// Tests for catalogue closure and migration validation.
 mod tests {
     use super::*;
 

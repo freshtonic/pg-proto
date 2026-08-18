@@ -286,6 +286,7 @@ impl Demux {
 }
 
 #[cfg(test)]
+/// Tests for asynchronous backend message ordering and attribution.
 mod tests {
     use super::*;
 

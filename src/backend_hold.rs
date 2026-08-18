@@ -1,3 +1,5 @@
+//! Ordered storage for one backend message held by pipeline backpressure.
+
 use crate::codec::BackendMessage;
 
 #[derive(Debug, Default)]
@@ -60,6 +62,7 @@ fn retained_bytes(message: &BackendMessage) -> usize {
 }
 
 #[cfg(test)]
+/// Tests for ordered backend-message holding.
 mod tests {
     use bytes::Bytes;
 

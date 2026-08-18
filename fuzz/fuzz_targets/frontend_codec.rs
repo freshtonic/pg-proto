@@ -1,3 +1,5 @@
+//! Fuzzes decoding of arbitrary frontend protocol frames.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

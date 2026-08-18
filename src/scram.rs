@@ -307,6 +307,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
+/// Tests for SCRAM authentication engines.
 mod tests {
     use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
 

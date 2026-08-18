@@ -1341,6 +1341,7 @@ fn ready<S, Phase, C>(
 }
 
 #[cfg(test)]
+/// Tests for typed server operational sessions.
 mod tests {
     use super::*;
     use crate::{

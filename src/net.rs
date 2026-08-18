@@ -309,6 +309,7 @@ pub(crate) fn configure_tcp(
 }
 
 #[cfg(test)]
+/// Tests for network streams and bounded connection retries.
 mod tests {
     use super::*;
     use tokio::net::TcpListener;

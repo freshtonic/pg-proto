@@ -202,6 +202,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
 }
 
 #[cfg(test)]
+/// Tests for independently advancing intermediary sides.
 mod tests {
     use bytes::Bytes;
 

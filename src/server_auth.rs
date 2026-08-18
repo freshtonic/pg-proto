@@ -504,6 +504,7 @@ fn sasl_initial(mut body: Bytes) -> Result<SaslInitialResponse, Bytes> {
 }
 
 #[cfg(test)]
+/// Tests for server-side authentication state machines.
 mod tests {
     use super::*;
     use crate::{

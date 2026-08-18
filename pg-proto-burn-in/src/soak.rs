@@ -1,3 +1,5 @@
+//! Deterministic soak scheduling, execution, replay, and resource sampling.
+
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -1443,6 +1445,7 @@ async fn write_result(path: &Path, result: &SoakResult) -> Result<(), Box<dyn Er
 }
 
 #[cfg(test)]
+/// Tests for deterministic soak schedules and resource sampling.
 mod tests {
     use super::*;
 

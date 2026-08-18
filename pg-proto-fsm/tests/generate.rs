@@ -13,6 +13,7 @@ trait PhaseAssociation<Direction, Role, Wire>:
     type Message;
 }
 
+/// Sealed traits used by the test protocol associations.
 mod private {
     pub trait PhaseAssociationSeal<Direction, Role, Wire> {}
 }

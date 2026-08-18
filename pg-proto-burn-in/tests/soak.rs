@@ -1,3 +1,5 @@
+//! Process-level tests for bounded soak execution and replay.
+
 use std::{fs, process::Command};
 
 #[test]

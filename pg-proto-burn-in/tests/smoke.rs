@@ -1,3 +1,5 @@
+//! End-to-end tests for real PostgreSQL conformance profiles.
+
 use std::{fs, process::Command};
 
 #[test]

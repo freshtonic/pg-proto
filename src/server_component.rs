@@ -488,6 +488,7 @@ impl ServerIdentityProvider for NoServerIdentityProvider {
     }
 }
 
+/// Sealed traits used to constrain server facade implementations.
 mod sealed {
     pub trait Sealed {}
 }

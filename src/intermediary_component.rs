@@ -171,6 +171,7 @@ impl IntermediaryCancellationRegistry for InMemoryCancellationRegistry {
 }
 
 #[cfg(test)]
+/// Tests for the in-memory cancellation registry implementation.
 mod in_memory_cancellation_registry_tests {
     use super::*;
     use bytes::Bytes;

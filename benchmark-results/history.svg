@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="280" viewBox="0 0 800 280" role="img" aria-labelledby="title desc">
+  <title id="title">Historical in-memory throughput benchmarks</title>
+  <desc id="desc">Elements per second for retained pull request Criterion results.</desc>
+  <style>text { font: 12px sans-serif; fill: #57606a } .axis { stroke: #8c959f } polyline { fill: none; stroke-width: 2 }</style>
+  <line class="axis" x1="70" y1="25" x2="70" y2="215"/>
+  <line class="axis" x1="70" y1="215" x2="775" y2="215"/>
+  <text x="12" y="120.0" transform="rotate(-90 12 120.0)" text-anchor="middle">elements/s</text>
+  <text x="62" y="29" text-anchor="end">674,227</text>
+  <text x="62" y="219" text-anchor="end">157,116</text>
+  <polyline stroke="#0969da" points="70.0,40.8"/>
+  <circle fill="#0969da" cx="70.0" cy="40.8" r="4"><title>in_memory_throughput/listen_notify/10000, PR #114: 631,134 elements/s</title></circle>
+  <polyline stroke="#1a7f37" points="70.0,199.2"/>
+  <circle fill="#1a7f37" cx="70.0" cy="199.2" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #114: 200,208 elements/s</title></circle>
+  <polyline stroke="#bf8700" points="70.0,70.5"/>
+  <circle fill="#bf8700" cx="70.0" cy="70.5" r="4"><title>in_memory_throughput/select_rows/10000, PR #114: 550,366 elements/s</title></circle>
+  <text x="70.0" y="238" text-anchor="middle">#114</text>
+  <text x="70" y="260" fill="#0969da">in_memory_throughput/listen_notify/10000</text>
+  <text x="420" y="260" fill="#1a7f37">in_memory_throughput/pipelined_inserts/10000</text>
+  <text x="70" y="275" fill="#bf8700">in_memory_throughput/select_rows/10000</text>
+</svg>

@@ -275,19 +275,72 @@ jobs:
     needs: reuse-pr-ci
     if: >-
       always() &&
-      needs.reuse-pr-ci.outputs.tested != 'true'
+      needs.reuse-pr-ci.outputs.tested != 'true' &&
+      (github.event_name != 'pull_request' || github.actor != 'github-actions[bot]')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: benchmarks-pr-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install development Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
 
+      - name: Check whether benchmark results may update the pull request
+        if: github.event_name == 'pull_request'
+        id: retention
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          if git diff --quiet "$PR_BASE_SHA" HEAD -- .github/workflows/ci.yml; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Benchmark retention skipped::A pull request may not use its modified CI workflow to push benchmark results."
+          fi
+
       - name: Run all benchmarks
         run: cargo bench --workspace
+
+      - name: Retain pull request benchmark result
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.retention.outputs.allowed == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/update_benches.py
+          --criterion-root target/criterion
+          --pr "$PR_NUMBER"
+          --commit "$PR_HEAD_SHA"
+
+      - name: Add benchmark result to the pull request
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.retention.outputs.allowed == 'true'
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet -- BENCHES.md benchmark-results; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BENCHES.md benchmark-results
+          git commit -m "chore: update benchmark results"
+          git push origin "HEAD:$PR_BRANCH"
 
   msrv:
     name: MSRV 1.88

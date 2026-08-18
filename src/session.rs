@@ -934,6 +934,7 @@ fn ready_state<S, P, C>(
 }
 
 #[cfg(test)]
+/// Tests for typed client operational sessions.
 mod tests {
     use super::*;
 

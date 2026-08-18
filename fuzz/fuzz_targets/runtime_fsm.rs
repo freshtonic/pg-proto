@@ -1,3 +1,5 @@
+//! Fuzzes generated runtime FSM transition sequences.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

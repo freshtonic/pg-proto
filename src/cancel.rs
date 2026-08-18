@@ -152,6 +152,7 @@ fn validate_key(key: &CancelKey) -> Result<(), usize> {
 }
 
 #[cfg(test)]
+/// Tests for cancellation key translation and policy hooks.
 mod tests {
     use super::*;
 

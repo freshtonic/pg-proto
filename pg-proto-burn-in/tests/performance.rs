@@ -1,3 +1,5 @@
+//! Process-level tests for performance capture and evaluation.
+
 use std::{fs, process::Command};
 
 #[test]

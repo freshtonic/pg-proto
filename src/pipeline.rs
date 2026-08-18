@@ -1,11 +1,13 @@
 //! Bounded, payload-free orchestration for proxy request pipelines.
 //!
 //! The ledger in this module records protocol obligations, not wire messages.
-//! Applications retain ownership of decoded messages until [`FrontendAction`] or
-//! [`BackendAction`] tells them to forward, emit, retry, or discard the value.
-//! [`Pipeline::accept_frontend`] and [`Pipeline::accept_backend`] are the canonical
-//! ledger interface. Their typed counterparts additionally dispatch accepted
-//! messages through phase-specific middleware before committing them.
+//! Applications retain ownership of decoded messages until
+//! [`crate::pipeline::FrontendAction`] or [`crate::pipeline::BackendAction`] tells
+//! them to forward, emit, retry, or discard the value.
+//! [`crate::pipeline::Pipeline::accept_frontend`] and
+//! [`crate::pipeline::Pipeline::accept_backend`] are the canonical ledger
+//! interface. Their typed counterparts additionally dispatch accepted messages
+//! through phase-specific middleware before committing them.
 //! Callers receiving [`crate::demux::SessionItem`] values should first consume
 //! any pooling or attribution evidence they need, then convert the item with
 //! [`crate::demux::SessionItem::into_backend_message`] before backend acceptance.
@@ -74,6 +76,7 @@ impl std::fmt::Display for PipelineConfigError {
 
 impl std::error::Error for PipelineConfigError {}
 
+/// Sealed implementation details for pipeline state transitions.
 mod private {
     pub trait Sealed {}
 }

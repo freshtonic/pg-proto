@@ -1,3 +1,5 @@
+//! Process-level tests for the burn-in command-line interface.
+
 use std::{fs, process::Command};
 
 #[cfg(unix)]

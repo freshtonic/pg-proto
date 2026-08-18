@@ -1,3 +1,5 @@
+//! Isolated PostgreSQL fault-injection profiles and recovery evidence.
+
 use std::{
     error::Error,
     future::Future,
@@ -413,6 +415,7 @@ async fn write_artifacts(path: &Path, result: &FaultRunResult) -> Result<(), Box
 }
 
 #[cfg(test)]
+/// Tests for bounded fault readiness probes.
 mod tests {
     use std::{cell::Cell, time::Duration};
 

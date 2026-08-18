@@ -66,6 +66,7 @@ pub(crate) trait TokenAuthEngine {
 }
 
 #[cfg(test)]
+/// Tests for integration-neutral recursive exchange adapters.
 mod tests {
     use super::*;
 

@@ -117,6 +117,7 @@ impl<S> Drop for ErasedConn<S> {
 }
 
 #[cfg(test)]
+/// Tests for state erasure and checked re-entry.
 mod tests {
     use crate::{Dirty, Pristine, auth::Ready, session::Building};
 

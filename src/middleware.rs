@@ -251,6 +251,7 @@ pub(crate) trait PhaseAssociation<Direction, Role, Wire>:
 
 /// Seals [`PhaseAssociation`] while remaining nameable by generated grammar implementations.
 #[doc(hidden)]
+/// Seals generated phase associations to this crate.
 pub(crate) mod phase_association_seal {
     /// Implemented alongside each generated phase association.
     pub(crate) trait Sealed<Direction, Role, Wire> {}
@@ -667,6 +668,7 @@ impl<Transport, Phase, Cleanliness> crate::Conn<Transport, Phase, Cleanliness> {
 }
 
 #[cfg(test)]
+/// Tests for typed and wire-level middleware composition.
 mod tests {
     use std::convert::Infallible;
 

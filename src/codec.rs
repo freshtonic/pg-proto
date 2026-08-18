@@ -1349,6 +1349,7 @@ fn unknown_tag(direction: &str, tag: u8) -> io::Error {
 }
 
 #[cfg(test)]
+/// Tests for structured frontend and backend wire codecs.
 mod tests {
     use super::*;
 

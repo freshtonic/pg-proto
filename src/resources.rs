@@ -910,6 +910,7 @@ impl Portal<'_> {
 }
 
 #[cfg(test)]
+/// Tests for branded statement and portal resource tracking.
 mod tests {
     use super::*;
 

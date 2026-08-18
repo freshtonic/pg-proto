@@ -1,3 +1,5 @@
+//! Delegation of performance commands to a profile-optimized executable.
+
 use std::{error::Error, path::PathBuf};
 
 use tokio::process::Command;

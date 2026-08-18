@@ -15,6 +15,7 @@ use syn::{
     visit_mut::{self, VisitMut},
 };
 
+/// Custom keywords accepted by the protocol grammar DSL.
 mod keyword {
     syn::custom_keyword!(initial);
     syn::custom_keyword!(messages);

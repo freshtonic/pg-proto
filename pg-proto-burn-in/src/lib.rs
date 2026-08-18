@@ -46,15 +46,25 @@ use tokio::{
     time::timeout,
 };
 
+/// Authoritative protocol catalogue assembly and evidence auditing.
 mod catalogue;
+/// Command-line parsing and validation.
 mod cli;
+/// Isolated PostgreSQL fault-injection profiles.
 mod faults;
+/// Controlled performance capture, evaluation, and artifact generation.
 mod performance;
+/// Delegation of performance commands to an optimized executable.
 mod performance_delegate;
+/// Markdown report generation for conventional run directories.
 mod report;
+/// Exhaustive orchestration of supported action/profile combinations.
 mod run_all;
+/// Scripted peers for exceptional and otherwise unreachable protocol paths.
 mod scripted;
+/// Deterministic soak scheduling, execution, replay, and resource sampling.
 mod soak;
+/// Historical throughput trend extraction and chart rendering.
 mod trends;
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -3333,6 +3343,7 @@ fn debug_error(error: impl std::fmt::Debug) -> io::Error {
 }
 
 #[cfg(test)]
+/// Tests for conformance policy and top-level artifact contracts.
 mod tests {
     use super::{
         REQUIRED_SMOKE_COVERAGE, REQUIRED_SMOKE_STAGES, authentication_profile_results,

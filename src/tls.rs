@@ -273,6 +273,7 @@ pub(crate) fn channel_binding(certificate: &CertificateDer<'_>) -> io::Result<Ve
 }
 
 #[cfg(test)]
+/// Tests for TLS negotiation, policies, and channel binding.
 mod tests {
     use super::*;
     use crate::{

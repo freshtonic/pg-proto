@@ -1,3 +1,5 @@
+//! End-to-end tests for isolated PostgreSQL fault profiles.
+
 use std::{fs, process::Command};
 
 #[test]

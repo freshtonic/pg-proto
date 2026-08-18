@@ -563,6 +563,7 @@ fn invalid(message: &'static str) -> std::io::Error {
 }
 
 #[cfg(test)]
+/// Tests for typed pre-startup negotiation and upgrades.
 mod tests {
     use super::*;
 

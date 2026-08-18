@@ -1,3 +1,5 @@
+//! Captures Cargo build-profile metadata for performance artifacts.
+
 fn main() {
     println!("cargo:rerun-if-env-changed=PG_PROTO_REQUESTED_PROFILE");
     let base_profile = std::env::var("PROFILE").expect("Cargo supplies PROFILE to build scripts");

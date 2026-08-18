@@ -559,6 +559,7 @@ fn sasl_initial<S>(
 }
 
 #[cfg(test)]
+/// Tests for client-side authentication state transitions.
 mod tests {
     use super::*;
 

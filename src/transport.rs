@@ -904,6 +904,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
 }
 
 #[cfg(test)]
+/// Tests for buffering, projection, limits, and transport middleware.
 mod tests {
     use std::{
         convert::Infallible,

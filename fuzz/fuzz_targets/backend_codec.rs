@@ -1,3 +1,5 @@
+//! Fuzzes decoding of arbitrary backend protocol frames.
+
 #![no_main]
 
 use std::sync::{Arc, Mutex};

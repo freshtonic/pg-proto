@@ -1,3 +1,5 @@
+//! Historical throughput trend extraction and SVG report generation.
+
 use std::{error::Error, path::Path};
 
 use serde::Deserialize;
@@ -234,6 +236,7 @@ fn render_markdown(points: &[Point]) -> String {
 }
 
 #[cfg(test)]
+/// Tests for report discovery, trend classification, and SVG rendering.
 mod tests {
     use super::*;
 

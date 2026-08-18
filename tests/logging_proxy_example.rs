@@ -8,6 +8,7 @@ use tokio::net::TcpListener;
 
 #[path = "../examples/sql_logging_proxy/main.rs"]
 #[allow(dead_code)]
+/// The example implementation included as a testable module.
 pub(crate) mod sql_logging_proxy;
 
 use sql_logging_proxy::Observation;

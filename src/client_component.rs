@@ -613,6 +613,7 @@ impl ClientAuthenticationSession for StaticClientCredentialSession {
 }
 
 #[cfg(test)]
+/// Tests for the static client credential implementation.
 mod static_credential_tests {
     use super::*;
 

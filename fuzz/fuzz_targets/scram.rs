@@ -1,3 +1,5 @@
+//! Fuzzes SCRAM client/server exchanges and malformed inputs.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

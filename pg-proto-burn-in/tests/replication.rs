@@ -1,3 +1,5 @@
+//! End-to-end physical replication conformance coverage.
+
 use std::{fs, process::Command};
 
 #[test]

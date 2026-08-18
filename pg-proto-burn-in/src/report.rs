@@ -1,3 +1,5 @@
+//! Markdown report generation for a conventional burn-in result tree.
+
 use std::{error::Error, path::Path};
 
 use crate::{atomic_write, option};

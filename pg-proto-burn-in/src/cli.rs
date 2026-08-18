@@ -1,3 +1,5 @@
+//! Command-line parsing, help text, and argument validation.
+
 use std::{error::Error, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};

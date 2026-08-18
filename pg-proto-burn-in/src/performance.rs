@@ -1,3 +1,5 @@
+//! Controlled performance capture, evaluation, and artifact generation.
+
 use std::{
     cmp::Ordering,
     error::Error,

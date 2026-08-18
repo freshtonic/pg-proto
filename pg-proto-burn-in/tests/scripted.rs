@@ -1,3 +1,5 @@
+//! End-to-end tests for scripted exceptional protocol paths.
+
 use std::{fs, process::Command};
 
 #[test]

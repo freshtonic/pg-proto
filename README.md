@@ -92,16 +92,22 @@ The [backpressure for queued requests example](examples/queued_request_backpress
 shows ordered forwarding and local interception without proxy-owned message
 queues.
 
-- A TLS-terminating PostgreSQL proxy which authenticates each side independently
-  and inspects plaintext SQL and result rows.
-- A transaction or session pooler whose release policy consumes explicit
-  protocol and cleanliness evidence.
-- A SQL firewall, audit gateway, query rewriter, or column-encryption proxy.
-- A sharding/router layer which rewrites prepared-statement and portal names.
-- A logical or physical replication relay with typed COPY-BOTH half-closes.
-- A PostgreSQL-compatible server, mock backend, recorder, replay tool, or protocol
-  conformance harness.
-- A driver or administrative client which benefits from compile-time sequencing.
+- A [TLS-terminating SQL proxy](examples/sql_logging_proxy/main.rs) which
+  authenticates each side independently and inspects plaintext SQL and result
+  rows.
+- A [connection pool](examples/connection_pooler.rs) whose release policy
+  consumes explicit protocol and cleanliness evidence.
+- A [SQL query and result rewriter](examples/rewriting_intermediary.rs), which
+  provides the same interception points needed by firewalls, audit gateways,
+  and column-encryption proxies.
+- A [sharding router](examples/sharding_router.rs) which rewrites
+  prepared-statement and portal names into connection-specific namespaces.
+- A [replication relay](examples/replication_relay.rs) which observes typed
+  COPY-BOTH half-closes independently.
+- A [PostgreSQL-compatible mock server](examples/mock_postgres_server.rs) backed
+  by an in-memory result set.
+- An [administrative client](examples/administrative_client.rs) whose connection
+  type records when a query has changed session state.
 
 ## Security choices come first
 

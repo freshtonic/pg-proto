@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="260" viewBox="0 0 800 260" role="img" aria-labelledby="title desc">
-  <title id="title">Historical builder facade benchmark</title>
-  <desc id="desc">Operations per second for retained pull request benchmark results.</desc>
-  <style>text { font: 12px sans-serif; fill: #57606a } .axis { stroke: #8c959f } polyline { fill: none; stroke: #0969da; stroke-width: 2 } circle { fill: #0969da }</style>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="280" viewBox="0 0 800 280" role="img" aria-labelledby="title desc">
+  <title id="title">Historical in-memory throughput benchmarks</title>
+  <desc id="desc">Elements per second for retained pull request Criterion results.</desc>
+  <style>text { font: 12px sans-serif; fill: #57606a } .axis { stroke: #8c959f } polyline { fill: none; stroke-width: 2 }</style>
   <line class="axis" x1="70" y1="25" x2="70" y2="215"/>
   <line class="axis" x1="70" y1="215" x2="775" y2="215"/>
-  <text x="12" y="120.0" transform="rotate(-90 12 120.0)" text-anchor="middle">operations/s</text>
+  <text x="12" y="120.0" transform="rotate(-90 12 120.0)" text-anchor="middle">elements/s</text>
   <text x="62" y="29" text-anchor="end">1</text>
   <text x="62" y="219" text-anchor="end">0</text>
   <polyline points=""/>

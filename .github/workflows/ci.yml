@@ -295,7 +295,7 @@ jobs:
           toolchain: 1.97.1
 
       - name: Run all benchmarks
-        run: cargo bench --workspace | tee target/benchmark-output.txt
+        run: cargo bench --workspace
 
       - name: Retain pull request benchmark result
         if: >-
@@ -306,7 +306,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
           python3 scripts/update_benches.py
-          --log target/benchmark-output.txt
+          --criterion-root target/criterion
           --pr "$PR_NUMBER"
           --commit "$PR_HEAD_SHA"
 

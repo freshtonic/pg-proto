@@ -293,7 +293,7 @@ async fn proxy_connection(
         .client(client)
         .startup_resolver(Route(upstream))
         .cancellation(CancellationPolicy::Reject)
-        .pipeline(BoundedPipeline::new(64).expect("non-zero proxy pipeline capacity"))
+        .pipeline(BoundedPipeline::new(64).expect("non-zero queued-request limit"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
              _: &ClientConnectionContext<()>| SqlLogger,

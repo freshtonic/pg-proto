@@ -1,4 +1,4 @@
-//! Bounded, payload-free orchestration for proxy request pipelines.
+//! Payload-free backpressure orchestration for queued proxy requests.
 //!
 //! The ledger in this module records protocol obligations, not wire messages.
 //! Applications retain ownership of decoded messages until

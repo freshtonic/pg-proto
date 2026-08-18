@@ -1,4 +1,4 @@
-//! Deterministic coverage for bounded intermediary pipeline orchestration.
+//! Deterministic coverage for backpressure applied to queued requests.
 
 use std::convert::Infallible;
 

@@ -1675,7 +1675,7 @@ async fn run_intermediary_child(arguments: &[String]) -> Result<(), Box<dyn Erro
             .client(client)
             .startup_resolver(Route(upstream))
             .cancellation_registry(cancellation_registry.clone())
-            .pipeline(BoundedPipeline::new(64).expect("non-zero smoke pipeline capacity"))
+            .pipeline(BoundedPipeline::new(64).expect("non-zero smoke queued-request limit"))
             .middleware(
                 move |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
                       _: &ClientConnectionContext<()>| CoverageObserver {
@@ -1883,7 +1883,7 @@ async fn run_tls_credential_intermediary(
         .client(client)
         .startup_resolver(Route(upstream))
         .cancellation(CancellationPolicy::Reject)
-        .pipeline(BoundedPipeline::new(64).expect("non-zero TLS pipeline capacity"))
+        .pipeline(BoundedPipeline::new(64).expect("non-zero TLS queued-request limit"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
              _: &ClientConnectionContext<()>| CoverageObserver::default(),
@@ -1955,7 +1955,7 @@ async fn run_credential_intermediary(
         .client(client)
         .startup_resolver(Route(upstream))
         .cancellation(CancellationPolicy::Reject)
-        .pipeline(BoundedPipeline::new(64).expect("non-zero authentication pipeline capacity"))
+        .pipeline(BoundedPipeline::new(64).expect("non-zero authentication queued-request limit"))
         .middleware(
             |_: &ServerConnectionContext<SocketAddr, TrustIdentity>,
              _: &ClientConnectionContext<()>| CoverageObserver::default(),

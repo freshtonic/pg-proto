@@ -36,7 +36,7 @@ fn named_intermediary_examples_drive_the_operational_facade() {
     for name in [
         "proxy_skeleton.rs",
         "rewriting_intermediary.rs",
-        "intermediary_pipeline.rs",
+        "queued_request_backpressure.rs",
     ] {
         let source = fs::read_to_string(root.join(name)).unwrap();
         assert!(
@@ -51,9 +51,9 @@ fn named_intermediary_examples_drive_the_operational_facade() {
     let rewriting = fs::read_to_string(root.join("rewriting_intermediary.rs")).unwrap();
     assert!(rewriting.contains("visible = true"));
     assert!(rewriting.contains("visible_amount"));
-    let pipeline = fs::read_to_string(root.join("intermediary_pipeline.rs")).unwrap();
-    assert!(pipeline.contains("BoundedPipeline::new(1)"));
-    assert!(pipeline.contains("session.forward_frontend().await?"));
+    let backpressure = fs::read_to_string(root.join("queued_request_backpressure.rs")).unwrap();
+    assert!(backpressure.contains("BoundedPipeline::new(1)"));
+    assert!(backpressure.contains("session.forward_frontend().await?"));
 }
 
 #[test]

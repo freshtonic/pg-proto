@@ -10,12 +10,8 @@
 frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
 and protocol-aware test infrastructure.
 
-Its distinguishing feature is a builder-only facade over PostgreSQL's typed
-connection state machine. `Client::builder()`, `Server::builder()`, and
-`Intermediary::builder()` require explicit transport-security, authentication,
-middleware, and routing policy before they establish operational connections.
-The internal protocol typestates prevent illegal sequencing without exposing
-the implementation graph as application API.
+A builder API configures clients, servers, and intermediaries explicitly;
+internal typestates make invalid PostgreSQL protocol sequences unrepresentable.
 
 Most PostgreSQL protocol libraries decode messages but retain the session phase
 in a runtime enum. `pg-proto` is useful when protocol correctness is part of the

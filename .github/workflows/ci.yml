@@ -173,13 +173,14 @@ jobs:
 
           echo "::notice title=PR CI not reused::No reusable successful PR run was found after $max_attempts attempts; running CI."
 
-  test:
-    name: Tests and quality gates
+  quality:
+    name: Quality gates
     needs: reuse-pr-ci
     if: >-
       always() &&
       needs.reuse-pr-ci.outputs.tested != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -189,6 +190,9 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -201,11 +205,31 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps
 
-      - name: Builder facade doctests
-        run: cargo test --workspace --doc
-
       - name: Functional builder examples
         run: cargo check --workspace --examples
+
+  portable-tests:
+    name: Portable tests
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Builder facade doctests
+        run: cargo test --workspace --doc
 
       - name: Builder-only public surface
         run: cargo test --test public_surface
@@ -216,8 +240,48 @@ jobs:
       - name: Run all portable tests
         run: cargo test --workspace
 
+  container-tests:
+    name: Core container tests
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Run core container tests
         run: timeout 10m cargo test -p pg-proto -- --ignored --test-threads=1
+
+  burn-in-tests:
+    name: Burn-in verification
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Run burn-in fault tests
         run: >-
@@ -270,6 +334,38 @@ jobs:
           path: target/burn-in
           if-no-files-found: warn
 
+  test:
+    name: Tests and quality gates
+    needs:
+      - reuse-pr-ci
+      - quality
+      - portable-tests
+      - container-tests
+      - burn-in-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every split test job
+        env:
+          REUSED: ${{ needs.reuse-pr-ci.outputs.tested }}
+          QUALITY: ${{ needs.quality.result }}
+          PORTABLE_TESTS: ${{ needs.portable-tests.result }}
+          CONTAINER_TESTS: ${{ needs.container-tests.result }}
+          BURN_IN_TESTS: ${{ needs.burn-in-tests.result }}
+        run: |
+          if [ "$REUSED" = "true" ]; then
+            echo "All test and quality gates were reused from successful PR CI."
+            exit 0
+          fi
+
+          for result in "$QUALITY" "$PORTABLE_TESTS" "$CONTAINER_TESTS" "$BURN_IN_TESTS"; do
+            if [ "$result" != "success" ]; then
+              echo "A required split test job did not succeed: $result"
+              exit 1
+            fi
+          done
+
   benches:
     name: Benchmarks
     needs: reuse-pr-ci
@@ -293,6 +389,9 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Check whether benchmark results may update the pull request
         if: github.event_name == 'pull_request'
@@ -358,6 +457,9 @@ jobs:
         with:
           toolchain: 1.88.0
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Check every workspace target
         run: cargo check --workspace --all-targets
 
@@ -376,6 +478,9 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Verify publishable packages
         run: cargo package --workspace
@@ -408,6 +513,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-08-12
+
+      - name: Cache Rust build artifacts
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
 
       - name: Install cargo-fuzz
         if: needs.reuse-pr-ci.outputs.tested != 'true'

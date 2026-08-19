@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.11.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.2...pg-proto-v0.11.3) - 2026-08-19
+
+### Changed
+
+- retain pull request benchmark history
+- split test jobs and cache Rust builds
+
+### Documentation
+
+- simplify README
+
+### Fixed
+
+- *(ci)* read benchmark results from Criterion
+- *(ci)* prevent modified workflows from pushing
+- *(security)* update h2 past RUSTSEC-2026-0258
+- *(ci)* aggregate split test results
+
+### Maintenance
+
+- update benchmark results
+- update benchmark results
+
 ## [0.11.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.1...pg-proto-v0.11.2) - 2026-08-18
 
 ### Changed

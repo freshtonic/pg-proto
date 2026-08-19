@@ -334,6 +334,38 @@ jobs:
           path: target/burn-in
           if-no-files-found: warn
 
+  test:
+    name: Tests and quality gates
+    needs:
+      - reuse-pr-ci
+      - quality
+      - portable-tests
+      - container-tests
+      - burn-in-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every split test job
+        env:
+          REUSED: ${{ needs.reuse-pr-ci.outputs.tested }}
+          QUALITY: ${{ needs.quality.result }}
+          PORTABLE_TESTS: ${{ needs.portable-tests.result }}
+          CONTAINER_TESTS: ${{ needs.container-tests.result }}
+          BURN_IN_TESTS: ${{ needs.burn-in-tests.result }}
+        run: |
+          if [ "$REUSED" = "true" ]; then
+            echo "All test and quality gates were reused from successful PR CI."
+            exit 0
+          fi
+
+          for result in "$QUALITY" "$PORTABLE_TESTS" "$CONTAINER_TESTS" "$BURN_IN_TESTS"; do
+            if [ "$result" != "success" ]; then
+              echo "A required split test job did not succeed: $result"
+              exit 1
+            fi
+          done
+
   benches:
     name: Benchmarks
     needs: reuse-pr-ci

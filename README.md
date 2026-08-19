@@ -6,18 +6,17 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/freshtonic/pg-proto/blob/main/LICENSE)
 
-`pg-proto` is an asynchronous Rust implementation of the PostgreSQL
-frontend/backend wire protocol designed for proxies, poolers, gateways, drivers,
-and protocol-aware test infrastructure.
+`pg-proto` is an asynchronous Rust implementation of the PostgreSQL frontend/backend wire protocol designed for
+proxies, poolers, gateways, drivers, and protocol-aware test infrastructure.
 
-A builder API configures clients, servers, and intermediaries explicitly;
-internal typestates make invalid PostgreSQL protocol sequences unrepresentable.
+Custom middleware can be installed to intercept, rewrite, filter any Postgres wire protocol message type.
 
-`pg-proto` is useful when protocol correctness is part of the architecture
-rather than merely an implementation detail: the legal next operations are
-visible in function signatures, illegal compositions are rejected at compile
-time, and proxy policy can still inspect, replace, or reject complete typed
-messages.
+A builder API configures clients, servers, and intermediaries explicitly; internal typestates make invalid PostgreSQL
+protocol sequences unrepresentable.
+
+`pg-proto` is useful when protocol correctness is part of the architecture rather than merely an implementation detail:
+the legal next operations are visible in function signatures, illegal compositions are rejected at compile time, and
+proxy policy can still inspect, replace, or reject complete typed messages.
 
 ## Modes of operation
 

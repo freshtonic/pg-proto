@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.12.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.3...pg-proto-v0.12.0) - 2026-08-25
+
+### Added
+
+- atomically forward frontend flush expansions
+
+### Maintenance
+
+- update benchmark results
+- update benchmark results
+
 ## [0.11.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.2...pg-proto-v0.11.3) - 2026-08-19
 
 ### Changed

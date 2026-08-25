@@ -340,6 +340,11 @@ impl<Peer: Sync, Identity: Sync> AuthenticatedRoutePolicy<Peer, Identity>
 pub enum FrontendMiddlewareOutput {
     /// Forward this owned message to PostgreSQL.
     Forward(crate::codec::FrontendMessage),
+    /// Forward this primary operation followed by a synthetic protocol Flush.
+    ///
+    /// The primary retains the identity passed to [`IntermediaryMiddleware::frontend_operation`];
+    /// the Flush is atomically admitted with its own internal operation identity.
+    ForwardThenFlush(crate::codec::FrontendMessage),
     /// Consume the message without forwarding it or registering a response.
     Suppress(crate::codec::FrontendMessage),
     /// Handle the request locally and emit these responses in protocol order.
@@ -1128,7 +1133,7 @@ pub struct IntermediaryConnection<
     boundary: Boundary,
     pipeline: Pipeline<Policy>,
     target: ConnectTarget,
-    pending_frontend: Option<crate::codec::FrontendMessage>,
+    pending_frontend: Option<PreparedFrontendForwarding>,
     backend_hold: crate::backend_hold::BackendHold,
     backend_hold_limits: Option<BackendHoldLimits>,
     pending_local: VecDeque<PendingLocalResponses>,
@@ -1139,6 +1144,13 @@ pub struct IntermediaryConnection<
 struct PendingLocalResponses {
     operation: crate::pipeline::OperationId,
     messages: VecDeque<crate::codec::BackendMessage>,
+}
+
+struct PreparedFrontendForwarding {
+    /// Primary operation returned by forwarding-boundary middleware.
+    source: crate::codec::FrontendMessage,
+    /// Already client-role-intercepted messages to preflight and send in order.
+    messages: Vec<crate::codec::FrontendMessage>,
 }
 
 /// Result of accepting either an ordinary session or an out-of-band request.
@@ -1169,6 +1181,13 @@ impl<Connection> IntermediaryAccept<Connection> {
 pub enum ForwardedMessage {
     /// A client-originated message was forwarded to PostgreSQL.
     Frontend(crate::codec::FrontendMessage),
+    /// One client-originated operation expanded into ordered upstream messages.
+    FrontendExpanded {
+        /// Primary operation supplied by forwarding-boundary middleware.
+        source: crate::codec::FrontendMessage,
+        /// Messages emitted after client-role interception.
+        messages: Vec<crate::codec::FrontendMessage>,
+    },
     /// A PostgreSQL-originated message was forwarded to the client.
     Backend(crate::codec::BackendMessage),
     /// One PostgreSQL response expanded into ordered client responses.
@@ -1193,6 +1212,13 @@ pub enum ForwardedMessage {
 pub enum FrontendForwarding {
     /// The message was sent to PostgreSQL.
     Forwarded(crate::codec::FrontendMessage),
+    /// One primary operation expanded into ordered upstream messages.
+    Expanded {
+        /// Primary operation supplied by forwarding-boundary middleware.
+        source: crate::codec::FrontendMessage,
+        /// Messages emitted after client-role interception.
+        messages: Vec<crate::codec::FrontendMessage>,
+    },
     /// The message was consumed without being sent.
     Suppressed(crate::codec::FrontendMessage),
     /// The request was admitted as local and its responses were emitted or queued.
@@ -1207,6 +1233,7 @@ impl FrontendForwarding {
             Self::Forwarded(message)
             | Self::Suppressed(message)
             | Self::LocallyHandled(message) => message,
+            Self::Expanded { source, .. } => source,
         }
     }
 }
@@ -1368,7 +1395,7 @@ where
     Policy: PipelinePolicy,
     K: IntermediaryCancellationRegistry,
 {
-    /// Receives one client message and reports whether it was forwarded,
+    /// Receives one client message and reports whether it was forwarded, expanded,
     /// suppressed, or handled with pipeline-ordered local responses.
     ///
     /// # Errors
@@ -1377,43 +1404,50 @@ where
     pub async fn forward_frontend(
         &mut self,
     ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
-        if let Some(message) = self.pending_frontend.take() {
-            self.process_frontend(message, false).await
+        if let Some(prepared) = self.pending_frontend.take() {
+            self.forward_prepared_frontend(prepared).await
         } else {
             let message = self.downstream.receive_wire_raw().await?;
-            self.process_frontend(message, true).await
+            self.process_frontend(message).await
         }
     }
 
     async fn process_frontend(
         &mut self,
         message: crate::codec::FrontendMessage,
-        intercept_source_and_boundary: bool,
     ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
-        let decision = if intercept_source_and_boundary {
-            let message = self.downstream.intercept_frontend(&mut self.state, message);
-            let operation = self.pipeline.next_operation_id();
-            self.boundary
-                .frontend_operation(
-                    self.downstream.context(),
-                    self.upstream.context(),
-                    &mut self.state,
-                    operation,
-                    message,
-                )
-                .await
-                .map_err(ForwardError::Middleware)?
-        } else {
-            FrontendMiddlewareOutput::Forward(message)
-        };
-        let (message, handling) = match decision {
+        let message = self.downstream.intercept_frontend(&mut self.state, message);
+        let operation = self.pipeline.next_operation_id();
+        let decision = self
+            .boundary
+            .frontend_operation(
+                self.downstream.context(),
+                self.upstream.context(),
+                &mut self.state,
+                operation,
+                message,
+            )
+            .await
+            .map_err(ForwardError::Middleware)?;
+        let prepared = match decision {
             FrontendMiddlewareOutput::Forward(message) => {
-                let message = if intercept_source_and_boundary {
-                    self.upstream.intercept_frontend(&mut self.state, message)
-                } else {
-                    message
-                };
-                (message, FrontendHandling::Forward)
+                let message = self.upstream.intercept_frontend(&mut self.state, message);
+                PreparedFrontendForwarding {
+                    source: message.clone(),
+                    messages: vec![message],
+                }
+            }
+            FrontendMiddlewareOutput::ForwardThenFlush(source) => {
+                let primary = self
+                    .upstream
+                    .intercept_frontend(&mut self.state, source.clone());
+                let flush = self
+                    .upstream
+                    .intercept_frontend(&mut self.state, crate::codec::FrontendMessage::Flush);
+                PreparedFrontendForwarding {
+                    source,
+                    messages: vec![primary, flush],
+                }
             }
             FrontendMiddlewareOutput::Suppress(message) => {
                 return Ok(FrontendForwarding::Suppressed(message));
@@ -1438,34 +1472,58 @@ where
                 return Ok(FrontendForwarding::LocallyHandled(request));
             }
         };
-        let transition = self.pipeline.frontend_transition_id(&message);
-        let admission = match self.pipeline.accept_frontend(message.clone(), handling) {
-            Ok(admission) => admission,
+        self.forward_prepared_frontend(prepared).await
+    }
+
+    async fn forward_prepared_frontend(
+        &mut self,
+        prepared: PreparedFrontendForwarding,
+    ) -> Result<FrontendForwarding, ForwardError<Boundary::Error>> {
+        let projection = match self
+            .pipeline
+            .prepare_frontend_sequence(prepared.messages.clone(), FrontendHandling::Forward)
+        {
+            Ok(projection) => projection,
             Err(error) => {
-                self.pending_frontend = Some(message);
+                self.pending_frontend = Some(prepared);
                 return Err(ForwardError::Frontend(error));
             }
         };
-        match admission.into_action() {
-            FrontendAction::Forward { id, message } => {
-                if let Some(transition) = transition {
-                    self.boundary
-                        .observe_transition(
-                            self.downstream.context(),
-                            self.upstream.context(),
-                            &mut self.state,
-                            ProtocolTransitionObservation {
-                                id: transition,
-                                direction: ProtocolTransitionDirection::Frontend,
-                                operation: Some(id),
-                            },
-                        )
-                        .await;
+        let expanded = prepared.messages.len() > 1;
+        let source = prepared.source;
+        let items = self.pipeline.commit_frontend_sequence(projection);
+        let mut messages = Vec::with_capacity(items.len());
+        for item in items {
+            match item.admission.into_action() {
+                FrontendAction::Forward { id, message } => {
+                    if let Some(transition) = item.transition {
+                        self.boundary
+                            .observe_transition(
+                                self.downstream.context(),
+                                self.upstream.context(),
+                                &mut self.state,
+                                ProtocolTransitionObservation {
+                                    id: transition,
+                                    direction: ProtocolTransitionDirection::Frontend,
+                                    operation: Some(id),
+                                },
+                            )
+                            .await;
+                    }
+                    self.upstream.send_wire_raw(message.clone()).await?;
+                    messages.push(message);
                 }
-                self.upstream.send_wire_raw(message.clone()).await?;
-                Ok(FrontendForwarding::Forwarded(message))
+                FrontendAction::Discard { .. } => {}
             }
-            FrontendAction::Discard { .. } => Ok(FrontendForwarding::Suppressed(message)),
+        }
+        if messages.is_empty() {
+            Ok(FrontendForwarding::Suppressed(source))
+        } else if expanded {
+            Ok(FrontendForwarding::Expanded { source, messages })
+        } else {
+            Ok(FrontendForwarding::Forwarded(messages.pop().expect(
+                "a forwarded singleton sequence emits one message",
+            )))
         }
     }
 
@@ -1736,8 +1794,9 @@ where
     /// available first. This is the duplex driver for asynchronous traffic,
     /// COPY BOTH, and physical replication.
     ///
-    /// When frontend capacity is exhausted, the unchanged pending request is
-    /// retained and only backend progress is polled until capacity recovers.
+    /// When frontend capacity is exhausted, the already-intercepted pending
+    /// sequence is retained and only backend progress is polled until capacity
+    /// recovers.
     ///
     /// # Errors
     ///
@@ -1769,6 +1828,29 @@ where
                 BackendBatchForwarding::Kept => return Err(ForwardError::BackendHoldCapacity),
             }
         }
+        if let Some(prepared) = self.pending_frontend.take() {
+            match self.forward_prepared_frontend(prepared).await {
+                Ok(FrontendForwarding::Forwarded(message)) => {
+                    return Ok(ForwardedMessage::Frontend(message));
+                }
+                Ok(FrontendForwarding::Expanded { source, messages }) => {
+                    return Ok(ForwardedMessage::FrontendExpanded { source, messages });
+                }
+                Ok(FrontendForwarding::Suppressed(message)) => {
+                    return Ok(ForwardedMessage::FrontendSuppressed(message));
+                }
+                Ok(FrontendForwarding::LocallyHandled(message)) => {
+                    return Ok(ForwardedMessage::FrontendLocallyHandled(message));
+                }
+                Err(ForwardError::Frontend(
+                    crate::pipeline::FrontendProjectionError::Capacity(_),
+                )) => {
+                    // The retry restored the prepared sequence; backend progress
+                    // may now release enough ledger capacity for the next attempt.
+                }
+                Err(error) => return Err(error),
+            }
+        }
         if self.pending_frontend.is_some() {
             let message = self.upstream.receive_wire_raw().await?;
             return self
@@ -1788,8 +1870,11 @@ where
         tokio::select! {
             result = self.downstream.receive_wire_raw() => {
                 let message = result?;
-                self.process_frontend(message, true).await.map(|outcome| match outcome {
+                self.process_frontend(message).await.map(|outcome| match outcome {
                     FrontendForwarding::Forwarded(message) => ForwardedMessage::Frontend(message),
+                    FrontendForwarding::Expanded { source, messages } => {
+                        ForwardedMessage::FrontendExpanded { source, messages }
+                    }
                     FrontendForwarding::Suppressed(message) => ForwardedMessage::FrontendSuppressed(message),
                     FrontendForwarding::LocallyHandled(message) => ForwardedMessage::FrontendLocallyHandled(message),
                 })

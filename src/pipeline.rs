@@ -137,6 +137,19 @@ pub(crate) enum FrontendAdmission {
     Waiting(FrontendAction),
 }
 
+/// One frontend admission paired with its generated protocol transition.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct FrontendSequenceItem {
+    pub(crate) transition: Option<&'static str>,
+    pub(crate) admission: FrontendAdmission,
+}
+
+/// An ordered frontend sequence projected without mutating the live ledger.
+pub(crate) struct PreparedFrontendSequence<P> {
+    pipeline: Pipeline<P>,
+    items: Vec<FrontendSequenceItem>,
+}
+
 impl FrontendAdmission {
     /// Returns the application action, discarding only the positional annotation.
     #[must_use]
@@ -704,6 +717,46 @@ impl<P: PipelinePolicy> Pipeline<P> {
     ) -> Result<FrontendAdmission, FrontendProjectionError> {
         let prepared = self.prepare_frontend(&message)?;
         Ok(self.commit_frontend(prepared, message, handling))
+    }
+
+    /// Preflights an ordered frontend sequence against a private ledger copy.
+    ///
+    /// Every message is checked for wire reconstruction, protocol legality, and
+    /// capacity before the returned projection can be committed.
+    pub(crate) fn prepare_frontend_sequence(
+        &self,
+        messages: Vec<FrontendMessage>,
+        handling: FrontendHandling,
+    ) -> Result<PreparedFrontendSequence<P>, FrontendProjectionError> {
+        let mut pipeline = self.snapshot();
+        // Preflight must not wake waiters attached to the live ledger.
+        pipeline.changed = Arc::new(Notify::new());
+        let mut items = Vec::with_capacity(messages.len());
+        for message in messages {
+            if !message.is_reconstructable() {
+                return Err(FrontendProjectionError::Illegal {
+                    state: pipeline.state(),
+                    message: Box::new(message),
+                });
+            }
+            let transition = pipeline.frontend_transition_id(&message);
+            let admission = pipeline.accept_frontend(message, handling)?;
+            items.push(FrontendSequenceItem {
+                transition,
+                admission,
+            });
+        }
+        Ok(PreparedFrontendSequence { pipeline, items })
+    }
+
+    /// Commits a completely preflighted frontend sequence in one live-ledger update.
+    pub(crate) fn commit_frontend_sequence(
+        &mut self,
+        mut prepared: PreparedFrontendSequence<P>,
+    ) -> Vec<FrontendSequenceItem> {
+        prepared.pipeline.changed = Arc::clone(&self.changed);
+        *self = prepared.pipeline;
+        prepared.items
     }
 
     fn prepare_frontend(

@@ -854,6 +854,130 @@ fn multiple_operations_are_accepted_before_responses_and_flush_is_inert() {
 }
 
 #[test]
+fn execute_then_flush_is_preflighted_with_distinct_ids_and_execute_attribution() {
+    let mut execute_only = bounded(2);
+    execute_only
+        .accept_frontend(execute(), FrontendHandling::Forward)
+        .unwrap();
+
+    let mut expanded = bounded(2);
+    let prepared = expanded
+        .prepare_frontend_sequence(
+            vec![execute(), FrontendMessage::Flush],
+            FrontendHandling::Forward,
+        )
+        .unwrap();
+    assert_eq!(
+        expanded.len(),
+        0,
+        "preflight must not mutate the live ledger"
+    );
+    let items = expanded.commit_frontend_sequence(prepared);
+    let ids: Vec<_> = items
+        .into_iter()
+        .map(|item| forwarded_id(item.admission))
+        .collect();
+
+    assert_eq!(ids.len(), 2);
+    assert!(ids[0] < ids[1]);
+    assert_eq!(expanded.state(), execute_only.state());
+    assert_eq!(
+        expanded.backend_operation_id(&BackendMessage::CommandComplete(Bytes::from_static(
+            b"ALTER TABLE"
+        ))),
+        Some(ids[0]),
+        "Flush must not claim Execute's response"
+    );
+    expanded
+        .accept_backend(BackendMessage::CommandComplete(Bytes::from_static(
+            b"ALTER TABLE",
+        )))
+        .unwrap();
+    assert!(
+        expanded.is_empty(),
+        "Flush is removed when it reaches the head"
+    );
+}
+
+#[test]
+fn frontend_sequence_capacity_and_legality_fail_atomically() {
+    let capacity = bounded(1);
+    let before_state = capacity.state();
+    let before_len = capacity.len();
+    let before_id = capacity.next_operation_id();
+    assert!(matches!(
+        capacity.prepare_frontend_sequence(
+            vec![execute(), FrontendMessage::Flush],
+            FrontendHandling::Forward,
+        ),
+        Err(FrontendProjectionError::Capacity(_))
+    ));
+    assert_eq!(capacity.state(), before_state);
+    assert_eq!(capacity.len(), before_len);
+    assert_eq!(capacity.next_operation_id(), before_id);
+
+    let illegal = bounded(2);
+    let before_state = illegal.state();
+    let before_id = illegal.next_operation_id();
+    assert!(matches!(
+        illegal.prepare_frontend_sequence(
+            vec![
+                FrontendMessage::Query(Bytes::from_static(b"select 1")),
+                FrontendMessage::Flush,
+            ],
+            FrontendHandling::Forward,
+        ),
+        Err(FrontendProjectionError::Illegal { .. })
+    ));
+    assert_eq!(illegal.state(), before_state);
+    assert_eq!(illegal.len(), 0);
+    assert_eq!(illegal.next_operation_id(), before_id);
+}
+
+#[test]
+fn failed_frontend_sequence_encoding_and_extended_error_discard_are_atomic() {
+    let invalid = bounded(2);
+    let before_id = invalid.next_operation_id();
+    assert!(matches!(
+        invalid.prepare_frontend_sequence(
+            vec![
+                FrontendMessage::Query(Bytes::from_static(b"invalid\0query")),
+                FrontendMessage::Flush,
+            ],
+            FrontendHandling::Forward,
+        ),
+        Err(FrontendProjectionError::Illegal { .. })
+    ));
+    assert_eq!(invalid.len(), 0);
+    assert_eq!(invalid.next_operation_id(), before_id);
+
+    let mut discarded = bounded(2);
+    discarded
+        .accept_frontend(parse(b"bad"), FrontendHandling::Forward)
+        .unwrap();
+    discarded.accept_backend(error()).unwrap();
+    assert_eq!(discarded.state(), PipelineState::ExtendedError);
+    let prepared = discarded
+        .prepare_frontend_sequence(
+            vec![execute(), FrontendMessage::Flush],
+            FrontendHandling::Forward,
+        )
+        .unwrap();
+    let items = discarded.commit_frontend_sequence(prepared);
+    assert!(
+        items
+            .into_iter()
+            .all(|item| matches!(item.admission.into_action(), FrontendAction::Discard { .. }))
+    );
+    assert!(discarded.is_empty());
+    assert_eq!(discarded.state(), PipelineState::ExtendedError);
+    discarded
+        .accept_frontend(FrontendMessage::Sync, FrontendHandling::Forward)
+        .unwrap();
+    assert_eq!(discarded.state(), PipelineState::Ready);
+}
+
+#[test]
 fn local_rejection_waits_behind_forwarded_parse() {
     let mut pipeline = bounded(4);
     pipeline

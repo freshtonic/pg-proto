@@ -1,0 +1,22 @@
+{
+  "commit": "74dcd776f46440fbbda54c49d1b74c41097a613b",
+  "measurements": [
+    {
+      "elements_per_second": 570540.0751913135,
+      "median_nanoseconds": 17527252.57142857,
+      "name": "in_memory_throughput/listen_notify/10000"
+    },
+    {
+      "elements_per_second": 109008.85126100731,
+      "median_nanoseconds": 91735669.94166666,
+      "name": "in_memory_throughput/pipelined_inserts/10000"
+    },
+    {
+      "elements_per_second": 538303.8331518418,
+      "median_nanoseconds": 18576869.388888888,
+      "name": "in_memory_throughput/select_rows/10000"
+    }
+  ],
+  "pr": 120,
+  "recorded_at": "2026-08-25T06:06:40Z"
+}

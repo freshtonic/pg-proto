@@ -8,9 +8,10 @@ use pg_proto::{
     CancellationPolicy, Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware,
     ClientTlsPolicy, ConnectTarget, CopyResponse, Execute, FrontendMessage, InitialServerContext,
     Intermediary, IntermediaryAcceptError, IntermediaryBuildError, IntermediaryMiddleware,
-    OperationId, Parse, ProtocolVersion, Server, ServerConnectionContext, ServerMiddleware,
-    ServerTlsPolicy, StartupMessage, StartupParameters, StartupResolutionError,
-    StartupRouteResolver, TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
+    OperationId, Parse, ProtocolTransitionObservation, ProtocolVersion, Server,
+    ServerConnectionContext, ServerMiddleware, ServerTlsPolicy, StartupMessage, StartupParameters,
+    StartupResolutionError, StartupRouteResolver, TrustClientAuthentication, TrustIdentity,
+    TrustServerAuthentication,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -101,6 +102,7 @@ fn frontend_bytes(message: &FrontendMessage) -> Vec<u8> {
             body.extend_from_slice(&execute.max_rows.to_be_bytes());
             (b'E', body)
         }
+        FrontendMessage::Flush => (b'H', Vec::new()),
         FrontendMessage::Sync => (b'S', Vec::new()),
         _ => panic!("test encoder does not support {message:?}"),
     };
@@ -215,6 +217,112 @@ struct BoundaryOrder {
     frontend_operations: Vec<OperationId>,
     backend_operations: Vec<Option<OperationId>>,
 }
+
+#[derive(Default)]
+struct FlushBoundary {
+    frontend_calls: usize,
+    backend_operations: Vec<Option<OperationId>>,
+    observations: Vec<ProtocolTransitionObservation>,
+}
+
+impl
+    IntermediaryMiddleware<
+        Vec<&'static str>,
+        ServerConnectionContext<String, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for FlushBoundary
+{
+    type Error = Infallible;
+
+    async fn frontend_operation(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        _: &mut Vec<&'static str>,
+        _: OperationId,
+        message: FrontendMessage,
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        self.frontend_calls += 1;
+        if matches!(message, FrontendMessage::Execute(_)) {
+            Ok(pg_proto::FrontendMiddlewareOutput::ForwardThenFlush(
+                message,
+            ))
+        } else {
+            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        }
+    }
+
+    async fn backend_operation(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        _: &mut Vec<&'static str>,
+        operation: Option<OperationId>,
+        message: BackendMessage,
+    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        self.backend_operations.push(operation);
+        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+    }
+
+    fn observe_transition(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        _: &mut Vec<&'static str>,
+        observation: ProtocolTransitionObservation,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.observations.push(observation);
+        async {}
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecordFrontendKind;
+
+impl ClientMiddleware<Vec<&'static str>, ClientConnectionContext<()>> for RecordFrontendKind {
+    fn frontend(
+        &mut self,
+        _: &ClientConnectionContext<()>,
+        state: &mut Vec<&'static str>,
+        message: FrontendMessage,
+    ) -> FrontendMessage {
+        state.push(match &message {
+            FrontendMessage::Query(_) => "client-query",
+            FrontendMessage::Execute(_) => "client-execute",
+            FrontendMessage::Flush => "client-flush",
+            _ => "client-other",
+        });
+        message
+    }
+}
+
+struct IllegalFlushBoundary;
+
+impl
+    IntermediaryMiddleware<
+        (),
+        ServerConnectionContext<String, TrustIdentity>,
+        ClientConnectionContext<()>,
+    > for IllegalFlushBoundary
+{
+    type Error = Infallible;
+
+    async fn frontend_operation(
+        &mut self,
+        _: &ServerConnectionContext<String, TrustIdentity>,
+        _: &ClientConnectionContext<()>,
+        (): &mut (),
+        _: OperationId,
+        _: FrontendMessage,
+    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+        tokio::task::yield_now().await;
+        Ok(pg_proto::FrontendMiddlewareOutput::ForwardThenFlush(
+            FrontendMessage::Query(Bytes::from_static(b"replacement")),
+        ))
+    }
+}
 impl
     IntermediaryMiddleware<
         Vec<&'static str>,
@@ -279,6 +387,283 @@ fn intermediary_requires_complete_roles_routing_and_cancellation_policy() {
         Intermediary::builder().build().unwrap_err(),
         IntermediaryBuildError::MissingServer
     );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn frontend_flush_expansion_is_atomic_ordered_and_retried_without_reinterception() {
+    let (downstream_transport, mut downstream_peer) = tokio::io::duplex(16 * 1024);
+    let (upstream_transport, mut upstream_peer) = tokio::io::duplex(16 * 1024);
+    let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
+    let intermediary = Intermediary::builder()
+        .server(
+            Server::builder()
+                .tls(ServerTlsPolicy::Disabled)
+                .authentication(TrustServerAuthentication)
+                .build()
+                .unwrap(),
+        )
+        .client(
+            Client::builder()
+                .connector(move |_| {
+                    let transport = upstream_transport.lock().unwrap().take().unwrap();
+                    async move { Ok::<_, Infallible>(transport) }
+                })
+                .tls(ClientTlsPolicy::Disabled)
+                .authentication(TrustClientAuthentication)
+                .middleware(|_: &ClientInitialContext| RecordFrontendKind)
+                .build()
+                .unwrap(),
+        )
+        .startup_resolver(CandidateResolver)
+        .authenticated_route(RefineRoute)
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(2).unwrap())
+        .middleware(
+            |_: &ServerConnectionContext<String, TrustIdentity>,
+             _: &ClientConnectionContext<()>| FlushBoundary::default(),
+        )
+        .build()
+        .unwrap();
+
+    let downstream = tokio::spawn(async move {
+        downstream_peer
+            .write_all(
+                &StartupMessage {
+                    version: ProtocolVersion::V3_0,
+                    parameters: std::iter::once((
+                        Bytes::from_static(b"user"),
+                        Bytes::from_static(b"alice"),
+                    ))
+                    .collect(),
+                }
+                .encode()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut authentication_and_ready = [0; 15];
+        downstream_peer
+            .read_exact(&mut authentication_and_ready)
+            .await
+            .unwrap();
+        downstream_peer
+            .write_all(&frontend_bytes(&FrontendMessage::Query(
+                Bytes::from_static(b"select 1"),
+            )))
+            .await
+            .unwrap();
+        downstream_peer
+            .write_all(&frontend_bytes(&FrontendMessage::Execute(Execute {
+                portal: Bytes::new(),
+                max_rows: 0,
+            })))
+            .await
+            .unwrap();
+        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'Z');
+        assert_eq!(read_tagged(&mut downstream_peer).await.0, b'C');
+    });
+
+    let upstream = tokio::spawn(async move {
+        let length = upstream_peer.read_u32().await.unwrap();
+        let mut startup = vec![0; usize::try_from(length).unwrap() - 4];
+        upstream_peer.read_exact(&mut startup).await.unwrap();
+        upstream_peer
+            .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+            .await
+            .unwrap();
+        assert_eq!(read_tagged(&mut upstream_peer).await.0, b'Q');
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                upstream_peer.read_u8(),
+            )
+            .await
+            .is_err(),
+            "atomic capacity failure must not send Execute or Flush"
+        );
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
+                pg_proto::TransactionStatus::Idle,
+            )))
+            .await
+            .unwrap();
+        assert_eq!(read_tagged(&mut upstream_peer).await.0, b'E');
+        assert_eq!(read_tagged(&mut upstream_peer).await.0, b'H');
+        upstream_peer
+            .write_all(&backend_bytes(&BackendMessage::CommandComplete(
+                Bytes::from_static(b"ALTER TABLE"),
+            )))
+            .await
+            .unwrap();
+    });
+
+    let mut session = Box::pin(intermediary.accept(
+        downstream_transport,
+        "downstream-peer".to_owned(),
+        Vec::new(),
+    ))
+    .await
+    .unwrap()
+    .into_session();
+    assert!(matches!(
+        session.forward_frontend().await.unwrap(),
+        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
+    ));
+    assert!(matches!(
+        session.forward_frontend().await,
+        Err(pg_proto::ForwardError::Frontend(
+            pg_proto::FrontendProjectionError::Capacity(_)
+        ))
+    ));
+    assert!(matches!(
+        session.forward_next().await.unwrap(),
+        pg_proto::ForwardedMessage::Backend(BackendMessage::ReadyForQuery(_))
+    ));
+    let forwarded = session.forward_next().await.unwrap();
+    assert!(matches!(
+        &forwarded,
+        pg_proto::ForwardedMessage::FrontendExpanded {
+            source: FrontendMessage::Execute(_),
+            messages,
+        } if matches!(messages.as_slice(), [FrontendMessage::Execute(_), FrontendMessage::Flush])
+    ));
+    let pg_proto::ForwardedMessage::FrontendExpanded { source, messages } = forwarded else {
+        unreachable!()
+    };
+    assert!(matches!(source, FrontendMessage::Execute(_)));
+    assert!(matches!(
+        messages.as_slice(),
+        [FrontendMessage::Execute(_), FrontendMessage::Flush]
+    ));
+    assert!(matches!(
+        pg_proto::FrontendForwarding::Expanded { source, messages }.into_message(),
+        FrontendMessage::Execute(_)
+    ));
+    assert!(matches!(
+        session.forward_backend().await.unwrap(),
+        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
+    ));
+
+    let (_downstream, _upstream, state, boundary, _handlers, _contexts) = session.teardown();
+    assert_eq!(state, ["client-query", "client-execute", "client-flush"]);
+    assert_eq!(
+        boundary.frontend_calls, 2,
+        "retry must reuse middleware output"
+    );
+    let frontend: Vec<_> = boundary
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.direction == pg_proto::ProtocolTransitionDirection::Frontend
+        })
+        .map(|observation| observation.operation.unwrap())
+        .collect();
+    assert_eq!(frontend.len(), 3);
+    assert!(frontend[0] < frontend[1] && frontend[1] < frontend[2]);
+    assert_eq!(
+        boundary.backend_operations,
+        [Some(frontend[0]), Some(frontend[1])]
+    );
+    downstream.await.unwrap();
+    upstream.await.unwrap();
+}
+
+#[tokio::test]
+async fn illegal_frontend_flush_expansion_sends_neither_frame() {
+    let (downstream_transport, mut downstream_peer) = tokio::io::duplex(4096);
+    let (upstream_transport, mut upstream_peer) = tokio::io::duplex(4096);
+    let upstream_transport = std::sync::Mutex::new(Some(upstream_transport));
+    let (check_tx, check_rx) = tokio::sync::oneshot::channel();
+    let upstream = tokio::spawn(async move {
+        let length = upstream_peer.read_u32().await.unwrap();
+        let mut startup = vec![0; usize::try_from(length).unwrap() - 4];
+        upstream_peer.read_exact(&mut startup).await.unwrap();
+        upstream_peer
+            .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+            .await
+            .unwrap();
+        check_rx.await.unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                upstream_peer.read_u8(),
+            )
+            .await
+            .is_err(),
+            "illegal Query-plus-Flush projection must send neither frame"
+        );
+    });
+    let intermediary = Intermediary::builder()
+        .server(
+            Server::builder()
+                .tls(ServerTlsPolicy::Disabled)
+                .authentication(TrustServerAuthentication)
+                .build()
+                .unwrap(),
+        )
+        .client(
+            Client::builder()
+                .connector(move |_| {
+                    let transport = upstream_transport.lock().unwrap().take().unwrap();
+                    async move { Ok::<_, Infallible>(transport) }
+                })
+                .tls(ClientTlsPolicy::Disabled)
+                .authentication(TrustClientAuthentication)
+                .build()
+                .unwrap(),
+        )
+        .startup_resolver(CandidateResolver)
+        .authenticated_route(RefineRoute)
+        .cancellation(CancellationPolicy::Reject)
+        .pipeline(BoundedPipeline::new(2).unwrap())
+        .middleware(
+            |_: &ServerConnectionContext<String, TrustIdentity>,
+             _: &ClientConnectionContext<()>| IllegalFlushBoundary,
+        )
+        .build()
+        .unwrap();
+    downstream_peer
+        .write_all(
+            &StartupMessage {
+                version: ProtocolVersion::V3_0,
+                parameters: std::iter::once((
+                    Bytes::from_static(b"user"),
+                    Bytes::from_static(b"alice"),
+                ))
+                .collect(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut session =
+        Box::pin(intermediary.accept(downstream_transport, "downstream-peer".to_owned(), ()))
+            .await
+            .unwrap()
+            .into_session();
+    let mut authentication_and_ready = [0; 15];
+    downstream_peer
+        .read_exact(&mut authentication_and_ready)
+        .await
+        .unwrap();
+    downstream_peer
+        .write_all(&frontend_bytes(&FrontendMessage::Execute(Execute {
+            portal: Bytes::new(),
+            max_rows: 0,
+        })))
+        .await
+        .unwrap();
+    assert!(matches!(
+        session.forward_frontend().await,
+        Err(pg_proto::ForwardError::Frontend(
+            pg_proto::FrontendProjectionError::Illegal { .. }
+        ))
+    ));
+    check_tx.send(()).unwrap();
+    upstream.await.unwrap();
+    let _ = session.teardown();
 }
 
 #[tokio::test]

@@ -5,27 +5,31 @@
   <line class="axis" x1="70" y1="25" x2="70" y2="215"/>
   <line class="axis" x1="70" y1="215" x2="775" y2="215"/>
   <text x="12" y="120.0" transform="rotate(-90 12 120.0)" text-anchor="middle">elements/s</text>
-  <text x="62" y="29" text-anchor="end">682,889</text>
-  <text x="62" y="219" text-anchor="end">61,828</text>
-  <polyline stroke="#0969da" points="70.0,40.8 305.0,49.0 540.0,55.0 775.0,64.0"/>
+  <text x="62" y="29" text-anchor="end">683,582</text>
+  <text x="62" y="219" text-anchor="end">54,204</text>
+  <polyline stroke="#0969da" points="70.0,40.8 246.2,48.9 422.5,54.8 598.8,63.7 775.0,55.5"/>
   <circle fill="#0969da" cx="70.0" cy="40.8" r="4"><title>in_memory_throughput/listen_notify/10000, PR #114: 631,134 elements/s</title></circle>
-  <circle fill="#0969da" cx="305.0" cy="49.0" r="4"><title>in_memory_throughput/listen_notify/10000, PR #116: 604,338 elements/s</title></circle>
-  <circle fill="#0969da" cx="540.0" cy="55.0" r="4"><title>in_memory_throughput/listen_notify/10000, PR #118: 584,789 elements/s</title></circle>
-  <circle fill="#0969da" cx="775.0" cy="64.0" r="4"><title>in_memory_throughput/listen_notify/10000, PR #120: 555,266 elements/s</title></circle>
-  <polyline stroke="#1a7f37" points="70.0,172.7 305.0,177.5 540.0,176.1 775.0,199.2"/>
-  <circle fill="#1a7f37" cx="70.0" cy="172.7" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #114: 200,208 elements/s</title></circle>
-  <circle fill="#1a7f37" cx="305.0" cy="177.5" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #116: 184,482 elements/s</title></circle>
-  <circle fill="#1a7f37" cx="540.0" cy="176.1" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #118: 188,967 elements/s</title></circle>
-  <circle fill="#1a7f37" cx="775.0" cy="199.2" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #120: 113,583 elements/s</title></circle>
-  <polyline stroke="#bf8700" points="70.0,65.5 305.0,71.3 540.0,70.7 775.0,69.1"/>
-  <circle fill="#bf8700" cx="70.0" cy="65.5" r="4"><title>in_memory_throughput/select_rows/10000, PR #114: 550,366 elements/s</title></circle>
-  <circle fill="#bf8700" cx="305.0" cy="71.3" r="4"><title>in_memory_throughput/select_rows/10000, PR #116: 531,390 elements/s</title></circle>
-  <circle fill="#bf8700" cx="540.0" cy="70.7" r="4"><title>in_memory_throughput/select_rows/10000, PR #118: 533,664 elements/s</title></circle>
-  <circle fill="#bf8700" cx="775.0" cy="69.1" r="4"><title>in_memory_throughput/select_rows/10000, PR #120: 538,676 elements/s</title></circle>
+  <circle fill="#0969da" cx="246.2" cy="48.9" r="4"><title>in_memory_throughput/listen_notify/10000, PR #116: 604,338 elements/s</title></circle>
+  <circle fill="#0969da" cx="422.5" cy="54.8" r="4"><title>in_memory_throughput/listen_notify/10000, PR #118: 584,789 elements/s</title></circle>
+  <circle fill="#0969da" cx="598.8" cy="63.7" r="4"><title>in_memory_throughput/listen_notify/10000, PR #120: 555,266 elements/s</title></circle>
+  <circle fill="#0969da" cx="775.0" cy="55.5" r="4"><title>in_memory_throughput/listen_notify/10000, PR #125: 582,714 elements/s</title></circle>
+  <polyline stroke="#1a7f37" points="70.0,170.9 246.2,175.7 422.5,174.3 598.8,197.1 775.0,199.2"/>
+  <circle fill="#1a7f37" cx="70.0" cy="170.9" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #114: 200,208 elements/s</title></circle>
+  <circle fill="#1a7f37" cx="246.2" cy="175.7" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #116: 184,482 elements/s</title></circle>
+  <circle fill="#1a7f37" cx="422.5" cy="174.3" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #118: 188,967 elements/s</title></circle>
+  <circle fill="#1a7f37" cx="598.8" cy="197.1" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #120: 113,583 elements/s</title></circle>
+  <circle fill="#1a7f37" cx="775.0" cy="199.2" r="4"><title>in_memory_throughput/pipelined_inserts/10000, PR #125: 106,652 elements/s</title></circle>
+  <polyline stroke="#bf8700" points="70.0,65.2 246.2,70.9 422.5,70.3 598.8,68.7 775.0,69.9"/>
+  <circle fill="#bf8700" cx="70.0" cy="65.2" r="4"><title>in_memory_throughput/select_rows/10000, PR #114: 550,366 elements/s</title></circle>
+  <circle fill="#bf8700" cx="246.2" cy="70.9" r="4"><title>in_memory_throughput/select_rows/10000, PR #116: 531,390 elements/s</title></circle>
+  <circle fill="#bf8700" cx="422.5" cy="70.3" r="4"><title>in_memory_throughput/select_rows/10000, PR #118: 533,664 elements/s</title></circle>
+  <circle fill="#bf8700" cx="598.8" cy="68.7" r="4"><title>in_memory_throughput/select_rows/10000, PR #120: 538,676 elements/s</title></circle>
+  <circle fill="#bf8700" cx="775.0" cy="69.9" r="4"><title>in_memory_throughput/select_rows/10000, PR #125: 534,734 elements/s</title></circle>
   <text x="70.0" y="238" text-anchor="middle">#114</text>
-  <text x="305.0" y="238" text-anchor="middle">#116</text>
-  <text x="540.0" y="238" text-anchor="middle">#118</text>
-  <text x="775.0" y="238" text-anchor="middle">#120</text>
+  <text x="246.2" y="238" text-anchor="middle">#116</text>
+  <text x="422.5" y="238" text-anchor="middle">#118</text>
+  <text x="598.8" y="238" text-anchor="middle">#120</text>
+  <text x="775.0" y="238" text-anchor="middle">#125</text>
   <text x="70" y="260" fill="#0969da">in_memory_throughput/listen_notify/10000</text>
   <text x="420" y="260" fill="#1a7f37">in_memory_throughput/pipelined_inserts/10000</text>
   <text x="70" y="275" fill="#bf8700">in_memory_throughput/select_rows/10000</text>

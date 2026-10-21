@@ -57,7 +57,7 @@ hmac = "0.13.0"
 postgres-protocol = "0.6.12"
 pg-proto-fsm = { version = "0.12.0", path = "pg-proto-fsm" }
 rand = "0.10.2"
-rustls = "0.23.43"
+rustls = "0.23.46"
 sha2 = "0.11.0"
 stringprep = "0.1.5"
 subtle = "2.6.1"

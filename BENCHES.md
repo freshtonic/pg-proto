@@ -22,3 +22,6 @@ one result, which is replaced when that pull request's benchmarks run again.
 | [#129](https://github.com/freshtonic/pg-proto/pull/129) | `c3874ab7fea2` | 2026-11-04T00:50:37Z | `in_memory_throughput/listen_notify/10000` | 12.118 | 825,186 |
 | [#129](https://github.com/freshtonic/pg-proto/pull/129) | `c3874ab7fea2` | 2026-11-04T00:50:37Z | `in_memory_throughput/pipelined_inserts/10000` | 73.395 | 136,248 |
 | [#129](https://github.com/freshtonic/pg-proto/pull/129) | `c3874ab7fea2` | 2026-11-04T00:50:37Z | `in_memory_throughput/select_rows/10000` | 14.840 | 673,840 |
+| [#140](https://github.com/freshtonic/pg-proto/pull/140) | `ca368253f752` | 2026-11-08T17:08:22Z | `in_memory_throughput/listen_notify/10000` | 12.600 | 793,649 |
+| [#140](https://github.com/freshtonic/pg-proto/pull/140) | `ca368253f752` | 2026-11-08T17:08:22Z | `in_memory_throughput/pipelined_inserts/10000` | 92.339 | 108,296 |
+| [#140](https://github.com/freshtonic/pg-proto/pull/140) | `ca368253f752` | 2026-11-08T17:08:22Z | `in_memory_throughput/select_rows/10000` | 17.725 | 564,178 |
